@@ -14,4 +14,84 @@
       "migrations_dir": "migrations",
     },
   ],
+  "workflows": [
+    {
+      "name": "terminus-train",
+      "binding": "TRAIN_WORKFLOW",
+      "class_name": "TrainWorkflow",
+    },
+    {
+      "name": "terminus-station",
+      "binding": "STATION_WORKFLOW",
+      "class_name": "StationWorkflow",
+    },
+  ],
+  "artifacts": [
+    { "binding": "ARTIFACTS", "namespace": "default", "remote": true },
+  ],
+  "containers": [
+    {
+      "class_name": "ExecutionSandbox",
+      "image": "./Dockerfile",
+      "max_instances": 6,
+      "instance_type": "standard-1",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "SANDBOX", "class_name": "ExecutionSandbox" }],
+  },
+  "exports": {
+    "ExecutionSandbox": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "secrets": { "required": ["AI_GATEWAY_TOKEN"] },
+  "vars": {
+    "REPOSITORY_MODE": "artifacts",
+    // Both roles use the inexpensive testing model. No automatic fallback.
+    "STATION_AGENT_MODEL": "@cf/zai-org/glm-5.3-flash",
+    "CONDUCTOR_MODEL": "@cf/zai-org/glm-5.3-flash",
+    "AI_GATEWAY_ACCOUNT_ID": "",
+    "AI_GATEWAY_ID": "default",
+    // How long a fake Station Agent takes, so Trains visibly travel.
+    "FAKE_AGENT_DELAY_MS": "4000",
+    // How many times the fake Conductor returns each Station's work.
+    "FAKE_CONDUCTOR_RETURNS": "1",
+  },
+  "env": {
+    "fake": {
+      "secrets": { "required": [] },
+      "artifacts": [],
+      "containers": [],
+      "durable_objects": {
+        "bindings": [{ "name": "SANDBOX", "class_name": "ExecutionSandbox" }],
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "terminus",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "workflows": [
+        {
+          "name": "terminus-train-fake",
+          "binding": "TRAIN_WORKFLOW",
+          "class_name": "TrainWorkflow",
+        },
+        {
+          "name": "terminus-station-fake",
+          "binding": "STATION_WORKFLOW",
+          "class_name": "StationWorkflow",
+        },
+      ],
+      "vars": {
+        "REPOSITORY_MODE": "fake",
+        "STATION_AGENT_MODEL": "fake",
+        "CONDUCTOR_MODEL": "fake",
+        "FAKE_AGENT_DELAY_MS": "4000",
+        "FAKE_CONDUCTOR_RETURNS": "1",
+        "AI_GATEWAY_ACCOUNT_ID": "",
+        "AI_GATEWAY_ID": "default",
+      },
+    },
+  },
 }

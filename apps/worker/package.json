@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler d1 migrations apply terminus --local && wrangler dev",
+    "dev:fake": "wrangler d1 migrations apply terminus --local --env fake && wrangler dev --env fake",
     "deploy": "wrangler deploy",
-    "cf-typegen": "wrangler types",
+    "cf-typegen": "wrangler types --strict-vars=false",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },

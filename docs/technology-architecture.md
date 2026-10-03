@@ -775,7 +775,9 @@ ModelProvider
 Kimi K2.7 Code
 ```
 
-Current expected defaults are approximately:
+For current implementation and testing, the maintainer has selected **`@cf/zai-org/glm-5.3-flash` for every real agent call**. The Worker role vars and OpenCode primary/small-model configuration use that model, with no automatic fallback. The table below describes future production choices, not testing configuration. See `../README.md` for the implemented execution path and setup.
+
+Expected production defaults are approximately:
 
 | Role                                         | Default Model                                  |
 | -------------------------------------------- | ---------------------------------------------- |

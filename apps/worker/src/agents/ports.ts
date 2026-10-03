@@ -1,0 +1,135 @@
+import {
+  FakeConductor,
+  FakeStationRunner,
+  GatewayModelProvider,
+  ModelConductor,
+  type Conductor,
+  type StationRunner,
+} from "@terminus/agent-runtime"
+import {
+  ArtifactsRepositoryHost,
+  FakeRepositoryHost,
+  type RepositoryHost,
+} from "@terminus/artifacts"
+import { NetworkStore } from "../integrations/network-store"
+import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
+import { SandboxStationRunner } from "../integrations/station-runner"
+import {
+  gatewayConfig,
+  gatewayTransport,
+} from "../integrations/execution-config"
+import { TRAIN_EVENTS } from "../workflows/events"
+import type { StationPorts } from "../workflows/station-operations"
+import type {
+  StationRunParams,
+  TrainPorts,
+} from "../workflows/train-operations"
+import type { DispatcherPorts } from "./dispatcher"
+
+/** A role configured as `fake` runs without a model. */
+const FAKE = "fake"
+
+export function trainPorts(env: Env): TrainPorts {
+  return {
+    store: new NetworkStore(env.DB),
+    repositories: repositories(env),
+    conductor: conductor(env),
+    startStationRun: (params) => startStationRun(env, params),
+    wakeTrain: (trainId) => wakeTrain(env, trainId),
+    newId,
+    now: () => new Date().toISOString(),
+  }
+}
+
+export function stationPorts(env: Env): StationPorts {
+  return {
+    store: new NetworkStore(env.DB),
+    repositories: repositories(env),
+    runner: stationRunner(env),
+  }
+}
+
+export function dispatcherPorts(env: Env): DispatcherPorts {
+  return {
+    store: new NetworkStore(env.DB),
+    repositories: repositories(env),
+    startTrain: async (trainId) => {
+      await env.TRAIN_WORKFLOW.create({ id: trainId, params: { trainId } })
+    },
+    wakeTrain: (trainId) => wakeTrain(env, trainId),
+    clearTrain: async (trainId) => {
+      const instance = await env.TRAIN_WORKFLOW.get(trainId)
+      await instance.sendEvent({ type: TRAIN_EVENTS.clear, payload: {} })
+    },
+    newId,
+    now: () => new Date().toISOString(),
+  }
+}
+
+function realRepositories(env: Env): ArtifactsRepositoryHost {
+  if (!env.ARTIFACTS) throw new Error("Artifacts binding is missing")
+  return new ArtifactsRepositoryHost(
+    env.ARTIFACTS,
+    new SandboxWorkspaces(env),
+    () => scheduler.wait(1000)
+  )
+}
+
+function repositories(env: Env): RepositoryHost {
+  if (env.REPOSITORY_MODE === "fake") return new FakeRepositoryHost()
+  if (env.REPOSITORY_MODE !== "artifacts")
+    throw new Error("Configure REPOSITORY_MODE as artifacts or fake")
+  return realRepositories(env)
+}
+
+function stationRunner(env: Env): StationRunner {
+  if (env.STATION_AGENT_MODEL !== FAKE) {
+    if (env.REPOSITORY_MODE !== "artifacts")
+      throw new Error("Real Station Agents require Artifacts repositories")
+    return new SandboxStationRunner(
+      env,
+      realRepositories(env),
+      new NetworkStore(env.DB)
+    )
+  }
+  const delayMs = Number(env.FAKE_AGENT_DELAY_MS)
+  return new FakeStationRunner({
+    delay: delayMs > 0 ? () => scheduler.wait(delayMs) : undefined,
+  })
+}
+
+function conductor(env: Env): Conductor {
+  if (env.CONDUCTOR_MODEL !== FAKE) {
+    return new ModelConductor(env.CONDUCTOR_MODEL, {
+      generateStructured: (request) =>
+        new GatewayModelProvider(
+          gatewayConfig(env, env.CONDUCTOR_MODEL),
+          gatewayTransport
+        ).generateStructured(request),
+    })
+  }
+  return new FakeConductor({ returns: Number(env.FAKE_CONDUCTOR_RETURNS) })
+}
+
+async function startStationRun(
+  env: Env,
+  params: StationRunParams
+): Promise<void> {
+  try {
+    await env.STATION_WORKFLOW.create({ id: params.runId, params })
+  } catch (error) {
+    // The run already exists if it can be fetched; otherwise creation failed.
+    await env.STATION_WORKFLOW.get(params.runId).catch(() => {
+      throw error
+    })
+  }
+}
+
+async function wakeTrain(env: Env, trainId: string): Promise<void> {
+  const instance = await env.TRAIN_WORKFLOW.get(trainId)
+  await instance.sendEvent({ type: TRAIN_EVENTS.wake, payload: {} })
+}
+
+function newId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`
+}

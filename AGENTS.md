@@ -4,7 +4,7 @@ Guidance for coding agents working on the Terminus codebase.
 
 Terminus is an orchestration platform that coordinates many coding agents working on one shared codebase. It uses a railway network as its coordination model, and it runs on Cloudflare with **Cloudflare Artifacts** as its Git layer.
 
-> **Project status:** scaffolded. The monorepo, toolchain, and folder structure are in place (see [Commands](#commands)), but no domain logic, API, workflows, or UI exist yet. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
+> **Project status:** the domain core, D1 persistence and event log, Train and Station Workflows, Worker API, and a plain status page exist. Artifacts/Git and Sandbox/OpenCode Station execution adapters, independent validation, and model Conductor review are implemented, with a separate fake environment for offline development. Live Cloudflare verification still requires account/secret/project setup. Terminus integration, model-driven Dispatcher/Engineer/Technician roles, and the map are not built yet. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
 
 ## Project context
 
@@ -19,6 +19,7 @@ Read these when you need more depth:
 
 | Doc | Covers |
 | --- | --- |
+| `README.md` | Local/fake development, live setup, execution constraints and API examples |
 | `docs/outline-updated.md` | Concept model, roles, Train/Station states, events, topology, architecture |
 | `docs/technology-architecture.md` | Technology stack, what each technology owns, source-of-truth rules |
 | `docs/structure-and-ownership.md` | Layer ownership, dependency direction, where code belongs |
@@ -247,8 +248,9 @@ Run these from the repo root:
 | Command | Does |
 | --- | --- |
 | `npm install` | Installs all workspaces |
-| `npm run dev:web` | Starts the Vite dev server for `apps/web` |
-| `npm run dev:worker` | Starts `wrangler dev` for `apps/worker` |
+| `npm run dev:web` | Starts the Vite dev server for `apps/web`, proxying `/api` to the Worker on port 8787 |
+| `npm run dev:worker` | Applies local D1 migrations, then starts real Artifacts/Sandbox execution (requires live setup in README) |
+| `npm run dev:fake` | Applies local D1 migrations and starts the Worker with fake repositories and roles; no credentials required |
 | `npm run build` | Builds every workspace that has a `build` script (currently `apps/web`) |
 | `npm run typecheck` | Type-checks every workspace |
 | `npm test` | Runs Vitest in every workspace (`apps/worker` runs in the Workers runtime) |
@@ -259,6 +261,8 @@ Workspace-specific commands:
 
 - Add a shadcn component: `npx shadcn@latest add <component> -c apps/web`. Components are written to `packages/ui/src/components` and imported as `@terminus/ui/components/<name>`.
 - Regenerate Worker binding types after editing `apps/worker/wrangler.jsonc`: `npm run cf-typegen -w @terminus/worker`.
+- During implementation/testing, **all real roles use `@cf/zai-org/glm-5.3-flash`** per maintainer instruction. Do not substitute the more expensive design-doc defaults or introduce an automatic fallback.
+- Role models are Worker vars in `apps/worker/wrangler.jsonc` (`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`). `fake` runs a role without a model; `FAKE_AGENT_DELAY_MS` and `FAKE_CONDUCTOR_RETURNS` tune the fakes.
 - Workspace packages are source-only TypeScript (`exports` points at `src/index.ts`). Vite and Wrangler compile them, so they have no build step.
 - Vitest is pinned to v4 because `@cloudflare/vitest-pool-workers` doesn't support v5 yet.
 

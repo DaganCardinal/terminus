@@ -6,6 +6,10 @@ import { defineConfig } from "vite"
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    // The Worker API, started with `npm run dev:worker`.
+    proxy: { "/api": "http://localhost:8787" },
+  },
   resolve: {
     alias: {
       "@": resolve(import.meta.dirname, "./src"),
