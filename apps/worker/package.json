@@ -1,0 +1,25 @@
+{
+  "name": "@terminus/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^1.0.0",
+    "@terminus/agent-runtime": "^0.0.0",
+    "@terminus/artifacts": "^0.0.0",
+    "@terminus/domain": "^0.0.0",
+    "@terminus/protocol": "^0.0.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "wrangler": "^4.124.0"
+  }
+}
