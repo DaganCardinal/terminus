@@ -10,11 +10,15 @@ import {
 } from "./git"
 
 /** Only the binding capabilities this adapter uses. No Cloudflare dependency leaks inward. */
-export interface ArtifactsRepository {
+export interface ArtifactsRepositoryInfo {
   name: string
   remote: string
   defaultBranch: string
   description: string | null
+}
+
+export interface ArtifactsRepository extends Disposable {
+  info(): Promise<ArtifactsRepositoryInfo>
   createToken(
     scope: "read" | "write",
     ttl: number
@@ -72,9 +76,10 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     } catch (error) {
       if (!hasCode(error, "ALREADY_EXISTS")) throw error
     }
-    const repo = await this.ready(input.name)
+    using repo = await this.ready(input.name)
     if (initialToken) await repo.revokeToken(initialToken)
-    if (repo.description !== description)
+    const info = await repo.info()
+    if (info.description !== description)
       throw new Error(
         "Repository name belongs to a different onboarding operation"
       )
@@ -114,7 +119,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         }
         if (!head)
           throw new Error("The imported project has no default-branch commit")
-        return { repoId: repo.name, headCommit: head }
+        return { repoId: info.name, headCommit: head }
       }
     )
   }
@@ -129,57 +134,61 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     // A completed fork is reusable even if its source has since advanced.
     let target: ArtifactsRepository | undefined
     try {
-      target = await this.ready(input.name)
-    } catch (error) {
-      if (!hasCode(error, "NOT_FOUND")) throw error
-    }
-    if (!target) {
-      const source = await this.ready(input.sourceRepoId)
-      let initialToken: string | undefined
       try {
-        await this.withWorkspace(
-          [{ repoId: input.sourceRepoId, scope: "read" }],
-          async (workspace, [access]) => {
-            if (!access) throw new Error("Missing repository access")
-            if ((await remoteHead(workspace, access)) !== input.commit) {
-              throw new RepositoryMovedError(
-                "Fork source moved from the requested commit; reload and review"
-              )
-            }
-            try {
-              initialToken = (
-                await source.fork(input.name, {
-                  description,
-                  defaultBranchOnly: true,
-                })
-              ).token
-            } catch (error) {
-              if (!hasCode(error, "ALREADY_EXISTS")) throw error
-            }
-          }
-        )
-      } finally {
-        if (initialToken) {
-          target = await this.ready(input.name)
-          await target.revokeToken(initialToken)
-        }
+        target = await this.ready(input.name)
+      } catch (error) {
+        if (!hasCode(error, "NOT_FOUND", input.name)) throw error
       }
-      target ??= await this.ready(input.name)
-    }
-    if (target.description !== description)
-      throw new Error("Repository name belongs to a different fork operation")
-    return this.withWorkspace(
-      [{ repoId: input.name, scope: "read" }],
-      async (workspace, [access]) => {
-        if (!access) throw new Error("Missing repository access")
-        if ((await remoteHead(workspace, access)) !== input.commit) {
-          throw new RepositoryMovedError(
-            "Fork did not preserve the requested commit"
+      if (!target) {
+        using source = await this.ready(input.sourceRepoId)
+        let initialToken: string | undefined
+        try {
+          await this.withWorkspace(
+            [{ repoId: input.sourceRepoId, scope: "read" }],
+            async (workspace, [access]) => {
+              if (!access) throw new Error("Missing repository access")
+              if ((await remoteHead(workspace, access)) !== input.commit) {
+                throw new RepositoryMovedError(
+                  "Fork source moved from the requested commit; reload and review"
+                )
+              }
+              try {
+                initialToken = (
+                  await source.fork(input.name, {
+                    description,
+                    defaultBranchOnly: true,
+                  })
+                ).token
+              } catch (error) {
+                if (!hasCode(error, "ALREADY_EXISTS")) throw error
+              }
+            }
           )
+        } finally {
+          if (initialToken) {
+            target = await this.ready(input.name)
+            await target.revokeToken(initialToken)
+          }
         }
-        return { repoId: input.name, headCommit: input.commit }
+        target ??= await this.ready(input.name)
       }
-    )
+      if ((await target.info()).description !== description)
+        throw new Error("Repository name belongs to a different fork operation")
+      return await this.withWorkspace(
+        [{ repoId: input.name, scope: "read" }],
+        async (workspace, [access]) => {
+          if (!access) throw new Error("Missing repository access")
+          if ((await remoteHead(workspace, access)) !== input.commit) {
+            throw new RepositoryMovedError(
+              "Fork did not preserve the requested commit"
+            )
+          }
+          return { repoId: input.name, headCommit: input.commit }
+        }
+      )
+    } finally {
+      target?.[Symbol.dispose]()
+    }
   }
 
   async fastForward(input: {
@@ -273,12 +282,13 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     repoId: string,
     scope: "read" | "write"
   ): Promise<RepositoryAccess> {
-    const repo = await this.ready(repoId)
+    using repo = await this.ready(repoId)
+    const info = await repo.info()
     const token = await repo.createToken(scope, 3600)
     return {
-      repoId: repo.name,
-      remote: repo.remote,
-      branch: repo.defaultBranch,
+      repoId: info.name,
+      remote: info.remote,
+      branch: info.defaultBranch,
       token: token.plaintext,
       tokenId: token.id,
       scope,
@@ -286,7 +296,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async revoke(access: RepositoryAccess): Promise<void> {
-    const repo = await this.ready(access.repoId)
+    using repo = await this.ready(access.repoId)
     await repo.revokeToken(access.tokenId)
   }
 
@@ -332,11 +342,17 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 }
 
-function hasCode(error: unknown, code: string): boolean {
+function hasCode(error: unknown, code: string, repoName?: string): boolean {
+  if (typeof error === "object" && error !== null && "code" in error)
+    return error.code === code
+
+  // Wrangler's remote RPC transport preserves the Artifacts error message,
+  // but drops its custom code fields. Only accept the exact missing-target
+  // message here; unrelated failures must never trigger repository creation.
   return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === code
+    code === "NOT_FOUND" &&
+    repoName !== undefined &&
+    error instanceof Error &&
+    error.message === `ArtifactsError: Repository not found: ${repoName}.`
   )
 }

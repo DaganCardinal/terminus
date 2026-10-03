@@ -27,11 +27,12 @@ afterEach(async () => {
   )
 })
 
-async function fixture() {
+async function fixture(options: { remoteErrors?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "terminus-git-test-"))
   temporary.push(directory)
   const repos = new Map<string, ArtifactsRepository>()
   const tokens = new Set<string>()
+  const handles = new Set<symbol>()
   const grants: RepositoryAccess[][] = []
   let beforeFork: (() => Promise<void>) | null = null
   let beforePush: (() => Promise<void>) | null = null
@@ -48,10 +49,9 @@ async function fixture() {
       return id
     }
     const repo: ArtifactsRepository = {
-      name,
-      description,
-      remote,
-      defaultBranch: "main",
+      // RPC handles expose methods only. Metadata must come from info().
+      info: async () => ({ name, description, remote, defaultBranch: "main" }),
+      [Symbol.dispose]: () => {},
       createToken: async () => {
         const id = issue()
         return { id, plaintext: id }
@@ -68,9 +68,19 @@ async function fixture() {
   const artifacts: ArtifactsService = {
     get: async (name) => {
       const repo = repos.get(name)
-      if (!repo)
+      if (!repo) {
+        if (options.remoteErrors)
+          throw new Error(`ArtifactsError: Repository not found: ${name}.`)
         throw Object.assign(new Error("missing"), { code: "NOT_FOUND" })
-      return repo
+      }
+      const handle = Symbol(name)
+      handles.add(handle)
+      return {
+        ...repo,
+        [Symbol.dispose]: () => {
+          handles.delete(handle)
+        },
+      }
     },
     create: (name, options) => create(name, options.description),
     import: (input) =>
@@ -136,7 +146,7 @@ async function fixture() {
     return (
       await execute("git", [
         "--git-dir",
-        repos.get(name)!.remote,
+        (await repos.get(name)!.info()).remote,
         "rev-parse",
         "main",
       ])
@@ -175,9 +185,11 @@ async function fixture() {
     head,
     change,
     tokens,
+    handles,
     grants,
     repos,
     workspaces,
+    artifacts,
     setBeforePush: (callback: () => Promise<void>) => {
       beforePush = callback
     },
@@ -188,6 +200,69 @@ async function fixture() {
 }
 
 describe("Artifacts repository transport with real Git", () => {
+  it("creates Train and Station repos when remote RPC drops the missing-target error code", async () => {
+    const f = await fixture({ remoteErrors: true })
+    const terminus = await f.host.createTerminus({ name: "terminus" })
+    const train = await f.host.fork({
+      sourceRepoId: terminus.repoId,
+      commit: terminus.headCommit,
+      name: "train",
+    })
+    expect(train).toEqual({ repoId: "train", headCommit: terminus.headCommit })
+    expect(await f.head("train")).toBe(terminus.headCommit)
+    const station = await f.host.fork({
+      sourceRepoId: train.repoId,
+      commit: train.headCommit,
+      name: "station",
+    })
+    expect(station).toEqual({ repoId: "station", headCommit: train.headCommit })
+    expect(await f.head("station")).toBe(train.headCommit)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("propagates a missing source reported by remote RPC", async () => {
+    const f = await fixture({ remoteErrors: true })
+    await expect(
+      f.host.fork({
+        sourceRepoId: "missing-source",
+        commit: "a".repeat(40),
+        name: "train",
+      })
+    ).rejects.toThrow("ArtifactsError: Repository not found: missing-source.")
+    expect(f.repos.has("train")).toBe(false)
+    expect(f.grants).toHaveLength(0)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it.each([
+    new Error("ArtifactsError: Repository not found: different-repo."),
+    new Error("Repository not found: train."),
+    new Error("ArtifactsError: Upstream unavailable"),
+    Object.assign(new Error("ArtifactsError: Repository not found: train."), {
+      code: "UPSTREAM_UNAVAILABLE",
+    }),
+  ])(
+    "does not treat unrelated lookup errors as an absent fork target: %s",
+    async (error) => {
+      const f = await fixture()
+      f.artifacts.get = async () => {
+        throw error
+      }
+      await expect(
+        f.host.fork({
+          sourceRepoId: "terminus",
+          commit: "a".repeat(40),
+          name: "train",
+        })
+      ).rejects.toBe(error)
+      expect(f.repos.size).toBe(0)
+      expect(f.grants).toHaveLength(0)
+      expect(f.tokens.size).toBe(0)
+    }
+  )
+
   it("creates, forks, commits a Station, and fast-forwards the Train without rewriting provenance", async () => {
     const f = await fixture()
     const terminus = await f.host.createTerminus({ name: "terminus" })
@@ -223,6 +298,7 @@ describe("Artifacts repository transport with real Git", () => {
     expect(await f.head("train")).toBe(proposed.commit)
     expect(await f.head("terminus")).toBe(terminus.headCommit)
     expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
     expect(
       f.grants.some(
         (access) =>
@@ -256,6 +332,7 @@ describe("Artifacts repository transport with real Git", () => {
       "Sandbox unavailable"
     )
     expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
   })
 
   it("revokes the server-issued fork token even if its source workspace shutdown fails", async () => {
@@ -403,10 +480,49 @@ describe("Artifacts repository transport with real Git", () => {
     const changed = await f.change("original")
     const imported = await f.host.createTerminus({
       name: "imported",
-      sourceUrl: f.repos.get("original")!.remote,
+      sourceUrl: (await f.repos.get("original")!.info()).remote,
     })
     expect(imported.headCommit).toBe(changed.commit)
     expect(imported.headCommit).not.toBe(original.headCommit)
+    expect(
+      await f.host.createTerminus({
+        name: "imported",
+        sourceUrl: (await f.repos.get("original")!.info()).remote,
+      })
+    ).toEqual(imported)
     expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("rejects reuse for a different onboarding source before granting repository access", async () => {
+    const f = await fixture()
+    await f.host.createTerminus({ name: "terminus" })
+    const grants = f.grants.length
+    await expect(
+      f.host.createTerminus({
+        name: "terminus",
+        sourceUrl: "https://example.com/another-project.git",
+      })
+    ).rejects.toThrow("different onboarding operation")
+    expect(f.grants).toHaveLength(grants)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("rejects an existing repository from a different fork operation", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ name: "terminus" })
+    await f.host.createTerminus({ name: "unrelated" })
+    const grants = f.grants.length
+    await expect(
+      f.host.fork({
+        sourceRepoId: terminus.repoId,
+        commit: terminus.headCommit,
+        name: "unrelated",
+      })
+    ).rejects.toThrow("different fork operation")
+    expect(f.grants).toHaveLength(grants)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
   })
 })
