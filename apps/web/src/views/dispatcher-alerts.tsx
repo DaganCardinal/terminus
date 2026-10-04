@@ -1,73 +1,112 @@
 import type { NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
-import { AlertTriangle, ArrowUpRight } from "lucide-react"
+import { ArrowUpRight, RotateCcw } from "lucide-react"
+import { lineColor } from "@/map/layout"
+import { api } from "@/state/api"
 import { describeIssues, namesFor } from "./describe"
 import { CheckRow } from "./detail-parts"
+import { DispatcherMessage, LineBadge } from "./dispatcher-message"
 
-/** User-facing projection of issues the Engineer raised to the Dispatcher,
- * plus anything else that puts the Dispatcher in its attention state. */
-export function DispatcherAlerts({
-  snapshot,
-  pending,
-  error,
-  retry,
-  openTrain,
-  showConflicts = true,
-}: {
-  showConflicts?: boolean
-  snapshot: NetworkSnapshot
-  pending: boolean
-  error: string | null
-  retry: (trainId: string) => Promise<void>
-  openTrain: (lineId: string) => void
-}) {
-  const name = namesFor(snapshot)
+type Command = (run: () => Promise<unknown>) => Promise<void>
+
+/** Trains whose Engineer flagged the Dispatcher, and Trains waiting in the
+ * review yard for the user. Each is something the Dispatcher tells the user. */
+export function attentionTrains(snapshot: NetworkSnapshot) {
   const blocked = snapshot.trains.filter(
     ({ train }) => train.state.status === "blocked"
   )
-  const exhausted = (view: (typeof blocked)[number]) =>
-    view.train.state.status === "blocked" &&
-    view.train.state.issues.some(
-      (issue) => issue.kind === "station_retries_exhausted"
-    )
-  const stopped = blocked.filter(exhausted)
-  const otherBlocked = blocked.filter((view) => !exhausted(view))
-  const conflicts = showConflicts
-    ? snapshot.conflicts.filter((c) => c.status === "open")
-    : []
-  if (!blocked.length && !conflicts.length) return null
+  const awaiting = snapshot.trains.filter(
+    ({ train }) =>
+      train.state.status === "held" &&
+      train.state.reasons.some((r) => r.kind === "awaiting_user_approval")
+  )
+  return { blocked, awaiting }
+}
+
+export function AttentionMessages({
+  snapshot,
+  pending,
+  command,
+  openTrain,
+}: {
+  snapshot: NetworkSnapshot
+  pending: boolean
+  command: Command
+  openTrain: (lineId: string) => void
+}) {
+  const name = namesFor(snapshot)
+  const { blocked, awaiting } = attentionTrains(snapshot)
+  const badge = (lineId: string) => {
+    const index = snapshot.lines.findIndex((line) => line.id === lineId)
+    const line = snapshot.lines[index]
+    return line ? (
+      <LineBadge color={lineColor(line, index)} number={index + 1} />
+    ) : null
+  }
+  const open = (
+    lineId: string,
+    label = "Open Train",
+    variant: "outline" | "ghost" = "outline"
+  ) => (
+    <Button size="sm" variant={variant} onClick={() => openTrain(lineId)}>
+      {label} <ArrowUpRight size={14} />
+    </Button>
+  )
   return (
-    <section className="dispatcher-alerts" aria-label="Dispatcher alerts">
-      <h3>
-        <AlertTriangle size={16} /> User attention needed
-      </h3>
-      <div className="dispatcher-alert-body" role="alert">
-        {stopped.length > 0 && (
-          <p>
-            The Engineer stopped automatic retries and flagged the Dispatcher.
-            These Stations need your intervention.
-          </p>
-        )}
-        {stopped.map(({ train }) => {
-          const station = snapshot.stations.find(
-            (s) =>
-              s.lineId === train.lineId &&
-              s.state.status === "blocked" &&
-              s.state.trainId === train.id
-          )
+    <>
+      {blocked.map(({ train }) => {
+        if (train.state.status !== "blocked") return null
+        const exhausted = train.state.issues.filter(
+          (issue) => issue.kind === "station_retries_exhausted"
+        )
+        const line = name(train.lineId)
+        if (!exhausted.length)
           return (
-            <div key={train.id} className="dispatcher-alert-item">
-              <h4>
-                {station?.name ?? name(train.id)} · {name(train.lineId)}
-              </h4>
-              {train.state.status === "blocked" &&
-                train.state.issues
-                  .filter((issue) => issue.kind === "station_retries_exhausted")
-                  .map((issue, index) => <p key={index}>{issue.detail}</p>)}
-              {station?.lastReview && (
-                <details>
-                  <summary>Latest Conductor feedback</summary>
-                  <p>{station.lastReview.feedback.summary}</p>
+            <DispatcherMessage
+              card
+              key={train.id}
+              tone="attention"
+              meta={<>{badge(train.lineId)} Train blocked</>}
+            >
+              <p>
+                <strong>{name(train.id)}</strong> has stopped and needs you.
+              </p>
+              <p className="dmsg-quote">{describeIssues(train.state.issues)}</p>
+              <div className="dmsg-actions">{open(train.lineId)}</div>
+            </DispatcherMessage>
+          )
+        const station = snapshot.stations.find(
+          (s) =>
+            s.lineId === train.lineId &&
+            s.state.status === "blocked" &&
+            s.state.trainId === train.id
+        )
+        return (
+          <DispatcherMessage
+            card
+            key={train.id}
+            tone="attention"
+            meta={
+              <>
+                {badge(train.lineId)} {line} · Revisions used up
+              </>
+            }
+          >
+            <p>
+              <strong>{station?.name ?? name(train.id)}</strong> used all its
+              automatic revisions, so the Engineer stopped the Train and flagged
+              me.
+            </p>
+            {exhausted.map((issue, index) => (
+              <p key={index} className="dmsg-quote">
+                {issue.detail}
+              </p>
+            ))}
+            {station?.lastReview && (
+              <details className="dmsg-details">
+                <summary>Latest Conductor feedback</summary>
+                <p>{station.lastReview.feedback.summary}</p>
+                {station.lastReview.feedback.findings.length > 0 && (
                   <ul>
                     {station.lastReview.feedback.findings.map(
                       (finding, index) => (
@@ -75,67 +114,45 @@ export function DispatcherAlerts({
                       )
                     )}
                   </ul>
-                  <CheckRow
-                    checks={station.lastReview.proposal.evidence.checks}
-                  />
-                </details>
-              )}
-              <p>
-                Review the feedback before retrying. A retry starts a fresh
-                workspace with a new retry allowance.
-              </p>
-              <div className="dispatcher-alert-actions">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={pending}
-                  onClick={() => void retry(train.id)}
-                >
-                  Retry Station after intervention
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => openTrain(train.lineId)}
-                >
-                  Open Train <ArrowUpRight size={14} />
-                </Button>
-              </div>
+                )}
+                <CheckRow
+                  checks={station.lastReview.proposal.evidence.checks}
+                />
+              </details>
+            )}
+            <p className="dmsg-hint">
+              A retry starts a fresh workspace with a new revision allowance.
+            </p>
+            <div className="dmsg-actions">
+              <Button
+                size="sm"
+                disabled={pending}
+                onClick={() => void command(() => api.clearTrain(train.id))}
+              >
+                <RotateCcw size={14} /> Retry Station
+              </Button>
+              {open(train.lineId, "Review in Train", "ghost")}
             </div>
-          )
-        })}
-        {otherBlocked.map(({ train }) => (
-          <div key={train.id} className="dispatcher-alert-item">
-            <h4>{name(train.id)} is blocked</h4>
-            {train.state.status === "blocked" && (
-              <p>{describeIssues(train.state.issues)}</p>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openTrain(train.lineId)}
-            >
-              Open Train <ArrowUpRight size={14} />
-            </Button>
+          </DispatcherMessage>
+        )
+      })}
+      {awaiting.map(({ train }) => (
+        <DispatcherMessage
+          card
+          key={train.id}
+          tone="review"
+          meta={<>{badge(train.lineId)} Waiting in the review yard</>}
+        >
+          <p>
+            <strong>{name(train.id)}</strong> finished its Stations and is
+            waiting in the review yard. Look over its Cars and approve unloading
+            when you&rsquo;re happy.
+          </p>
+          <div className="dmsg-actions">
+            {open(train.lineId, "Review Train")}
           </div>
-        ))}
-        {conflicts.map((conflict) => (
-          <div key={conflict.id} className="dispatcher-alert-item">
-            <h4>
-              Conflict between {conflict.trainIds.map(name).join(" and ")}
-            </h4>
-            <p>{conflict.description}</p>
-            {conflict.paths.length > 0 && (
-              <p className="dispatcher-alert-note">
-                Affects {conflict.paths.length}{" "}
-                {conflict.paths.length === 1 ? "file" : "files"}:{" "}
-                {conflict.paths.join(", ")}
-              </p>
-            )}
-          </div>
-        ))}
-        {error && <p className="dispatch-error">{error}</p>}
-      </div>
-    </section>
+        </DispatcherMessage>
+      ))}
+    </>
   )
 }

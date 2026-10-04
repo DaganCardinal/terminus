@@ -54,6 +54,12 @@ export function describeEvent(
   name: (id: string) => string
 ): string {
   switch (event.type) {
+    case "dispatcher.unload_mode_changed":
+      return `Unload selection updated for planned Line ${event.lineKey}`
+    case "train.unload_mode_changed":
+      return `${name(event.trainId)} set to ${event.mode === "auto" ? "auto-unload" : "human approval"}`
+    case "train.unload_approved":
+      return `${name(event.trainId)} approved for unloading at ${event.trainCommit}`
     case "technician.integration_failed":
       return `Technician candidate stopped during integration; inspect the evidence`
     case "technician.validated":
@@ -170,9 +176,11 @@ export function describeEvent(
 }
 
 function describeHold(reason: HoldReason, name: (id: string) => string) {
-  return reason.kind === "dependency"
-    ? `waiting on ${name(reason.stationId)}`
-    : `${reason.kind.replace("_", " ")}`
+  return reason.kind === "awaiting_user_approval"
+    ? "awaiting human approval in the review yard"
+    : reason.kind === "dependency"
+      ? `waiting on ${name(reason.stationId)}`
+      : `${reason.kind.replace("_", " ")}`
 }
 
 export function describeIssues(issues: Issue[]): string {

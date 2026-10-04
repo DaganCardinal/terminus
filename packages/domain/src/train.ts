@@ -143,7 +143,11 @@ export function holdTrain(
   }
   const { state } = train
   let resume: TrainResume
-  if (state.status === "ready") {
+  if (state.status === "held") {
+    if (JSON.stringify(state.reasons) === JSON.stringify(reasons))
+      return accept(train, [])
+    resume = state.resume
+  } else if (state.status === "ready") {
     resume = state
   } else if (
     state.status === "returning" &&

@@ -1,6 +1,13 @@
+import {
+  selectPlanUnloadMode,
+  updateTrainUnload,
+} from "../agents/unload-control"
 import { dispatchTechnician, approveTechnician } from "../agents/technician"
 import { technicianPorts } from "../agents/ports"
 import {
+  terminusPreviewRequestSchema,
+  setUnloadModeRequestSchema,
+  approveUnloadRequestSchema,
   createNetworkRequestSchema,
   layLineRequestSchema,
   placeHoldRequestSchema,
@@ -11,6 +18,7 @@ import {
 } from "@terminus/protocol"
 import type { z } from "zod"
 import { launchTrainPreview, PreviewError } from "../integrations/train-preview"
+import { launchTerminusPreview } from "../integrations/terminus-preview"
 import { layDemoLines } from "../agents/demo-network"
 import {
   clearTrain,
@@ -37,6 +45,65 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/preview" }),
+    async (request, env, { networkId }) => {
+      const { commit } = await parse(request, terminusPreviewRequestSchema)
+      const preview = await launchTerminusPreview(
+        request,
+        env,
+        networkId!,
+        commit
+      )
+      return Response.json(preview, {
+        headers: { "cache-control": "no-store" },
+      })
+    },
+  ],
+  [
+    "PUT",
+    new URLPattern({ pathname: "/api/trains/:trainId/unload-mode" }),
+    async (request, env, { trainId }) =>
+      json(
+        await updateTrainUnload(
+          dispatcherPorts(env),
+          trainId!,
+          await parse(request, setUnloadModeRequestSchema)
+        )
+      ),
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/trains/:trainId/approve-unload" }),
+    async (request, env, { trainId }) =>
+      json(
+        await updateTrainUnload(
+          dispatcherPorts(env),
+          trainId!,
+          await parse(request, approveUnloadRequestSchema)
+        )
+      ),
+  ],
+  [
+    "PUT",
+    new URLPattern({
+      pathname:
+        "/api/networks/:networkId/plans/:planId/lines/:lineKey/unload-mode",
+    }),
+    async (request, env, { networkId, planId, lineKey }) => {
+      const body = await parse(request, setUnloadModeRequestSchema)
+      return json(
+        await selectPlanUnloadMode(
+          dispatcherPorts(env),
+          networkId!,
+          planId!,
+          lineKey!,
+          body.mode
+        )
+      )
+    },
+  ],
   [
     "POST",
     new URLPattern({

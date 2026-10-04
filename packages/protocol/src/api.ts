@@ -10,6 +10,7 @@ import type {
   DispatchPlan,
 } from "@terminus/domain"
 import { z } from "zod"
+import { unloadModeSchema } from "./unload"
 import { domainEventSchema, holdSchema } from "./events"
 import { workManifestSchema } from "./manifest"
 import { validationCommandsSchema, type ValidationCommand } from "./execution"
@@ -39,6 +40,7 @@ export const stationPlanRequestSchema = z.object({
 })
 
 export const layLineRequestSchema = z.object({
+  unloadMode: unloadModeSchema.optional(),
   name: z.string().trim().min(1),
   stations: z.array(stationPlanRequestSchema).min(1),
 })
@@ -106,6 +108,7 @@ export interface NetworkSnapshot {
   holds: Hold[]
   conflicts: Conflict[]
   repairs?: import("@terminus/domain").TechnicianRepair[]
+  unloadPolicies?: import("@terminus/domain").TrainUnloadPolicy[]
   plans: DispatchPlan[]
   lastSeq: number
 }

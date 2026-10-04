@@ -14,6 +14,7 @@ export * from "./station"
 export * from "./station-removal"
 export * from "./terminus"
 export * from "./train"
+export * from "./unload-policy"
 export * from "./transition"
 
 export * from "./technician"

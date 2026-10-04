@@ -18,6 +18,23 @@ import type { ReviewFeedback } from "./station"
  */
 export type DomainEvent =
   | {
+      type: "train.unload_mode_changed"
+      trainId: TrainId
+      mode: import("./unload-policy").UnloadMode
+    }
+  | {
+      type: "train.unload_approved"
+      trainId: TrainId
+      trainCommit: CommitId
+      approvedAt: string
+    }
+  | {
+      type: "dispatcher.unload_mode_changed"
+      planId: string
+      lineKey: string
+      mode: import("./unload-policy").UnloadMode
+    }
+  | {
       type: "technician.integration_failed"
       repairId: string
       trainId: TrainId

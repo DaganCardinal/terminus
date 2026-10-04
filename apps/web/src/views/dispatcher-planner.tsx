@@ -1,290 +1,672 @@
-import { useRef, useState, type FormEvent } from "react"
-import { Route, Send, TrainFront } from "lucide-react"
-import type { DispatchPlan, NetworkSnapshot } from "@terminus/protocol"
+import { useRef, useState, type CSSProperties, type ReactNode } from "react"
+import {
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  GitCompareArrows,
+  LoaderCircle,
+  PencilLine,
+  RefreshCw,
+  TrainFront,
+} from "lucide-react"
+import type {
+  DispatchPlan,
+  NetworkSnapshot,
+  UnloadMode,
+} from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
+import { lineColor } from "@/map/layout"
 import { api } from "@/state/api"
-import { ManifestView, TechnicalDetails, manifestFacts } from "./detail-parts"
+import {
+  ManifestView,
+  Prose,
+  TechnicalDetails,
+  changeKinds,
+  manifestFacts,
+  shortCommit,
+} from "./detail-parts"
+import {
+  DispatcherMessage,
+  Typing,
+  UserMessage,
+  useNow,
+} from "./dispatcher-message"
 
-const statusLabels: Record<DispatchPlan["state"]["status"], string> = {
-  planning: "Preparing proposal",
-  ready: "Ready to review",
-  launching: "Laying Lines",
-  starting: "Starting Trains",
-  launched: "Launched",
-  failed: "Stopped",
-}
+type Command = (run: () => Promise<unknown>) => Promise<void>
+type Reviewed = Extract<DispatchPlan["state"], { proposal: unknown }>
+type PlannedLine = Reviewed["proposal"]["lines"][number]
 
-/** Goal → persisted proposal → explicit launch. */
-export function DispatcherPlanner({ snapshot }: { snapshot: NetworkSnapshot }) {
-  const [goal, setGoal] = useState("")
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const submission = useRef<{ goal: string; requestId: string } | null>(null)
-  const plans = [...snapshot.plans].reverse()
-  const plan = selectedId ? plans.find((p) => p.id === selectedId) : plans[0]
+const plural = (n: number, one: string, many = `${one}s`) =>
+  `${n} ${n === 1 ? one : many}`
 
-  async function command(run: () => Promise<unknown>) {
-    setPending(true)
-    setError(null)
-    try {
-      await run()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught))
-    } finally {
-      setPending(false)
-    }
-  }
-
-  function propose(event: FormEvent) {
-    event.preventDefault()
-    const trimmed = goal.trim()
-    if (!trimmed) return
-    if (!submission.current || submission.current.goal !== trimmed)
-      submission.current = { goal: trimmed, requestId: crypto.randomUUID() }
-    const request = submission.current
-    void command(async () => {
-      const created = await api.proposePlan(snapshot.network.id, request)
-      setSelectedId(created.id)
-      submission.current = null
-    })
-  }
-
+/** One request in the Dispatcher thread: the user's goal, then the
+ * Dispatcher's reply as it moves from drafting to a launched plan. */
+export function PlanExchange({
+  plan,
+  snapshot,
+  latest,
+  pending,
+  command,
+  refine,
+  propose,
+  openTrain,
+}: {
+  plan: DispatchPlan
+  snapshot: NetworkSnapshot
+  latest: boolean
+  pending: boolean
+  command: Command
+  refine: (goal: string) => void
+  propose: (goal: string) => void
+  openTrain: (lineId: string) => void
+}) {
+  const { state } = plan
+  const networkId = snapshot.network.id
+  const retry = () => command(() => api.retryPlan(networkId, plan.id))
   return (
-    <div className="dispatcher-layout">
-      <form onSubmit={propose} className="dispatcher-form">
-        <label htmlFor="dispatch-goal">What should we build?</label>
-        <p>
-          Describe a goal for this project. The Dispatcher will propose Lines
-          and Station manifests for you to review.
-        </p>
-        <textarea
-          id="dispatch-goal"
-          value={goal}
-          onChange={(event) => setGoal(event.target.value)}
-          maxLength={4000}
-          required
-          rows={4}
-          placeholder="Add an accessible footer and a light/dark theme toggle, with tests."
-          disabled={pending}
-        />
-        <Button type="submit" disabled={pending || !goal.trim()}>
-          <Send size={15} />
-          {pending ? "Submitting…" : "Propose a plan"}
-        </Button>
-        {error && (
-          <p className="dispatch-error" role="alert">
-            {error}
-          </p>
-        )}
-      </form>
-      <div className="dispatch-proposal">
-        {plans.length > 1 && (
-          <label className="dispatch-history">
-            Proposal history
-            <select
-              value={plan?.id ?? ""}
-              onChange={(event) => {
-                setSelectedId(event.target.value)
-                setError(null)
-              }}
+    <div className="exchange" data-plan={plan.id}>
+      <UserMessage text={plan.goal} at={plan.createdAt} />
+      {state.status === "planning" ? (
+        <Drafting plan={plan} pending={pending} retry={retry} />
+      ) : state.status === "failed" ? (
+        <DispatcherMessage tone="attention" meta="Plan stopped">
+          <p>I couldn&rsquo;t turn this into a plan.</p>
+          <p className="dmsg-error">{state.message}</p>
+          <div className="dmsg-actions">
+            <Button
+              size="sm"
+              disabled={pending}
+              onClick={() => propose(plan.goal)}
             >
-              {plans.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.goal.slice(0, 65)} · {statusLabels[item.state.status]}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {plan ? (
-          <PlanPreview
-            plan={plan}
-            currentCommit={snapshot.network.terminusCommit}
-            pending={pending}
-            launch={() =>
-              command(() => api.launchPlan(snapshot.network.id, plan.id))
-            }
-            retry={() =>
-              command(() => api.retryPlan(snapshot.network.id, plan.id))
-            }
-          />
-        ) : (
-          <div className="dispatch-placeholder">
-            <Route size={28} />
-            <h3>
-              {selectedId
-                ? "Waiting for the saved proposal…"
-                : "A goal becomes a railway plan"}
-            </h3>
-            <p>
-              Independent work can travel on concurrent Lines. Related steps
-              stay together so each Station receives the code accepted before
-              it.
-            </p>
+              <RefreshCw size={14} /> Try again
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => refine(plan.goal)}>
+              <PencilLine size={14} /> Edit goal
+            </Button>
           </div>
-        )}
-      </div>
+        </DispatcherMessage>
+      ) : (
+        <Proposal
+          plan={plan}
+          state={state}
+          snapshot={snapshot}
+          latest={latest}
+          pending={pending}
+          launch={() => command(() => api.launchPlan(networkId, plan.id))}
+          selectMode={(lineKey, mode) =>
+            command(() =>
+              api.selectPlanUnloadMode(networkId, plan.id, lineKey, mode)
+            )
+          }
+          retry={retry}
+          refine={refine}
+          propose={propose}
+          openTrain={openTrain}
+        />
+      )}
     </div>
   )
 }
 
-function PlanPreview({
+/** The Dispatcher is reading the project and writing manifests. Elapsed
+ * time is real; nothing here pretends to measure progress. */
+function Drafting({
   plan,
-  currentCommit,
   pending,
-  launch,
   retry,
 }: {
   plan: DispatchPlan
-  currentCommit: string
+  pending: boolean
+  retry: () => Promise<void>
+}) {
+  const now = useNow(1000)
+  const seconds = Math.max(
+    0,
+    Math.round((now - Date.parse(plan.createdAt)) / 1000)
+  )
+  const elapsed =
+    seconds < 60
+      ? `${seconds}s`
+      : `${Math.floor(seconds / 60)}m ${(seconds % 60).toString().padStart(2, "0")}s`
+  return (
+    <DispatcherMessage tone="working" meta="Drafting a plan">
+      <p className="dmsg-status" role="status">
+        <Typing />
+        <span>
+          Reading the project at <code>{shortCommit(plan.terminusCommit)}</code>{" "}
+          and drafting Lines and Station manifests
+        </span>
+      </p>
+      <p className="dmsg-hint">
+        <span className="tabular">{elapsed}</span> · The proposal is saved when
+        it&rsquo;s ready, so you can close this panel.
+      </p>
+      {seconds > 90 && (
+        <button
+          className="dmsg-link"
+          disabled={pending}
+          onClick={() => void retry()}
+        >
+          Taking too long? Recover planning
+        </button>
+      )}
+    </DispatcherMessage>
+  )
+}
+
+function Proposal({
+  plan,
+  state,
+  snapshot,
+  latest,
+  pending,
+  launch,
+  selectMode,
+  retry,
+  refine,
+  propose,
+  openTrain,
+}: {
+  plan: DispatchPlan
+  state: Reviewed
+  snapshot: NetworkSnapshot
+  latest: boolean
+  pending: boolean
+  launch: () => Promise<void>
+  selectMode: (lineKey: string, mode: UnloadMode) => Promise<void>
+  retry: () => Promise<void>
+  refine: (goal: string) => void
+  propose: (goal: string) => void
+  openTrain: (lineId: string) => void
+}) {
+  const { proposal, assessment } = state
+  const launched = state.status === "launched"
+  // Older and launched plans fold to a summary so the thread stays readable.
+  const [showPlan, setShowPlan] = useState(latest && !launched)
+  const lines = proposal.lines
+  const stations = lines.reduce((n, line) => n + line.stations.length, 0)
+  const lineIds = "lineIds" in state ? state.lineIds : []
+  const launchedLines = lineIds
+    .map((id) => snapshot.lines.find((line) => line.id === id))
+    .filter((line) => line !== undefined)
+  // Planned Lines are appended to the network, so they take the next colours.
+  const color = (index: number) => {
+    const line = launchedLines[index]
+    return line
+      ? lineColor(line, snapshot.lines.indexOf(line))
+      : lineColor(lines[index]!, snapshot.lines.length + index)
+  }
+  const number = (index: number) => {
+    const line = launchedLines[index]
+    return (
+      (line ? snapshot.lines.indexOf(line) : snapshot.lines.length + index) + 1
+    )
+  }
+  const stale =
+    state.status === "ready" &&
+    plan.terminusCommit !== snapshot.network.terminusCommit
+  const blocked = assessment.errors.length > 0
+  const shape = `${plural(lines.length, "Line")} · ${plural(stations, "Station")}`
+
+  const superseded = state.status === "ready" && !latest
+  const summary = launched
+    ? `Launched ${plural(lines.length, "Line")}.`
+    : superseded
+      ? `Proposed ${plural(lines.length, "Line")}; not launched.`
+      : null
+  const issues = assessment.errors.length + (stale ? 1 : 0)
+  const notes = useRef<HTMLDivElement>(null)
+
+  return (
+    <DispatcherMessage
+      tone={
+        launched || superseded
+          ? "idle"
+          : state.status === "ready"
+            ? issues
+              ? "attention"
+              : "review"
+            : "working"
+      }
+      meta={
+        launched
+          ? "Launched"
+          : superseded
+            ? "Earlier proposal"
+            : state.status === "ready"
+              ? issues
+                ? "Plan needs changes"
+                : "Ready for your review"
+              : "Launching"
+      }
+    >
+      {summary && !showPlan ? (
+        <>
+          <p>
+            {summary}{" "}
+            <button className="dmsg-link" onClick={() => setShowPlan(true)}>
+              Show plan
+            </button>
+          </p>
+          {launchedLines.length > 0 && (
+            <LineChips
+              lines={launchedLines.map((line, index) => ({
+                id: line.id,
+                name: line.name,
+                color: color(index),
+              }))}
+              openTrain={openTrain}
+            />
+          )}
+        </>
+      ) : (
+        <>
+          <Prose text={proposal.summary} />
+          <section
+            className="plan-card"
+            aria-label={`Plan for: ${plan.goal.slice(0, 80)}`}
+          >
+            <header className="plan-card-head">
+              <span>{shape}</span>
+              <span>
+                from Terminus <code>{shortCommit(plan.terminusCommit)}</code>
+              </span>
+              {plan.model === "fake" && (
+                <span className="dmsg-tag">Offline simulation</span>
+              )}
+              {summary && (
+                <button
+                  className="dmsg-link"
+                  onClick={() => setShowPlan(false)}
+                >
+                  Hide
+                </button>
+              )}
+            </header>
+            {issues > 0 && (
+              <div ref={notes} className="plan-blockers">
+                {stale && (
+                  <PlanNote
+                    tone="attention"
+                    title="Terminus has moved since I drafted this"
+                    action={
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={pending}
+                        onClick={() => propose(plan.goal)}
+                      >
+                        <RefreshCw size={14} /> Re-plan on latest
+                      </Button>
+                    }
+                  >
+                    <p>
+                      The plan was written against{" "}
+                      <code>{shortCommit(plan.terminusCommit)}</code>; Terminus
+                      is now at{" "}
+                      <code>
+                        {shortCommit(snapshot.network.terminusCommit)}
+                      </code>
+                      .
+                    </p>
+                  </PlanNote>
+                )}
+                {blocked && (
+                  <PlanNote
+                    tone="attention"
+                    title="This plan can’t launch as drafted"
+                  >
+                    <ul>
+                      {assessment.errors.map((issue) => (
+                        <li key={issue}>{issue}</li>
+                      ))}
+                    </ul>
+                    <p>Refine the goal and I&rsquo;ll draft a fresh plan.</p>
+                  </PlanNote>
+                )}
+              </div>
+            )}
+            <div className="plan-lines">
+              {lines.map((line, index) => (
+                <PlannedLineView
+                  key={line.key}
+                  line={line}
+                  color={color(index)}
+                  number={number(index)}
+                  editable={state.status === "ready"}
+                  pending={pending}
+                  selectMode={(mode) => void selectMode(line.key, mode)}
+                />
+              ))}
+            </div>
+            {assessment.collisions.length > 0 && (
+              <PlanNote tone="held" title="Lines that may collide">
+                <ul>
+                  {assessment.collisions.map((collision, index) => (
+                    <li key={index}>
+                      <strong>{collision.line}</strong> and{" "}
+                      <strong>{collision.otherLine}</strong> both touch{" "}
+                      {[...collision.paths, ...collision.contracts].map(
+                        (path, i) => (
+                          <span key={path}>
+                            {i > 0 && ", "}
+                            <code>{path}</code>
+                          </span>
+                        )
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <p>
+                  This is a forecast. Actual changes and integration checks
+                  decide whether a conflict exists.
+                </p>
+              </PlanNote>
+            )}
+            <PlanFooter
+              state={state}
+              lines={lines.length}
+              issues={issues}
+              showIssues={() =>
+                notes.current?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                })
+              }
+              pending={pending}
+              launch={launch}
+              retry={retry}
+              refine={() => refine(plan.goal)}
+              launched={launchedLines.map((line, index) => ({
+                id: line.id,
+                name: line.name,
+                color: color(index),
+              }))}
+              openTrain={openTrain}
+            />
+          </section>
+        </>
+      )}
+    </DispatcherMessage>
+  )
+}
+
+/** A planned Line drawn the way the map draws it: a rail of Stations that
+ * ends at Terminus, where its unloading choice applies. */
+function PlannedLineView({
+  line,
+  color,
+  number,
+  editable,
+  pending,
+  selectMode,
+}: {
+  line: PlannedLine
+  color: string
+  number: number
+  editable: boolean
+  pending: boolean
+  selectMode: (mode: UnloadMode) => void
+}) {
+  const [open, setOpen] = useState<string | null>(null)
+  const recommendation = line.unloadRecommendation
+  const mode = line.unloadMode ?? recommendation?.mode ?? "auto"
+  const name = (key: string) =>
+    line.stations.find((s) => s.key === key)?.name ?? key
+  return (
+    <div className="pline" style={{ "--line": color } as CSSProperties}>
+      <header className="pline-head">
+        <i className="pline-badge">{number.toString().padStart(2, "0")}</i>
+        <strong>{line.name}</strong>
+        <span>{plural(line.stations.length, "Station")}</span>
+      </header>
+      <ol className="pline-stops">
+        {line.stations.map((station) => {
+          const expanded = open === station.key
+          const kind = station.manifest.repositoryChange?.kind
+          return (
+            <li key={station.key} className="pstop">
+              <button
+                className="pstop-row"
+                aria-expanded={expanded}
+                onClick={() => setOpen(expanded ? null : station.key)}
+              >
+                <span className="pstop-dot" aria-hidden="true" />
+                <span className="pstop-name">{station.name}</span>
+                {kind && (
+                  <span className="pstop-kind">{changeKinds[kind]}</span>
+                )}
+                {expanded ? (
+                  <ChevronDown size={14} aria-hidden="true" />
+                ) : (
+                  <ChevronRight size={14} aria-hidden="true" />
+                )}
+              </button>
+              {expanded && (
+                <div className="pstop-manifest">
+                  <p className="pstop-goal">{station.manifest.goal}</p>
+                  <ManifestView manifest={station.manifest} name={name} />
+                  <TechnicalDetails
+                    facts={manifestFacts(station.manifest)}
+                    summary="Files, contracts and evidence"
+                  />
+                </div>
+              )}
+            </li>
+          )
+        })}
+        <li className="pstop pstop-terminus">
+          <div className="pstop-row">
+            <span className="pstop-hub" aria-hidden="true">
+              T
+            </span>
+            <span className="pstop-name">Terminus</span>
+            {!editable && (
+              <span className="pstop-kind">
+                {mode === "auto" ? "Auto-unload" : "Human approval"}
+              </span>
+            )}
+          </div>
+          {editable && (
+            <div className="pstop-unload">
+              <UnloadToggle
+                mode={mode}
+                disabled={pending}
+                onChange={selectMode}
+                line={line.name}
+              />
+              {recommendation && (
+                <p className="pstop-reason">
+                  {recommendation.mode === mode
+                    ? "Why I suggest this: "
+                    : `I suggested ${recommendation.mode === "auto" ? "auto-unload" : "human approval"}: `}
+                  {recommendation.reason}
+                </p>
+              )}
+            </div>
+          )}
+        </li>
+      </ol>
+    </div>
+  )
+}
+
+const modes: { mode: UnloadMode; label: string; hint: string }[] = [
+  {
+    mode: "auto",
+    label: "Auto-unload",
+    hint: "Integrate as soon as Terminus checks pass",
+  },
+  {
+    mode: "human_approval",
+    label: "Human approval",
+    hint: "Park the finished Train in the review yard until you approve",
+  },
+]
+
+function UnloadToggle({
+  mode,
+  disabled,
+  onChange,
+  line,
+}: {
+  mode: UnloadMode
+  disabled: boolean
+  onChange: (mode: UnloadMode) => void
+  line: string
+}) {
+  return (
+    <div
+      className="unload-toggle"
+      role="group"
+      aria-label={`Unloading at Terminus for ${line}`}
+    >
+      {modes.map((option) => (
+        <button
+          key={option.mode}
+          aria-pressed={mode === option.mode}
+          disabled={disabled}
+          title={option.hint}
+          onClick={() => mode !== option.mode && onChange(option.mode)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function PlanNote({
+  tone,
+  title,
+  action,
+  children,
+}: {
+  tone: "attention" | "held"
+  title: string
+  action?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <div className={`plan-note plan-note-${tone}`} role="note">
+      <h4>
+        {tone === "attention" ? (
+          <CircleAlert size={14} />
+        ) : (
+          <GitCompareArrows size={14} />
+        )}
+        {title}
+      </h4>
+      {children}
+      {action && <div className="plan-note-action">{action}</div>}
+    </div>
+  )
+}
+
+type LineChip = { id: string; name: string; color: string }
+
+function LineChips({
+  lines,
+  openTrain,
+}: {
+  lines: LineChip[]
+  openTrain: (lineId: string) => void
+}) {
+  return (
+    <ul className="line-chips">
+      {lines.map((line) => (
+        <li key={line.id}>
+          <button
+            onClick={() => openTrain(line.id)}
+            style={{ "--line": line.color } as CSSProperties}
+            title={`Open the ${line.name} Train`}
+          >
+            <i aria-hidden="true" />
+            {line.name}
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function PlanFooter({
+  state,
+  lines,
+  issues,
+  showIssues,
+  pending,
+  launch,
+  retry,
+  refine,
+  launched,
+  openTrain,
+}: {
+  state: Reviewed
+  lines: number
+  issues: number
+  showIssues: () => void
   pending: boolean
   launch: () => Promise<void>
   retry: () => Promise<void>
+  refine: () => void
+  launched: LineChip[]
+  openTrain: (lineId: string) => void
 }) {
-  const { state } = plan
-  const stale =
-    state.status === "ready" && plan.terminusCommit !== currentCommit
-  return (
-    <>
-      <div className="dispatch-status" role="status">
-        <strong>{statusLabels[state.status]}</strong>
-        {plan.model === "fake" && <span>Offline simulation</span>}
-      </div>
-      <p className="dispatch-goal">{plan.goal}</p>
-      {state.status === "planning" && (
-        <>
-          <p>
-            The Dispatcher is reading project context and preparing manifests.
-            You can leave this page and return to the saved proposal.
-          </p>
+  if (state.status === "ready")
+    return (
+      <footer className="plan-footer plan-footer-sticky">
+        <div className="plan-footer-actions">
           <Button
-            variant="outline"
-            size="sm"
-            disabled={pending}
-            onClick={() => void retry()}
+            disabled={pending || issues > 0}
+            onClick={() => void launch()}
           >
-            Recover interrupted planning
+            <TrainFront size={16} />
+            {pending
+              ? "Launching…"
+              : `Launch ${lines === 1 ? "Line" : `${lines} Lines`}`}
           </Button>
-        </>
-      )}
-      {state.status === "failed" && (
-        <p className="dispatch-error" role="alert">
-          {state.message}
+          <Button variant="ghost" onClick={refine}>
+            <PencilLine size={14} /> Refine goal
+          </Button>
+        </div>
+        {issues > 0 ? (
+          <p className="plan-footer-issues">
+            {plural(issues, "issue")} to resolve before launch ·{" "}
+            <button className="dmsg-link" onClick={showIssues}>
+              Show
+            </button>
+          </p>
+        ) : (
+          <p>Nothing runs until you launch. Trains depart straight away.</p>
+        )}
+      </footer>
+    )
+  if (state.status === "launching" || state.status === "starting")
+    return (
+      <footer className="plan-footer">
+        <p className="dmsg-status" role="status">
+          <LoaderCircle size={14} className="spin" />
+          {state.status === "launching"
+            ? "Laying Lines on the map…"
+            : "Starting Trains at their depots…"}
         </p>
-      )}
-      {"proposal" in state && (
-        <>
-          <div className="dispatch-reasoning">
-            <h3>The Dispatcher&rsquo;s plan</h3>
-            <p>{state.proposal.summary}</p>
-          </div>
-          <div className="dispatch-lines">
-            {state.proposal.lines.map((line) => (
-              <details key={line.key} open>
-                <summary>
-                  {line.name}
-                  <span>
-                    {line.stations.length}{" "}
-                    {line.stations.length === 1 ? "Station" : "Stations"}
-                  </span>
-                </summary>
-                <ol>
-                  {line.stations.map((station) => (
-                    <li key={station.key}>
-                      <details>
-                        <summary>{station.name}</summary>
-                        <p>{station.manifest.goal}</p>
-                        <ManifestView
-                          manifest={station.manifest}
-                          name={(key) =>
-                            line.stations.find((s) => s.key === key)?.name ??
-                            key
-                          }
-                        />
-                        <TechnicalDetails
-                          facts={manifestFacts(station.manifest)}
-                          summary="Files, contracts and evidence"
-                        />
-                      </details>
-                    </li>
-                  ))}
-                </ol>
-              </details>
-            ))}
-          </div>
-          {state.assessment.errors.length > 0 && (
-            <div className="dispatch-error" role="alert">
-              <strong>Plan needs revision</strong>
-              <ul>
-                {state.assessment.errors.map((issue) => (
-                  <li key={issue}>{issue}</li>
-                ))}
-              </ul>
-              <p>Request a new proposal with a more focused goal.</p>
-            </div>
-          )}
-          {state.assessment.collisions.length > 0 && (
-            <div className="dispatch-forecasts">
-              <strong>Possible collisions</strong>
-              <p>
-                Review these overlaps before launching. Actual changes and
-                integration checks determine whether a conflict exists.
-              </p>
-              <ul>
-                {state.assessment.collisions.map((collision, index) => (
-                  <li key={index}>
-                    <strong>{collision.line}</strong> and{" "}
-                    <strong>{collision.otherLine}</strong> both touch{" "}
-                    {[...collision.paths, ...collision.contracts].join(", ")}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {stale && (
-            <p className="dispatch-error" role="alert">
-              Terminus changed since this proposal. Request a fresh plan before
-              launching.
-            </p>
-          )}
-          {state.status === "ready" && (
-            <Button
-              disabled={pending || stale || state.assessment.errors.length > 0}
-              onClick={() => void launch()}
-            >
-              <TrainFront size={16} />
-              Launch{" "}
-              {state.proposal.lines.length === 1
-                ? "Line"
-                : `${state.proposal.lines.length} Lines`}
-            </Button>
-          )}
-          {(state.status === "launching" || state.status === "starting") && (
-            <>
-              <p>
-                Launching continues in the background. The map will show the
-                saved Lines and Trains.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pending}
-                onClick={() => void retry()}
-              >
-                Recover interrupted launch
-              </Button>
-            </>
-          )}
-          {state.status === "launched" && (
-            <p>
-              {state.trainIds.length}{" "}
-              {state.trainIds.length === 1 ? "Train" : "Trains"} launched.
-              Follow their work on the map.
-            </p>
-          )}
-        </>
-      )}
-    </>
+        <button
+          className="dmsg-link"
+          disabled={pending}
+          onClick={() => void retry()}
+        >
+          Stuck? Recover the launch
+        </button>
+      </footer>
+    )
+  return (
+    <footer className="plan-footer">
+      <p>
+        {plural("trainIds" in state ? state.trainIds.length : 0, "Train")}{" "}
+        departed. Follow them on the map, or open one:
+      </p>
+      <LineChips lines={launched} openTrain={openTrain} />
+    </footer>
   )
 }

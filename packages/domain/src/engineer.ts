@@ -5,6 +5,7 @@ import type { StationId } from "./ids"
 import type { Issue } from "./issue"
 import type { Station, StationStatus } from "./station"
 import type { Train } from "./train"
+import { hasUnloadPermission, type TrainUnloadPolicy } from "./unload-policy"
 import { hasConcreteRepositoryChange } from "./manifest"
 
 /**
@@ -41,6 +42,7 @@ export function evaluateStationRetry(
 }
 
 export interface GateContext {
+  unloadPolicy?: TrainUnloadPolicy | null
   /** Every active hold in the network. Only those applying to the Train count. */
   holds: Hold[]
   /** Every known conflict. Only open ones involving the Train count. */
@@ -90,7 +92,13 @@ export function evaluateTerminusEntry(
   train: Train,
   context: GateContext
 ): GateDecision {
-  return decide(blockingIssues(train, context), holdReasons(train, context))
+  const reasons = holdReasons(train, context)
+  if (!hasUnloadPermission(train, context.unloadPolicy))
+    reasons.push({
+      kind: "awaiting_user_approval",
+      trainCommit: train.headCommit,
+    })
+  return decide(blockingIssues(train, context), reasons)
 }
 
 /**

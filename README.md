@@ -19,7 +19,7 @@ In another terminal:
 npm run dev:web
 ```
 
-Open the URL Vite prints. Create a network and choose **Lay demo Lines**. The two Trains run independently; the Red Line has two ordered Stations, and the Blue Line has one. Fake reviews request one revision by default. Accepted work appears as Cars with events in the status page. Returning Trains integrate one at a time and finish at `unloaded`.
+Open the URL Vite prints. Create a network and choose **Lay demo Lines**. The two Trains run independently; the Red Line has two ordered Stations, and the Blue Line has one. Fake reviews request one revision by default. Accepted work appears as Cars with events in the status page. Returning Trains integrate one at a time and finish at `unloaded`. Red unloads automatically; Blue waits in the review yard until you approve its accepted changes.
 
 ```sh
 npm run typecheck
@@ -72,6 +72,14 @@ npm run deploy
 
 Deployment is a maintainer action. The frontend currently runs separately through Vite; this Worker deployment does not publish the React app. The API currently has no authentication, so use a controlled development environment.
 
+## Previewing Terminus
+
+Select the **Terminus** hub on the map to open its details. The panel shows the current canonical commit and the Trains that have unloaded, with links to their accepted Cars, diffs, and reviews. Choose **Preview Terminus** to build and open the combined application at that exact commit. Before any Train unloads, this previews the imported baseline.
+
+The preview uses the same read-only Sandbox infrastructure and Vite runner as Train previews, with the same local/deployed hostname setup and five-minute inactivity timeout described below. It does not advance Trains, reserve integration clearance, change canonical state, or call a model. Fake mode has no application to preview and reports this explicitly. **Refresh preview** prepares an expired preview again.
+
+`POST /api/networks/NETWORK_ID/preview` accepts `{ "commit": "DISPLAYED_TERMINUS_COMMIT" }` and returns `{ "networkId", "commit", "url" }`. A stale displayed commit returns 409 before allocating a Sandbox. A canonical promotion during preparation does not change the preview: it stays pinned to the requested commit. The panel follows the network snapshot; a newer canonical commit requires its own preview, and a late response for an older commit is never shown as the current application.
+
 ## Previewing a Train
 
 Select a Train on the map and choose **Preview Train** in its drawer. A new browser tab opens while Terminus prepares a separate Cloudflare Sandbox. The preview checks out the Train's exact saved `headCommit`, runs `npm ci` and `npm run build`, and serves the demo app with Vite preview on port 8080. It shows accepted Cars; work still in a Station workspace appears only after Conductor acceptance. The runner is currently hard-coded for the Vite-based `terminus-demo-app`.
@@ -123,6 +131,32 @@ curl -X POST http://localhost:8787/api/networks/NETWORK_ID/plans/PLAN_ID/retry
 ```
 
 The first live check for this feature is a fresh goal on the demo baseline: inspect the generated manifests and forecasts, confirm no Trains exist before launch, refresh the page, then launch two independent Lines and verify both integrate with retained Car provenance. Test an invalid/stale proposal is refused as well. The earlier maintainer live test verified integration of the fixed demo, not this new Dispatcher model path.
+
+## Automatic unloading and human approval
+
+Each planned Line includes the Dispatcher's unloading recommendation and a short reason. Select **Auto-unload** or **Human approval** before launching; the persisted selection overrides the recommendation. You can also change a running Train's selection in its Line details until Terminus clearance is reserved.
+
+Human approval affects only the final Terminus gate. Station execution, Conductor review, and Car attachment proceed normally. Once its Stations finish, the Train becomes `held` with an `awaiting_user_approval` reason and appears in the **Review yard**. Siding still means abandoned. Waiting for review never reserves integration clearance or prevents other eligible Trains from unloading.
+
+Open the Train to review each accepted Car's diff, manifest, independent checks, and Conductor findings. In live mode, the existing preview button opens the Train's accepted application state. **Approve unloading** records permission for that exact Train commit; a changed Train requires fresh approval. This is approval of the Train, not a preview of its eventual merge with current Terminus. The integration Workflow still prepares a merge commit and independently validates it against current Terminus. Approval never overrides conflicts, failed checks, or other holds.
+
+The fixed demo starts **Red Line** with auto-unload and **Blue Line** with human approval. For the competition demo, launch both, let Red unload while Blue waits in the review yard, refresh to demonstrate persistence, review Blue, then approve unloading. Offline mode follows the same lifecycle with simulated evidence; application preview requires live execution. Model recommendations and live Artifacts/Sandbox integration of this gate still need a maintainer live check.
+
+```sh
+# Change a saved proposal's selection before launch.
+curl -X PUT http://localhost:8787/api/networks/NETWORK_ID/plans/PLAN_ID/lines/LINE_KEY/unload-mode \
+  -H 'content-type: application/json' -d '{"mode":"human_approval"}'
+
+# Change a running Train's policy before clearance.
+curl -X PUT http://localhost:8787/api/trains/TRAIN_ID/unload-mode \
+  -H 'content-type: application/json' -d '{"mode":"human_approval"}'
+
+# Approve only the accepted commit shown in the reviewed snapshot.
+curl -X POST http://localhost:8787/api/trains/TRAIN_ID/approve-unload \
+  -H 'content-type: application/json' -d '{"trainCommit":"REVIEWED_TRAIN_COMMIT"}'
+```
+
+Migration `0008_unload_policy.sql` stores Dispatcher-owned permissions separately from Train state and closes approval/clearance races in D1. Existing Trains retain auto-unload. Local dev commands apply the migration; apply it remotely before deploying through the maintainer workflow.
 
 ## Execution and evidence
 

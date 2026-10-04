@@ -84,6 +84,8 @@ const STATUS_LEADING = 17
 export function NetworkMap({
   snapshot,
   selection,
+  terminusSelected,
+  onSelectTerminus,
   onSelect,
   onClear,
   insets,
@@ -91,6 +93,8 @@ export function NetworkMap({
 }: {
   snapshot: NetworkSnapshot
   selection: MapSelection | null
+  terminusSelected: boolean
+  onSelectTerminus: () => void
   onSelect: (selection: MapSelection) => void
   onClear: () => void
   insets: MapInsets
@@ -112,6 +116,11 @@ export function NetworkMap({
   const view = manual ?? fitView(size, { width, height }, insets)
   const sided = snapshot.trains.filter(
     ({ train }) => train.state.status === "siding"
+  )
+  const awaitingReview = snapshot.trains.filter(
+    ({ train }) =>
+      train.state.status === "held" &&
+      train.state.reasons.some((r) => r.kind === "awaiting_user_approval")
   )
   const capsule = hubHalfHeight > HUB_RADIUS
   const trainRef = useTrainMotion(
@@ -528,7 +537,14 @@ export function NetworkMap({
                   })}
                   {views.map((view) => {
                     const status = view.train.state.status
-                    if (status === "unloaded" || status === "siding")
+                    if (
+                      status === "unloaded" ||
+                      status === "siding" ||
+                      (view.train.state.status === "held" &&
+                        view.train.state.reasons.some(
+                          (reason) => reason.kind === "awaiting_user_approval"
+                        ))
+                    )
                       return null
                     const label = words(status)
                     // Icon, label and status dot sized to the label's length.
@@ -597,7 +613,26 @@ export function NetworkMap({
                 </g>
               )
             })}
-            <g className="terminus-hub">
+            <g
+              className="terminus-hub"
+              role="button"
+              tabIndex={0}
+              aria-label="View Terminus"
+              aria-pressed={terminusSelected}
+              onClick={(event) => {
+                event.stopPropagation()
+                onSelectTerminus()
+              }}
+              onKeyDown={(event) => keyboard(event, onSelectTerminus)}
+            >
+              <rect
+                className="hub-focus-ring"
+                x={hub.x - HUB_RADIUS - 9}
+                y={hub.y - hubHalfHeight - 9}
+                width={HUB_RADIUS * 2 + 18}
+                height={hubHalfHeight * 2 + 18}
+                rx={HUB_RADIUS + 9}
+              />
               {capsule ? (
                 <>
                   <rect
@@ -661,6 +696,20 @@ export function NetworkMap({
         </svg>
       </div>
       <div className="map-overlay map-overlay-bottom-left">
+        {awaitingReview.length > 0 && (
+          <div className="siding review-yard" aria-label="Review yard">
+            <span className="eyebrow">Review yard</span>
+            {awaitingReview.map(({ train }) => (
+              <button
+                key={train.id}
+                onClick={() => onSelect({ lineId: train.lineId })}
+              >
+                {snapshot.lines.find((line) => line.id === train.lineId)?.name}{" "}
+                · awaiting approval
+              </button>
+            ))}
+          </div>
+        )}
         {sided.length > 0 && (
           <div className="siding">
             <span className="eyebrow">Siding</span>

@@ -702,7 +702,7 @@ The Engineer notifies the Dispatcher when the Train is ready to enter Terminus, 
 
 Integration uses **merge commits, never rebase or squash**. Cars reference their accepted commits, and rewriting history would break their provenance. Conflicts are never force-merged. They become an issue raised to the Dispatcher, which may dispatch a Technician.
 
-Only the final accepted Train state is promoted into the canonical project. The Train is then `unloaded`. If integration is abandoned instead, the Train moves to the `siding`.
+Only the final accepted Train state is promoted into the canonical project. The Train is then `unloaded`. A Train selected for human approval waits beforehand in the review yard as `held` with an `awaiting_user_approval` reason. Approval covers its exact accepted commit, and integration still validates the merge against current Terminus. A review wait does not reserve integration clearance. If integration is abandoned instead, the Train moves to the `siding`.
 
 Terminus is therefore the sole canonical writer even though many isolated repositories may be active across the network.
 

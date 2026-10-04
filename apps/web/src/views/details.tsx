@@ -34,6 +34,7 @@ import {
   shortCommit,
 } from "./detail-parts"
 import { describeEvent, describeLocation, namesFor } from "./describe"
+import { UnloadModeSelect } from "./unload-mode-select"
 import { TrainPreviewButton } from "./train-preview-button"
 
 type Run = (command: () => Promise<unknown>) => Promise<void>
@@ -427,6 +428,19 @@ export function TrainDetails({
       )}
       {views.map(({ train, signal }) => {
         const cars = snapshot.cars.filter((c) => c.trainId === train.id)
+        const policy = snapshot.unloadPolicies?.find(
+          (p) => p.trainId === train.id
+        )
+        const approved = policy?.approval?.trainCommit === train.headCommit
+        const atEntry =
+          (train.state.status === "returning" &&
+            train.state.phase === "awaiting_clearance") ||
+          (train.state.status === "held" &&
+            train.state.resume.status === "returning")
+        const closed =
+          ["unloaded", "siding"].includes(train.state.status) ||
+          (train.state.status === "returning" &&
+            train.state.phase === "integrating")
         return (
           <div key={train.id} className="detail-train">
             <div className="detail-status">
@@ -437,6 +451,50 @@ export function TrainDetails({
             </div>
             <p className="detail-lead">{describeLocation(train.state, name)}</p>
             <TrainPreviewButton trainId={train.id} commit={train.headCommit} />
+            <UnloadModeSelect
+              mode={policy?.mode ?? "auto"}
+              recommendation={policy?.recommendation}
+              disabled={pending || closed}
+              onChange={(mode) =>
+                void run(() => api.setTrainUnloadMode(train.id, mode))
+              }
+            />
+            {policy?.mode === "human_approval" && atEntry && (
+              <Callout
+                tone="review"
+                icon={<ClipboardCheck size={15} />}
+                title={
+                  approved
+                    ? "Approved for unloading"
+                    : "Review before unloading"
+                }
+              >
+                <p>
+                  {approved
+                    ? "Waiting for the remaining Terminus gates to clear."
+                    : "Review the accepted Cars and preview the Train before approving unloading."}
+                </p>
+                <p>
+                  Approval covers Train commit{" "}
+                  <code>{shortCommit(train.headCommit)}</code>. The merge with
+                  current Terminus will be validated afterward.
+                </p>
+                {!approved && (
+                  <Button
+                    className="callout-action"
+                    size="sm"
+                    disabled={pending}
+                    onClick={() =>
+                      void run(() =>
+                        api.approveTrainUnload(train.id, train.headCommit)
+                      )
+                    }
+                  >
+                    Approve unloading
+                  </Button>
+                )}
+              </Callout>
+            )}
             {train.state.status === "blocked" && (
               <Callout
                 tone="attention"
@@ -463,10 +521,12 @@ export function TrainDetails({
               >
                 <List
                   items={train.state.reasons.map((r) =>
-                    r.kind === "dependency"
-                      ? `Waiting for ${name(r.stationId)}`
-                      : snapshot.holds.find((h) => h.id === r.holdId)?.note ||
-                        r.kind.replaceAll("_", " ")
+                    r.kind === "awaiting_user_approval"
+                      ? "In the review yard, awaiting human approval"
+                      : r.kind === "dependency"
+                        ? `Waiting for ${name(r.stationId)}`
+                        : snapshot.holds.find((h) => h.id === r.holdId)?.note ||
+                          r.kind.replaceAll("_", " ")
                   )}
                 />
               </Callout>
@@ -483,7 +543,29 @@ export function TrainDetails({
                   <summary>
                     {car.position}. {name(car.stationId)}
                   </summary>
-                  <p>{car.review.summary}</p>
+                  <p>{car.manifest.goal}</p>
+                  <p>
+                    <strong>Conductor review:</strong> {car.review.summary}
+                  </p>
+                  <List items={car.review.findings} />
+                  <CheckRow checks={car.evidence.checks} />
+                  <ManifestView manifest={car.manifest} name={name} />
+                  <TechnicalDetails
+                    facts={[
+                      { label: "Accepted commit", value: car.acceptedCommit },
+                      { label: "Changed files", value: car.changedPaths },
+                    ]}
+                  />
+                  <details>
+                    <summary>Accepted changes</summary>
+                    {car.diff !== undefined ? (
+                      <pre className="unload-diff">
+                        {car.diff || "No file changes."}
+                      </pre>
+                    ) : (
+                      <p>A diff was not recorded for this Car.</p>
+                    )}
+                  </details>
                 </details>
               ))}
             </Section>

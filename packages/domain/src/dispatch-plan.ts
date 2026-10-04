@@ -4,6 +4,10 @@ import { accept, reject, type Transition } from "./transition"
 export interface PlannedLine {
   key: string
   name: string
+  /** Absent only on legacy persisted proposals. */
+  unloadRecommendation?: import("./unload-policy").UnloadRecommendation
+  /** User selection; recommendation remains inspectable. */
+  unloadMode?: import("./unload-policy").UnloadMode
   stations: { key: string; name: string; manifest: WorkManifest }[]
 }
 
@@ -261,5 +265,33 @@ export function hasNewCollisionForecasts(
       !reviewed.collisions.some(
         (previous) => JSON.stringify(previous) === JSON.stringify(collision)
       )
+  )
+}
+
+/** Changes only the selected policy on a reviewable proposal. */
+export function selectPlannedUnloadMode(
+  plan: DispatchPlan,
+  lineKey: string,
+  mode: import("./unload-policy").UnloadMode
+): Transition<DispatchPlan> {
+  if (plan.state.status !== "ready")
+    return reject("invalid_state", "Unload selections require a ready proposal")
+  const line = plan.state.proposal.lines.find((line) => line.key === lineKey)
+  if (!line) return reject("invalid_input", "Unknown planned Line")
+  if (line.unloadMode === mode) return accept(plan, [])
+  return accept(
+    {
+      ...plan,
+      state: {
+        ...plan.state,
+        proposal: {
+          ...plan.state.proposal,
+          lines: plan.state.proposal.lines.map((line) =>
+            line.key === lineKey ? { ...line, unloadMode: mode } : line
+          ),
+        },
+      },
+    },
+    [{ type: "dispatcher.unload_mode_changed", planId: plan.id, lineKey, mode }]
   )
 }

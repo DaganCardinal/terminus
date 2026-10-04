@@ -43,6 +43,10 @@ function proposal(): DispatchProposal {
       {
         key: "red",
         name: "Red Line",
+        unloadRecommendation: {
+          mode: "auto",
+          reason: "Bounded component change.",
+        },
         stations: [
           { key: "a", name: "A", manifest: work("src/a.ts") },
           {
@@ -55,6 +59,10 @@ function proposal(): DispatchProposal {
       {
         key: "blue",
         name: "Blue Line",
+        unloadRecommendation: {
+          mode: "auto",
+          reason: "Bounded component change.",
+        },
         stations: [{ key: "b", name: "B", manifest: work("src/b.ts") }],
       },
     ],

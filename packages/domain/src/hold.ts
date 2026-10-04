@@ -18,6 +18,7 @@ export interface Hold {
 }
 
 export type HoldReason =
+  | { kind: "awaiting_user_approval"; trainCommit: string }
   | { kind: "user_hold"; holdId: HoldId }
   | { kind: "sequencing"; holdId: HoldId }
   | { kind: "dependency"; stationId: StationId }

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { unloadModeSchema } from "./unload"
 
 export const issueSchema = z.object({
   kind: z.enum([
@@ -16,6 +17,10 @@ export const issueSchema = z.object({
 })
 
 export const holdReasonSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("awaiting_user_approval"),
+    trainCommit: z.string(),
+  }),
   z.object({ kind: z.literal("user_hold"), holdId: z.string() }),
   z.object({ kind: z.literal("sequencing"), holdId: z.string() }),
   z.object({ kind: z.literal("dependency"), stationId: z.string() }),
@@ -49,6 +54,17 @@ const stationEvent = <T extends string>(type: T) =>
 const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
+  trainEvent("train.unload_mode_changed").extend({ mode: unloadModeSchema }),
+  trainEvent("train.unload_approved").extend({
+    trainCommit: z.string(),
+    approvedAt: z.iso.datetime(),
+  }),
+  z.object({
+    type: z.literal("dispatcher.unload_mode_changed"),
+    planId: z.string(),
+    lineKey: z.string(),
+    mode: unloadModeSchema,
+  }),
   trainEvent("technician.integration_failed").extend({ repairId: z.string() }),
   trainEvent("technician.validated").extend({ repairId: z.string() }),
   trainEvent("technician.dispatched").extend({ repairId: z.string() }),

@@ -436,6 +436,10 @@ The Manifest should constrain the outcome without pretending the Dispatcher has 
 
 ## Final Planning Check
 
+For each Line, include unloadRecommendation: { mode: "auto" | "human_approval", reason: string }.
+Recommend auto only for bounded, low-risk changes that automated checks can establish.
+Recommend human_approval for visual or behavioral changes needing a preview, authentication, data migrations, broad shared contracts, or uncertainty. Explain the concrete reason in one short sentence. This is a recommendation the user may override; it never bypasses Conductor review or integration checks.
+
 Before returning the proposal, verify that:
 
 - every Station delivers a real repository change;

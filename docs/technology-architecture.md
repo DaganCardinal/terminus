@@ -1047,3 +1047,7 @@ If it **connects those systems to the outside world**, it belongs in the Worker.
 If it **draws something or handles user interaction**, it belongs in React.
 
 Maintaining these boundaries is more important than the exact folder structure or individual library choices.
+
+### Unloading policy and approval ownership
+
+Dispatcher-owned `train_unload_policies` records in D1 hold each Train's effective unload mode, the planning recommendation, and any approval of an exact accepted Train commit. They are permissions, not a second copy of Train lifecycle state. The Train Workflow evaluates the domain gate and alone records a `held` approval wait or its release. The review yard is the UI projection of that reason; Siding remains terminal abandonment. An unapproved Train is excluded from clearance eligibility. D1 atomically checks permission when reserving clearance and closes policy edits while that reservation is active. Integration still validates and promotes an exact merge candidate against current Terminus; approval does not authorize a changed Train or bypass checks.

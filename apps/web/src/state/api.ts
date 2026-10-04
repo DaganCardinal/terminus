@@ -3,6 +3,9 @@ import {
   eventsResponseSchema,
   dispatchPlanSchema,
   trainPreviewSchema,
+  terminusPreviewSchema,
+  trainUnloadPolicySchema,
+  type UnloadMode,
   type CreateDispatchPlanRequest,
   type ApiError,
   type EventsResponse,
@@ -36,6 +39,32 @@ export const api = {
     dispatchPlanSchema.parse(
       await request(`/networks/${networkId}/plans/${planId}/launch`, {
         method: "POST",
+      })
+    ),
+  selectPlanUnloadMode: async (
+    networkId: string,
+    planId: string,
+    lineKey: string,
+    mode: UnloadMode
+  ) =>
+    dispatchPlanSchema.parse(
+      await request(
+        `/networks/${networkId}/plans/${planId}/lines/${lineKey}/unload-mode`,
+        { method: "PUT", body: { mode } }
+      )
+    ),
+  setTrainUnloadMode: async (trainId: string, mode: UnloadMode) =>
+    trainUnloadPolicySchema.parse(
+      await request(`/trains/${trainId}/unload-mode`, {
+        method: "PUT",
+        body: { mode },
+      })
+    ),
+  approveTrainUnload: async (trainId: string, trainCommit: string) =>
+    trainUnloadPolicySchema.parse(
+      await request(`/trains/${trainId}/approve-unload`, {
+        method: "POST",
+        body: { trainCommit },
       })
     ),
   retryPlan: (networkId: string, planId: string) =>
@@ -74,6 +103,13 @@ export const api = {
   previewTrain: async (trainId: string) =>
     trainPreviewSchema.parse(
       await request(`/trains/${trainId}/preview`, { method: "POST" })
+    ),
+  previewTerminus: async (networkId: string, commit: string) =>
+    terminusPreviewSchema.parse(
+      await request(`/networks/${networkId}/preview`, {
+        method: "POST",
+        body: { commit },
+      })
     ),
 }
 

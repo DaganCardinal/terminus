@@ -234,6 +234,7 @@ async function returnToTerminus(
     const repair = await ports.store.approvedRepair(train.value.id)
     const network = await ports.store.network(train.networkId)
     const context = {
+      unloadPolicy: (await ports.store.unloadPolicy(train.value.id))?.value,
       holds: await ports.store.holds(train.networkId),
       conflicts: conflictsForRepair(
         await ports.store.conflicts(train.networkId),
@@ -451,6 +452,7 @@ async function reconsiderHold(
     const repair = await ports.store.approvedRepair(train.id)
     const network = await ports.store.network(loaded.networkId)
     decision = evaluateTerminusEntry(train, {
+      unloadPolicy: (await ports.store.unloadPolicy(train.id))?.value,
       holds: await ports.store.holds(loaded.networkId),
       conflicts: conflictsForRepair(
         await ports.store.conflicts(loaded.networkId),
@@ -474,7 +476,16 @@ async function reconsiderHold(
       : { kind: "clear" }
   }
 
-  if (decision.kind === "hold") return { kind: "await_wake" }
+  if (decision.kind === "hold") {
+    const refreshed = applied(holdTrain(train, decision.reasons))
+    if (refreshed.events.length)
+      await ports.store.commit(
+        loaded.networkId,
+        [trainWrite(loaded, refreshed.value)],
+        refreshed.events
+      )
+    return { kind: "await_wake" }
+  }
   if (decision.kind === "block") return stopAtGate(ports, loaded, decision)
   const released = applied(releaseTrain(train))
   await ports.store.commit(

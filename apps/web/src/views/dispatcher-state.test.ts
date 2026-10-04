@@ -11,7 +11,9 @@ type Parts = {
 /** Only the fields the indicator reads; the rest of the snapshot is irrelevant. */
 const snapshot = ({ trains = [], conflicts = [], plans = [] }: Parts) =>
   ({
-    trains: trains.map((status) => ({ train: { state: { status } } })),
+    trains: trains.map((status) => ({
+      train: { state: { status, reasons: [] } },
+    })),
     conflicts: conflicts.map((status) => ({ status })),
     plans: plans.map((status) => ({ state: { status } })),
   }) as unknown as NetworkSnapshot
@@ -35,6 +37,24 @@ describe("dispatcher indicator", () => {
   it("waits on the user when the latest plan is ready", () => {
     expect(tone({ plans: ["ready"] })).toBe("review")
     expect(tone({ plans: ["ready", "launched"] })).toBe("idle")
+  })
+
+  it("shows a persistent review indication while a Train awaits unloading approval", () => {
+    const current = snapshot({})
+    current.trains = [
+      {
+        train: {
+          state: {
+            status: "held",
+            reasons: [{ kind: "awaiting_user_approval", trainCommit: "head" }],
+          },
+        },
+      },
+    ] as unknown as NetworkSnapshot["trains"]
+    expect(dispatcherIndicator(current)).toEqual({
+      tone: "review",
+      label: "1 Train awaits approval",
+    })
   })
 
   it("needs attention for blocked Trains, open conflicts and a stopped plan", () => {

@@ -185,7 +185,7 @@ describe("the API with real Workflows", () => {
       events.filter((e) => e.event.type === "dispatcher.plan_launched")
     ).toHaveLength(1)
   }, 20_000)
-  it("runs the demo network until both Trains unload", async () => {
+  it("unloads one demo Train automatically and waits for explicit approval of the other", async () => {
     const network = await createNetwork()
     expect(
       (await post(`/networks/${network.id}/plans`, { goal: "Goal" })).status
@@ -212,12 +212,52 @@ describe("the API with real Workflows", () => {
     expect((await post(`/networks/${network.id}/demo`)).status).toBe(204)
 
     await waitUntil(async () => {
-      const { trains } = await snapshot(network.id)
+      const current = await snapshot(network.id)
       return (
-        trains.length === 2 &&
-        trains.every(({ train }) => train.state.status === "unloaded")
+        current.trains.length === 2 &&
+        current.trains.some(({ train }) => train.state.status === "unloaded") &&
+        current.trains.some(({ train }) => train.state.status === "held")
       )
     })
+    const waiting = await snapshot(network.id)
+    const review = waiting.trains.find(
+      ({ train }) => train.state.status === "held"
+    )!.train
+    expect(
+      waiting.unloadPolicies?.find((p) => p.trainId === review.id)?.mode
+    ).toBe("human_approval")
+    expect(
+      (await (
+        await api(`/networks/${network.id}/integrations`)
+      ).json()) as unknown[]
+    ).toHaveLength(1)
+    expect(
+      (
+        await post(`/trains/${review.id}/approve-unload`, {
+          trainCommit: "stale",
+        })
+      ).status
+    ).toBe(409)
+    expect(
+      (
+        await post(`/trains/${review.id}/approve-unload`, {
+          trainCommit: review.headCommit,
+          mode: "auto",
+        })
+      ).status
+    ).toBe(400)
+    expect(
+      (
+        await post(`/trains/${review.id}/approve-unload`, {
+          trainCommit: review.headCommit,
+        })
+      ).status
+    ).toBe(200)
+    await waitUntil(async () =>
+      (await snapshot(network.id)).trains.every(
+        ({ train }) => train.state.status === "unloaded"
+      )
+    )
 
     const final = await snapshot(network.id)
     const attempts = integrationAttemptSchema
@@ -249,7 +289,10 @@ describe("the API with real Workflows", () => {
     expect(lastSeq).toBe(final.lastSeq)
     const types = events.map((envelope) => envelope.event.type)
     expect(types.filter((type) => type === "train.departed")).toHaveLength(3)
-    expect(types).not.toContain("train.held")
+    expect(types).toContain("train.held")
+    expect(
+      types.filter((type) => type === "train.unload_approved")
+    ).toHaveLength(1)
     expect(types.filter((type) => type === "terminus.promoted")).toHaveLength(2)
     expect(types.filter((type) => type === "train.unloaded")).toHaveLength(2)
 
@@ -284,6 +327,10 @@ describe("API validation", () => {
   })
 
   it("returns 404 for unknown networks and routes", async () => {
+    expect(
+      (await post("/networks/missing/preview", { commit: "a".repeat(40) }))
+        .status
+    ).toBe(404)
     expect((await post("/trains/missing/preview")).status).toBe(404)
     expect((await api("/networks/missing")).status).toBe(404)
     expect((await api("/networks/missing/integrations")).status).toBe(404)
@@ -312,5 +359,30 @@ describe("API validation", () => {
     expect(await response.json()).toMatchObject({
       error: expect.stringContaining("fake mode"),
     })
+  })
+
+  it("validates Terminus preview requests, refuses stale commits, and reports fake mode without changing the network", async () => {
+    const network = await createNetwork()
+    const before = await snapshot(network.id)
+    for (const body of [
+      {},
+      { commit: "" },
+      { commit: network.terminusCommit, repoId: "another-repo" },
+    ])
+      expect((await post(`/networks/${network.id}/preview`, body)).status).toBe(
+        400
+      )
+    const stale = await post(`/networks/${network.id}/preview`, {
+      commit: "a".repeat(40),
+    })
+    expect(stale.status).toBe(409)
+    const simulated = await post(`/networks/${network.id}/preview`, {
+      commit: network.terminusCommit,
+    })
+    expect(simulated.status).toBe(503)
+    expect(await simulated.json()).toMatchObject({
+      error: expect.stringContaining("fake mode"),
+    })
+    expect(await snapshot(network.id)).toEqual(before)
   })
 })

@@ -4,7 +4,7 @@ Guidance for coding agents working on the Terminus codebase.
 
 Terminus is an orchestration platform that coordinates many coding agents working on one shared codebase. It uses a railway network as its coordination model, and it runs on Cloudflare with **Cloudflare Artifacts** as its Git layer.
 
-> **Project status:** the domain core, D1 persistence and event log, Train, Station, and Terminus integration Workflows, Worker API, and React/SVG railway map are implemented. Real Artifacts/Git and Sandbox/OpenCode Station execution, independent validation, and model Conductor review are available alongside an offline fake environment. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Focused model-driven Dispatcher planning (goal → persisted proposal → explicit launch) is implemented and needs live verification. Technician reconciliation of failed Terminus merges (isolated candidate → independent validation → Conductor review → explicit approval → integration) is implemented and needs live verification. Model-assisted Engineer decisions remain future work. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
+> **Project status:** the domain core, D1 persistence and event log, Train, Station, and Terminus integration Workflows, Worker API, and React/SVG railway map are implemented. Real Artifacts/Git and Sandbox/OpenCode Station execution, independent validation, and model Conductor review are available alongside an offline fake environment. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Focused model-driven Dispatcher planning (goal → persisted proposal → explicit launch) is implemented and needs live verification. Technician reconciliation of failed Terminus merges (isolated candidate → independent validation → Conductor review → explicit approval → integration) is implemented and needs live verification. Per-Line unload recommendations, user selections, and commit-bound human unloading approval are implemented and verified in the offline demo; the new gate needs live verification. Model-assisted Engineer decisions remain future work. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
 
 ## Project context
 
@@ -57,6 +57,7 @@ Use these terms precisely. They are not aliases for Git concepts.
 | **Train** | The evolving integration snapshot for a Line. It is not a branch. Its repository is forked from Terminus when the Train is created, and it accumulates accepted work in order. Each Train owns its own state. |
 | **Car** | One accepted unit of work on a Train. It is not a commit. A Car is a D1 domain record with provenance (manifest, agent config, source and accepted commits, diff, evidence, review) that references the Train repository. It has no repository of its own. |
 | **Depot** | The far end of a Line, where its Train is created. |
+| **Review yard** | A map area for completed Trains held for human unloading approval. They remain resumable and do not reserve Terminus clearance. |
 | **Siding** | A separate map area where abandoned Trains are parked. They stay inspectable but no longer run. |
 | **Signal** | The map's view of an Engineer's current gate decision (green or red). It is never stored as separate state. |
 
@@ -227,6 +228,7 @@ Each kind of state has exactly one owner. Never create a second authoritative co
 ### Integration, provenance, and security
 
 - **Applying accepted Station work to a Train is always a fast-forward.** The Artifacts binding has no merge, so the push goes over the Git protocol from orchestration code, never from the Station Agent. If the Train has moved since the Station was forked, re-review the work. Never force it.
+- Unload policy and commit-bound human approvals are Dispatcher-owned D1 metadata, separate from Train state. The Engineer enforces human approval only at the final Terminus gate; the Train Workflow records the approval hold. Policy freezes once integration clearance is reserved. Approval never overrides other hard gates.
 - Only the final integration process writes to Terminus. Before promotion, check how far Terminus has moved since the Train was created and run project-wide validation.
 - **Terminus integration uses merge commits. Never rebase or squash,** because Cars reference accepted commit IDs. Never hide unresolved conflicts behind automatic merges. A conflict becomes an issue raised to the Dispatcher.
 - Declared intent helps with planning, but actual changes decide. Compare manifests against real diffs and evidence, and surface anything out of scope.

@@ -117,6 +117,11 @@ export class FakeDispatchPlanner implements DispatchPlanner {
         {
           key: "goal",
           name: "Goal Line",
+          unloadRecommendation: {
+            mode: "auto",
+            reason:
+              "Offline simulation of a bounded change; review the selection before launch.",
+          },
           stations: [
             {
               key: "implement",

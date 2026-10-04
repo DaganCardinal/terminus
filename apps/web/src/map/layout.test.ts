@@ -211,6 +211,35 @@ describe("network map projection", () => {
       )
     ).toBeGreaterThan(route.stationDistances.at(-1)!)
   })
+  it("projects approval holds into the review yard while other holds remain on track", () => {
+    const route = layoutNetwork([line("a")]).routes[0]!
+    const resume = {
+      status: "returning" as const,
+      phase: "awaiting_clearance" as const,
+    }
+    expect(
+      trainDistance(
+        motion({
+          status: "held",
+          resume,
+          reasons: [{ kind: "awaiting_user_approval", trainCommit: "head" }],
+        }),
+        route,
+        T0
+      )
+    ).toBeNull()
+    expect(
+      trainDistance(
+        motion({
+          status: "held",
+          resume,
+          reasons: [{ kind: "user_hold", holdId: "h" }],
+        }),
+        route,
+        T0
+      )
+    ).toBeGreaterThan(route.stationDistances.at(-1)!)
+  })
   it("joins every change of direction with a curve, never a hard corner", () => {
     for (const count of [1, 3, 6, 8, 13, 24]) {
       const { routes } = layoutNetwork(

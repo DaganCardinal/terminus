@@ -29,6 +29,16 @@ export function dispatcherIndicator(
       tone: "attention",
       label: conflicts === 1 ? "Open conflict" : `${conflicts} open conflicts`,
     }
+  const awaitingReview = snapshot.trains.filter(
+    ({ train }) =>
+      train.state.status === "held" &&
+      train.state.reasons.some((r) => r.kind === "awaiting_user_approval")
+  ).length
+  if (awaitingReview)
+    return {
+      tone: "review",
+      label: `${awaitingReview} ${awaitingReview === 1 ? "Train awaits" : "Trains await"} approval`,
+    }
   if (latest?.state.status === "failed")
     return { tone: "attention", label: "Plan stopped" }
   if (latest?.state.status === "ready")

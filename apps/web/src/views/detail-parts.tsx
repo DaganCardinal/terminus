@@ -117,7 +117,7 @@ function inline(text: string): ReactNode[] {
     )
 }
 
-const changeKinds: Record<
+export const changeKinds: Record<
   NonNullable<Manifest["repositoryChange"]>["kind"],
   string
 > = {

@@ -17,5 +17,5 @@ export async function checkoutPreview(
   await git(workspace, ["checkout", "--detach", commit], "/workspace/preview")
   const head = await git(workspace, ["rev-parse", "HEAD"], "/workspace/preview")
   if (head.trim() !== commit)
-    throw new Error("Preview checkout did not match the Train commit")
+    throw new Error("Preview checkout did not match the requested commit")
 }

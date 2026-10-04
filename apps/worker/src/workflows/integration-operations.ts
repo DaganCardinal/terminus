@@ -160,6 +160,7 @@ export async function promoteIntegration(
   )
     throw new Error("Repair approval changed before promotion")
   const gate = evaluateTerminusEntry(train.value, {
+    unloadPolicy: (await ports.store.unloadPolicy(train.value.id))?.value,
     holds: await ports.store.holds(input.networkId),
     conflicts: conflictsForRepair(
       await ports.store.conflicts(input.networkId),

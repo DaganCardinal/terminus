@@ -104,6 +104,7 @@ describe("model Dispatcher", () => {
     expect([
       ...new Set(result.error.issues.map((issue) => issue.path.join("."))),
     ]).toEqual([
+      "lines.0.unloadRecommendation",
       "lines.0.stations.0.manifest.repositoryChange",
       "lines.0.stations.0.manifest.expectedAreas.1",
       "lines.0.stations.0.manifest.avoidAreas.6",
@@ -111,6 +112,12 @@ describe("model Dispatcher", () => {
     const corrected = JSON.parse(
       JSON.stringify(liveDispatcherProposal)
     ) as typeof liveDispatcherProposal
+    Object.assign(corrected.lines[0]!, {
+      unloadRecommendation: {
+        mode: "human_approval",
+        reason: "Preview the visual theme change.",
+      },
+    })
     const work = corrected.lines[0]!.stations[0]!.manifest
     Object.assign(work, {
       repositoryChange: {

@@ -15,6 +15,7 @@ import type {
   TrainState,
   DispatchPlan,
   TechnicianRepair,
+  TrainUnloadPolicy,
 } from "@terminus/domain"
 import {
   signalFor,
@@ -24,6 +25,7 @@ import {
 } from "@terminus/domain"
 import {
   technicianRepairSchema,
+  trainUnloadPolicySchema,
   conductorVerdictSchema,
   type ConductorVerdict,
   stationRunResultSchema,
@@ -60,6 +62,7 @@ export interface Loaded<T> {
 
 /** A row write. `version` is the version read, or null to insert. */
 export type Write =
+  | { kind: "unload_policy"; policy: TrainUnloadPolicy; version: number | null }
   | {
       kind: "technician_repair"
       repair: TechnicianRepair
@@ -120,6 +123,29 @@ export class NetworkStore {
 
   constructor(db: D1Database) {
     this.#db = db
+  }
+
+  async unloadPolicy(
+    trainId: string
+  ): Promise<Loaded<TrainUnloadPolicy> | null> {
+    const row = await this.#db
+      .prepare(
+        "SELECT record, version, network_id FROM train_unload_policies WHERE id = ?"
+      )
+      .bind(trainId)
+      .first<VersionedRow>()
+    return row
+      ? {
+          ...loaded<TrainUnloadPolicy>(row),
+          value: trainUnloadPolicySchema.parse(JSON.parse(row.record)),
+        }
+      : null
+  }
+
+  async unloadPolicies(networkId: string): Promise<TrainUnloadPolicy[]> {
+    return (
+      await this.#records<TrainUnloadPolicy>("train_unload_policies", networkId)
+    ).map((policy) => trainUnloadPolicySchema.parse(policy))
   }
 
   async repair(id: string): Promise<Loaded<TechnicianRepair> | null> {
@@ -266,30 +292,35 @@ export class NetworkStore {
     input: IntegrationInput
   ): Promise<IntegrationAttempt | null> {
     const validated = integrationInputSchema.parse(input)
-    await this.#db.batch([
-      this.#db
-        .prepare(
-          `INSERT INTO integration_attempts (id, network_id, train_id, status, input, created_at)
+    try {
+      await this.#db.batch([
+        this.#db
+          .prepare(
+            `INSERT INTO integration_attempts (id, network_id, train_id, status, input, created_at)
         SELECT ?, ?, ?, 'cleared', ?, ? WHERE NOT EXISTS
         (SELECT 1 FROM integration_attempts WHERE network_id = ? AND status IN ('cleared', 'prepared'))
         AND EXISTS (SELECT 1 FROM networks WHERE id = ? AND terminus_commit = ?)`
-        )
-        .bind(
-          input.id,
-          input.networkId,
-          input.trainId,
-          JSON.stringify(validated),
-          new Date().toISOString(),
-          input.networkId,
-          input.networkId,
-          input.terminusCommit
-        ),
-      this.#integrationEvent(input, {
-        type: "terminus.clearance_granted",
-        trainId: input.trainId,
-        integrationId: input.id,
-      }),
-    ])
+          )
+          .bind(
+            input.id,
+            input.networkId,
+            input.trainId,
+            JSON.stringify(validated),
+            new Date().toISOString(),
+            input.networkId,
+            input.networkId,
+            input.terminusCommit
+          ),
+        this.#integrationEvent(input, {
+          type: "terminus.clearance_granted",
+          trainId: input.trainId,
+          integrationId: input.id,
+        }),
+      ])
+    } catch (error) {
+      if (String(error).includes("unload_permission_required")) return null
+      throw error
+    }
     return this.integration(input.id)
   }
 
@@ -777,6 +808,7 @@ export class NetworkStore {
       seq,
       plans,
       repairs,
+      unloadPolicies,
     ] = await this.#db.batch([
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
       select("lines"),
@@ -801,6 +833,7 @@ export class NetworkStore {
         .bind(networkId),
       select("dispatch_plans"),
       select("technician_repairs"),
+      select("train_unload_policies"),
     ])
     const network = networks!.results[0] as NetworkRow | undefined
     if (!network) return null
@@ -836,6 +869,9 @@ export class NetworkStore {
       repairs: records<TechnicianRepair>(repairs).map((repair) =>
         technicianRepairSchema.parse(repair)
       ),
+      unloadPolicies: records<TrainUnloadPolicy>(unloadPolicies).map((policy) =>
+        trainUnloadPolicySchema.parse(policy)
+      ),
       lastSeq: (seq!.results[0] as { seq: number | null }).seq ?? 0,
     }
   }
@@ -855,6 +891,21 @@ export class NetworkStore {
   ): D1PreparedStatement {
     const db = this.#db
     switch (write.kind) {
+      case "unload_policy": {
+        const { policy, version } = write
+        const record = JSON.stringify(trainUnloadPolicySchema.parse(policy))
+        return version === null
+          ? db
+              .prepare(
+                "INSERT INTO train_unload_policies (id, network_id, record, version) VALUES (?, ?, ?, 0)"
+              )
+              .bind(policy.trainId, networkId, record)
+          : db
+              .prepare(
+                "UPDATE train_unload_policies SET record = ?, version = ? WHERE id = ?"
+              )
+              .bind(record, version + 1, policy.trainId)
+      }
       case "technician_repair": {
         const { repair, version } = write
         const record = JSON.stringify(technicianRepairSchema.parse(repair))

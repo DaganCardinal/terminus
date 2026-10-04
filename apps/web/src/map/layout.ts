@@ -40,7 +40,7 @@ const colors = [
   "#55762a",
   "#407e92",
 ]
-export function lineColor(line: Line, index: number): string {
+export function lineColor(line: Pick<Line, "name">, index: number): string {
   const named: Record<string, string> = {
     red: colors[0]!,
     blue: colors[1]!,
@@ -390,6 +390,11 @@ function restingDistance(state: TrainState, route: RouteLayout): number | null {
     case "siding":
       return null
     case "held":
+      if (
+        state.reasons.some((reason) => reason.kind === "awaiting_user_approval")
+      )
+        return null
+      return restingDistance(state.resume, route)
     case "blocked":
       return restingDistance(state.resume, route)
     case "ready":

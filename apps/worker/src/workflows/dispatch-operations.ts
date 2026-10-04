@@ -137,7 +137,19 @@ export async function layDispatchLines(
         station,
         version: null,
       })),
-      { kind: "train", train: train.value, version: null }
+      { kind: "train", train: train.value, version: null },
+      {
+        kind: "unload_policy",
+        policy: {
+          trainId,
+          mode:
+            planned.unloadMode ?? planned.unloadRecommendation?.mode ?? "auto",
+          ...(planned.unloadRecommendation
+            ? { recommendation: planned.unloadRecommendation }
+            : {}),
+        },
+        version: null,
+      }
     )
     events.push(...created.events, ...train.events)
     lineIds.push(lineId)

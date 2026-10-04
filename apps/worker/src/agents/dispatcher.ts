@@ -185,6 +185,11 @@ export async function layLine(
       version: null,
     })),
     { kind: "train", train: train.value, version: null },
+    {
+      kind: "unload_policy",
+      policy: { trainId, mode: request.unloadMode ?? "auto" },
+      version: null,
+    },
   ]
   try {
     await ports.store.commit(networkId, writes, [
@@ -338,11 +343,13 @@ export async function requestTerminusClearance(
           terminusCommit: network.terminusCommit,
         })
     ) ?? null
+  const policies = await ports.store.unloadPolicies(network.id)
   const eligible = trains.filter(
     ({ value }) =>
       value.state.status === "returning" &&
       value.state.phase === "awaiting_clearance" &&
       evaluateTerminusEntry(value, {
+        unloadPolicy: policies.find((policy) => policy.trainId === value.id),
         holds,
         conflicts: conflictsForRepair(conflicts, repairFor(value), {
           trainCommit: value.headCommit,

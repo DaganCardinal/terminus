@@ -12,6 +12,10 @@ const proposal = {
     {
       key: "red",
       name: "Red",
+      unloadRecommendation: {
+        mode: "auto",
+        reason: "Bounded component change.",
+      },
       stations: [
         {
           key: "footer",
@@ -74,6 +78,7 @@ describe("planning boundaries", () => {
       lines: [
         {
           ...p.lines[0]!,
+          unloadRecommendation: undefined,
           stations: [
             {
               ...p.lines[0]!.stations[0]!,

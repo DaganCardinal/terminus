@@ -47,7 +47,7 @@ export class ExecutionSandbox extends DurableObject<Env> {
     }>("trainPreview")
     if (saved && this.container().running) {
       if (saved.commit !== input.commit || saved.remote !== input.remote)
-        throw new Error("Preview belongs to a different Train snapshot")
+        throw new Error("Preview belongs to a different repository snapshot")
       try {
         await this.waitForPreview()
         return { token: previewTokenSchema.parse(saved.token) }
@@ -138,7 +138,7 @@ export class ExecutionSandbox extends DurableObject<Env> {
       return new Response("Not found", { status: 404 })
     if (!this.container().running)
       return new Response(
-        "This preview has expired. Use Preview Train to start it again.",
+        "This preview has expired. Open the network and prepare the preview again.",
         { status: 410 }
       )
     const url = new URL(request.url)
@@ -154,7 +154,7 @@ export class ExecutionSandbox extends DurableObject<Env> {
       return new Response(response.body, { status: response.status, headers })
     } catch {
       return new Response(
-        "The preview stopped responding. Use Preview Train to start it again.",
+        "The preview stopped responding. Open the network and prepare the preview again.",
         { status: 502 }
       )
     }

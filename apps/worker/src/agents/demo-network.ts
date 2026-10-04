@@ -45,6 +45,7 @@ const redLine: LayLineRequest = {
 }
 
 const blueLine: LayLineRequest = {
+  unloadMode: "human_approval",
   name: "Blue Line",
   stations: [
     {

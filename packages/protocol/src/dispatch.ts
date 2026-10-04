@@ -5,6 +5,8 @@ import {
   workManifestSchema,
 } from "./manifest"
 
+import { unloadRecommendationSchema, unloadModeSchema } from "./unload"
+
 const text = z.string().trim().min(1).max(2000)
 const key = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/)
 const area = z
@@ -55,6 +57,7 @@ export const dispatchProposalSchema = z
           .object({
             key,
             name: z.string().trim().min(1).max(120),
+            unloadRecommendation: unloadRecommendationSchema,
             stations: z
               .array(
                 z
@@ -115,6 +118,8 @@ const storedProposal = z
     lines: z
       .array(
         dispatchProposalSchema.shape.lines.element.extend({
+          unloadRecommendation: unloadRecommendationSchema.optional(),
+          unloadMode: unloadModeSchema.optional(),
           stations: z.array(storedStation).min(1).max(6),
         })
       )
