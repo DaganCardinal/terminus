@@ -74,13 +74,13 @@ export const dispatchProposalSchema = z
           .strict()
       )
       .min(1)
-      .max(4),
+      .max(8),
   })
   .strict()
   .refine(
     (proposal) =>
-      proposal.lines.reduce((n, l) => n + l.stations.length, 0) <= 12,
-    "Plan at most twelve Stations"
+      proposal.lines.reduce((n, l) => n + l.stations.length, 0) <= 24,
+    "Plan at most twenty-four Stations"
   )
 
 export const createDispatchPlanRequestSchema = z
@@ -124,12 +124,12 @@ const storedProposal = z
         })
       )
       .min(1)
-      .max(4),
+      .max(8),
   })
   .refine(
     (proposal) =>
-      proposal.lines.reduce((n, line) => n + line.stations.length, 0) <= 12,
-    "Plan at most twelve Stations"
+      proposal.lines.reduce((n, line) => n + line.stations.length, 0) <= 24,
+    "Plan at most twenty-four Stations"
   )
 const reviewed = { proposal: storedProposal, assessment }
 export const dispatchPlanSchema = z.object({

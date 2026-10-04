@@ -114,9 +114,9 @@ Prefer the smallest network that expresses the real dependency structure.
 
 Use at most:
 
-- **4 Lines**
+- **8 Lines**
 - **6 Stations per Line**
-- **12 Stations total**
+- **24 Stations total**
 
 These are maximums, not targets. The schema requires at least one Line and at least one Station on each Line. Combine closely related sequential work when necessary; never split a dependent chain across Lines to satisfy a limit.
 

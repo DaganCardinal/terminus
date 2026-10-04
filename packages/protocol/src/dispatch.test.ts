@@ -177,10 +177,47 @@ describe("planning boundaries", () => {
         expect(pattern.test(path)).toBe(false)
     }
   })
-  it("caps plan size and rejects missing review criteria or evidence", () => {
-    const p = JSON.parse(JSON.stringify(proposal)) as typeof proposal
-    p.lines = Array.from({ length: 5 }, () => p.lines[0]!)
-    expect(dispatchProposalSchema.safeParse(p).success).toBe(false)
+  it.each([
+    { counts: [3, 3, 3, 3, 3, 3, 3, 3], valid: true },
+    { counts: [6, 6, 6, 6], valid: true },
+    { counts: [1, 1, 1, 1, 1, 1, 1, 1, 1], valid: false },
+    { counts: [4, 3, 3, 3, 3, 3, 3, 3], valid: false },
+    { counts: [7], valid: false },
+    { counts: [], valid: false },
+    { counts: [0], valid: false },
+  ])(
+    "validates proposal and stored plan sizes: $counts",
+    ({ counts, valid }) => {
+      const p = {
+        ...proposal,
+        lines: counts.map((count, i) => ({
+          ...proposal.lines[0]!,
+          key: `line-${i}`,
+          stations: Array.from({ length: count }, (_, j) => ({
+            ...proposal.lines[0]!.stations[0]!,
+            key: `station-${i}-${j}`,
+          })),
+        })),
+      }
+      expect(dispatchProposalSchema.safeParse(p).success).toBe(valid)
+      expect(
+        dispatchPlanSchema.safeParse({
+          id: "plan",
+          networkId: "network",
+          goal: "Goal",
+          terminusCommit: "base",
+          model: "fake",
+          createdAt: "now",
+          state: {
+            status: "ready",
+            proposal: p,
+            assessment: { errors: [], collisions: [] },
+          },
+        }).success
+      ).toBe(valid)
+    }
+  )
+  it("rejects missing review criteria or evidence", () => {
     for (const field of [
       "scope",
       "expectedAreas",
