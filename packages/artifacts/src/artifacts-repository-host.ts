@@ -1,4 +1,10 @@
-import type { RepositoryHost, RepoRef } from "./repository-host"
+import type {
+  IntegrationMergeInput,
+  IntegrationMerge,
+  RepositoryHost,
+  RepoRef,
+} from "./repository-host"
+import { prepareMerge } from "./integration-git"
 import {
   git,
   remoteHead,
@@ -54,6 +60,57 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     this.artifacts = artifacts
     this.workspaces = workspaces
     this.pause = pause
+  }
+
+  async head(repoId: string): Promise<string> {
+    return this.withWorkspace(
+      [{ repoId, scope: "read" }],
+      async (workspace, [access]) => {
+        if (!access) throw new Error("Missing repository access")
+        const head = await remoteHead(workspace, access)
+        if (!head) throw new Error("Repository has no default-branch commit")
+        return head
+      }
+    )
+  }
+
+  async prepareIntegration(
+    input: IntegrationMergeInput
+  ): Promise<IntegrationMerge> {
+    for (const commit of [
+      input.terminusCommit,
+      input.trainCommit,
+      input.trainBaseline,
+      ...input.acceptedCommits,
+    ])
+      requireCommit(commit)
+    // Unlike a Station fork, a candidate may already contain its completed
+    // merge after a lost response. Check its identity and parents below.
+    try {
+      using candidate = await this.ready(input.id)
+      if (
+        (await candidate.info()).description !==
+        `Terminus fork: ${input.terminusRepoId}@${input.terminusCommit}`
+      )
+        throw new Error("Repository belongs to another integration attempt")
+    } catch (error) {
+      if (!hasCode(error, "NOT_FOUND", input.id)) throw error
+      await this.fork({
+        sourceRepoId: input.terminusRepoId,
+        commit: input.terminusCommit,
+        name: input.id,
+      })
+    }
+    return this.withWorkspace(
+      [
+        { repoId: input.id, scope: "write" },
+        { repoId: input.trainRepoId, scope: "read" },
+      ],
+      async (workspace, [candidate, train]) => {
+        if (!candidate || !train) throw new Error("Missing repository access")
+        return prepareMerge(workspace, candidate, train, input)
+      }
+    )
   }
 
   async createTerminus(input: {
@@ -210,7 +267,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         if (head === input.toCommit) return
         if (head !== input.fromCommit)
           throw new RepositoryMovedError(
-            "Train repository moved; the proposal must be reviewed again"
+            "Target repository moved; the candidate must be reviewed again"
           )
         await git(workspace, [
           "clone",
@@ -231,7 +288,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         )
         if (ancestor.exitCode !== 0)
           throw new RepositoryMovedError(
-            "Proposed commit is not a descendant of the Train commit"
+            "Candidate is not a descendant of the target commit"
           )
         // Compare the head advertised for this push, then let Git's server-side
         // old-object check protect the final update. No force push is involved.
@@ -244,7 +301,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           hook,
         ])
         if (installed.exitCode !== 0)
-          throw new Error("Could not install the Train acceptance guard")
+          throw new Error("Could not install the repository promotion guard")
         await git(
           workspace,
           ["config", "core.hooksPath", "/workspace/hooks"],
@@ -266,13 +323,13 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           if (current === input.toCommit) return
           if (current !== input.fromCommit)
             throw new RepositoryMovedError(
-              "Train moved during acceptance; re-review the proposal"
+              "Target moved during promotion; revalidate the candidate"
             )
           throw error
         }
         if ((await remoteHead(workspace, target)) !== input.toCommit)
           throw new RepositoryMovedError(
-            "Train did not reach the accepted commit"
+            "Target did not reach the accepted commit"
           )
       }
     )

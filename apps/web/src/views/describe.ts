@@ -112,6 +112,20 @@ export function describeEvent(
       return `${name(event.trainId)} requested entry into Terminus`
     case "terminus.integration_started":
       return `${name(event.trainId)} integrating into Terminus`
+    case "terminus.integration_deferred":
+      return `${name(event.trainId)} returned to the Terminus entry gate`
+    case "terminus.integration_interrupted":
+      return `${name(event.trainId)} integration needs recovery: ${describeIssues(event.issues)}`
+    case "terminus.integration_retried":
+      return `${name(event.trainId)} integration recovery requested`
+    case "terminus.clearance_granted":
+      return `Dispatcher cleared ${name(event.trainId)} into Terminus`
+    case "terminus.candidate_prepared":
+      return `${name(event.trainId)} merge candidate saved at ${short(event.mergeCommit)}`
+    case "terminus.promoted":
+      return `Terminus advanced to ${short(event.mergeCommit)}`
+    case "terminus.integration_failed":
+      return `${name(event.trainId)} integration stopped: ${describeIssues(event.issues)}`
     case "terminus.integration_completed":
       return `${name(event.trainId)} integrated at ${short(event.mergeCommit)}`
   }

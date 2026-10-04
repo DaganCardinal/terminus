@@ -1,7 +1,7 @@
 import type { Conflict } from "./conflict"
 import { openConflictsFor } from "./conflict"
 import { evaluateTerminusEntry, type GateContext } from "./engineer"
-import { failingRequiredChecks, type Evidence } from "./evidence"
+import { unmetRequiredChecks, type Evidence } from "./evidence"
 import type { CommitId } from "./ids"
 import { lineStations, type Line } from "./line"
 import type { Station } from "./station"
@@ -93,6 +93,7 @@ export function completeIntegration(input: {
   train: Train
   mergeCommit: CommitId
   evidence: Evidence
+  expectedChecks: string[]
   conflicts: Conflict[]
 }): Transition<Train> {
   const { train, mergeCommit } = input
@@ -102,7 +103,7 @@ export function completeIntegration(input: {
   ) {
     return reject("invalid_state", `Train ${train.id} is not integrating`)
   }
-  const failing = failingRequiredChecks(input.evidence.checks)
+  const failing = unmetRequiredChecks(input.evidence, input.expectedChecks)
   if (failing.length > 0) {
     return reject(
       "required_checks_failed",
@@ -120,4 +121,14 @@ export function completeIntegration(input: {
     { type: "terminus.integration_completed", trainId: train.id, mergeCommit },
     { type: "train.unloaded", trainId: train.id },
   ])
+}
+
+/** Returns an unpromoted candidate to the entry gate when a new hold applies. */
+export function deferIntegration(train: Train): Transition<Train> {
+  if (train.state.status !== "returning" || train.state.phase !== "integrating")
+    return reject("invalid_state", `Train ${train.id} is not integrating`)
+  return accept(
+    { ...train, state: { status: "returning", phase: "awaiting_clearance" } },
+    [{ type: "terminus.integration_deferred", trainId: train.id }]
+  )
 }

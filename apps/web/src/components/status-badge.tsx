@@ -34,7 +34,7 @@ export function StatusBadge({ status }: { status: string }) {
         tones[toneByStatus[status] ?? "idle"]
       )}
     >
-      {status}
+      {status.replaceAll("_", " ")}
     </span>
   )
 }

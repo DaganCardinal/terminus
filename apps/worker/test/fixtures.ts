@@ -60,6 +60,7 @@ export function testPorts(
       startStationRun: async (params) => {
         if (!runs.some((run) => run.runId === params.runId)) runs.push(params)
       },
+      startIntegration: async () => {},
       wakeTrain: async (trainId) => {
         wakes.push(trainId)
       },
@@ -79,6 +80,7 @@ export function testPorts(
         wakes.push(trainId)
       },
       clearTrain: async () => {},
+      retryIntegration: async () => {},
       newId,
       now,
     },
@@ -96,6 +98,12 @@ export async function drive(
   limit = 60
 ): Promise<TrainMove> {
   for (let step = 0; step < limit; step++) {
+    const train = await ports.store.train(trainId)
+    if (
+      train?.value.state.status === "returning" &&
+      train.value.state.phase === "awaiting_clearance"
+    )
+      return { kind: "await_terminus" }
     const move = await advanceTrain(ports.train, trainId)
     if (move.kind === "moved") continue
     if (move.kind !== "await_station") return move

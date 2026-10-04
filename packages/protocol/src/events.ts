@@ -100,6 +100,29 @@ export const domainEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hold.released"), holdId: z.string() }),
   trainEvent("terminus.integration_requested"),
   trainEvent("terminus.integration_started"),
+  trainEvent("terminus.integration_deferred"),
+  trainEvent("terminus.integration_interrupted").extend({
+    integrationId: z.string(),
+    issues,
+  }),
+  trainEvent("terminus.integration_retried").extend({
+    integrationId: z.string(),
+  }),
+  trainEvent("terminus.clearance_granted").extend({
+    integrationId: z.string(),
+  }),
+  trainEvent("terminus.candidate_prepared").extend({
+    integrationId: z.string(),
+    mergeCommit: z.string(),
+  }),
+  trainEvent("terminus.promoted").extend({
+    integrationId: z.string(),
+    mergeCommit: z.string(),
+  }),
+  trainEvent("terminus.integration_failed").extend({
+    integrationId: z.string(),
+    issues,
+  }),
   trainEvent("terminus.integration_completed").extend({
     mergeCommit: z.string(),
   }),

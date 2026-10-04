@@ -5,11 +5,27 @@ export interface RepoRef {
   headCommit: CommitId
 }
 
+export interface IntegrationMergeInput {
+  id: string
+  terminusRepoId: RepoId
+  terminusCommit: CommitId
+  trainRepoId: RepoId
+  trainCommit: CommitId
+  trainBaseline: CommitId
+  acceptedCommits: CommitId[]
+}
+
+export type IntegrationMerge =
+  { ok: true; candidate: RepoRef } | { ok: false; conflictPaths: string[] }
+
 /**
  * The repository operations orchestration needs. Implementations own every
  * detail of Artifacts and Git; nothing outside this package sees them.
  */
 export interface RepositoryHost {
+  head(repoId: RepoId): Promise<CommitId>
+  /** Persists a merge candidate separately from both Terminus and the Train. */
+  prepareIntegration(input: IntegrationMergeInput): Promise<IntegrationMerge>
   /** Creates the canonical Terminus repository for a new project. */
   createTerminus(input: { name: string; sourceUrl?: string }): Promise<RepoRef>
 

@@ -2,7 +2,7 @@
 
 Terminus coordinates coding agents on concurrent Lines of work. Each Train accumulates accepted Station work; D1 owns the railway state, Artifacts owns repositories, and Workflows coordinate execution. The browser polls snapshots and the domain event log.
 
-The domain, persistence, API and Train/Station Workflows are implemented. Real Artifacts and Sandbox/OpenCode adapters and a model Conductor are available alongside fakes. **Live Cloudflare execution has not yet been verified.** Trains currently stop at `returning`: final integration into Terminus, model-driven planning, and the railway map are future work.
+The domain, persistence, API and Train/Station/Terminus integration Workflows are implemented. Real Artifacts and Sandbox/OpenCode adapters and a model Conductor are available alongside fakes. The maintainer has verified live Station execution and review; the new Terminus integration path still needs live verification. Returning Trains receive Dispatcher clearance, merge and validate against current Terminus, and unload after promotion. Model-driven planning and the railway map are future work.
 
 ## Local development with fakes
 
@@ -19,7 +19,7 @@ In another terminal:
 npm run dev:web
 ```
 
-Open the URL Vite prints. Create a network and choose **Lay demo Lines**. The two Trains run independently; the Red Line has two ordered Stations, and the Blue Line has one. Fake reviews request one revision by default. Accepted work appears as Cars with events in the status page.
+Open the URL Vite prints. Create a network and choose **Lay demo Lines**. The two Trains run independently; the Red Line has two ordered Stations, and the Blue Line has one. Fake reviews request one revision by default. Accepted work appears as Cars with events in the status page. Returning Trains integrate one at a time and finish at `unloaded`.
 
 ```sh
 npm run typecheck
@@ -74,7 +74,23 @@ The Conductor receives the manifest, actual diff and independent validation. Mis
 
 Artifacts forks copy the current default branch, so the adapter verifies the requested commit before and after forking. Existing completed forks are reusable on retries; an unavailable historical snapshot fails explicitly.
 
-The current runner supports npm projects and HTTPS/public imports. Dependencies must be retrievable from the npm registry without third-party install downloads. Private imports, arbitrary network access, final Terminus merge integration and deployment authentication are not implemented.
+The current runner supports npm projects and HTTPS/public imports. Dependencies must be retrievable from the npm registry without third-party install downloads. Private imports, arbitrary network access and deployment authentication are not implemented.
+
+## Terminus integration
+
+The deterministic Dispatcher clears the oldest eligible returning Train. Holds and unresolved conflicts keep the entry gate closed. D1 reserves one active integration attempt per network; the reservation has no expiry, so a slow or restarted Workflow cannot race another canonical writer. Every attempt has its own Integration Workflow and durable input, candidate, evidence and result. Only the Train Workflow changes the Train's state.
+
+Each attempt forks a candidate repository from the current recorded Terminus commit, fetches the exact accepted Train head, and merges with `--no-ff`. The canonical commit is the first parent and the Train head is the second. The adapter verifies that the original Terminus baseline and every Car's accepted commit remain in history. It never rebases, squashes or force-merges. A Train already contained by Terminus needs no new merge; its current canonical state is still validated.
+
+Project-wide validation runs in a fresh Sandbox checkout of the saved candidate, with read access to that repository and no model access or canonical write capability. Orchestration runs `npm ci` and every configured project command, collects actual exit codes and bounded output, and checks that validation did not change the candidate. Missing, failed or truncated evidence stops promotion. Passing evidence is checkpointed in D1 before a separate Git workspace obtains write access to Terminus.
+
+Promotion pushes exactly the validated candidate using a non-forced fast-forward of the canonical ref, guarded against an unexpected remote head. The commit being pushed is a merge commit, preserving all accepted Car identities. D1 then records the new canonical head and completed attempt atomically and releases clearance. A second returning Train prepares against that new head. A lost push acknowledgement is recovered by checking the canonical Git head before attempting another write; a lost result event is recovered from D1 by the Train Workflow.
+
+Conflicts become durable open conflict records, and the Train raises an issue to the Dispatcher. Failed integration validation also blocks the Train. After intervention, clear the blocked Train to start a new attempt; resolving a conflict record does not itself repair code, so unresolved Git conflicts will be detected again. A hold placed before promotion defers the attempt and holds the Train; releasing it resumes the Train automatically.
+
+If Artifacts is unavailable while an uncertain promotion is being reconciled, clearance stays reserved and the Train receives an explicit integration blocker. The attempt retains its active status with an interruption result. Inspect the attempt and the Integration Workflow status, then use the retry endpoint once the Workflow is `errored`. Recovery clears the interruption, asks the blocked Train Workflow to resume, and restarts the same attempt with its D1 candidate and evidence intact. It reconciles the canonical head before another push. Do not manually delete active reservations.
+
+The new `0003_integration.sql` migration and `INTEGRATION_WORKFLOW` binding are required. Local dev commands apply migrations automatically. For a deployed Worker, apply migrations and deploy the updated Worker through the maintainer workflow before testing a fresh demo network. New integration requires no additional model configuration or calls.
 
 ## API examples
 
@@ -94,6 +110,20 @@ Validation commands are trusted project configuration stored in D1, separate fro
 curl -X POST http://localhost:8787/api/networks/NETWORK_ID/demo
 curl http://localhost:8787/api/networks/NETWORK_ID
 curl 'http://localhost:8787/api/networks/NETWORK_ID/events?after=0'
+curl http://localhost:8787/api/networks/NETWORK_ID/integrations
+```
+
+After repairing an integration issue:
+
+```sh
+curl -X POST http://localhost:8787/api/networks/NETWORK_ID/conflicts/CONFLICT_ID/resolve
+curl -X POST http://localhost:8787/api/trains/TRAIN_ID/clear
+```
+
+To recover an errored attempt that still holds clearance:
+
+```sh
+curl -X POST http://localhost:8787/api/integrations/INTEGRATION_ID/retry
 ```
 
 Architecture and ownership rules are in [AGENTS.md](./AGENTS.md), [the outline](./docs/outline-updated.md), and [technology architecture](./docs/technology-architecture.md).

@@ -1,5 +1,6 @@
 import {
   eventsResponseSchema,
+  integrationAttemptSchema,
   type NetworkSnapshot,
   type NetworkSummary,
 } from "@terminus/protocol"
@@ -18,6 +19,7 @@ beforeEach(async () => {
   introspectors = await Promise.all([
     introspectWorkflow(env.TRAIN_WORKFLOW),
     introspectWorkflow(env.STATION_WORKFLOW),
+    introspectWorkflow(env.INTEGRATION_WORKFLOW),
   ])
 })
 afterEach(async () => {
@@ -59,7 +61,7 @@ async function waitUntil(
 }
 
 describe("the API with real Workflows", () => {
-  it("runs the demo network until both Trains return", async () => {
+  it("runs the demo network until both Trains unload", async () => {
     const network = await createNetwork()
     expect((await post(`/networks/${network.id}/demo`)).status).toBe(204)
 
@@ -67,11 +69,28 @@ describe("the API with real Workflows", () => {
       const { trains } = await snapshot(network.id)
       return (
         trains.length === 2 &&
-        trains.every(({ train }) => train.state.status === "returning")
+        trains.every(({ train }) => train.state.status === "unloaded")
       )
     })
 
     const final = await snapshot(network.id)
+    const attempts = integrationAttemptSchema
+      .array()
+      .parse(await (await api(`/networks/${network.id}/integrations`)).json())
+    expect(attempts).toHaveLength(2)
+    expect(attempts.every((attempt) => attempt.status === "completed")).toBe(
+      true
+    )
+    expect(attempts[0]!.input.terminusCommit).toBe(network.terminusCommit)
+    expect(attempts[1]!.input.terminusCommit).toBe(
+      attempts[0]!.candidate!.headCommit
+    )
+    expect(final.network.terminusCommit).toBe(
+      attempts[1]!.candidate!.headCommit
+    )
+    expect(
+      (await post(`/integrations/${attempts[0]!.input.id}/retry`)).status
+    ).toBe(409)
     expect(final.cars).toHaveLength(3)
     expect(final.stations.every((s) => s.state.status === "complete")).toBe(
       true
@@ -85,6 +104,8 @@ describe("the API with real Workflows", () => {
     const types = events.map((envelope) => envelope.event.type)
     expect(types.filter((type) => type === "train.departed")).toHaveLength(3)
     expect(types).not.toContain("train.held")
+    expect(types.filter((type) => type === "terminus.promoted")).toHaveLength(2)
+    expect(types.filter((type) => type === "train.unloaded")).toHaveLength(2)
 
     const later = await api(`/networks/${network.id}/events?after=${lastSeq}`)
     expect(await later.json()).toEqual({ events: [], lastSeq })
@@ -118,6 +139,11 @@ describe("API validation", () => {
 
   it("returns 404 for unknown networks and routes", async () => {
     expect((await api("/networks/missing")).status).toBe(404)
+    expect((await api("/networks/missing/integrations")).status).toBe(404)
+    expect((await post("/integrations/missing/retry")).status).toBe(404)
+    expect(
+      (await post("/networks/missing/conflicts/missing/resolve")).status
+    ).toBe(404)
     expect((await post("/networks/missing/demo")).status).toBe(404)
     expect((await api("/nowhere")).status).toBe(404)
   })

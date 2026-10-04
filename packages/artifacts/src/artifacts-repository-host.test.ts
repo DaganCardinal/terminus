@@ -526,3 +526,201 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.handles.size).toBe(0)
   })
 })
+
+describe("Terminus merges with real Git", () => {
+  async function setup() {
+    const f = await fixture()
+    await f.host.createTerminus({ name: "terminus" })
+    const baseline = (await f.change("terminus", "shared.txt", "base\n")).commit
+    await f.host.fork({
+      sourceRepoId: "terminus",
+      commit: baseline,
+      name: "train",
+    })
+    const accepted = (await f.change("train", "train.txt", "accepted\n")).commit
+    const input = {
+      id: "integration",
+      terminusRepoId: "terminus",
+      terminusCommit: baseline,
+      trainRepoId: "train",
+      trainCommit: accepted,
+      trainBaseline: baseline,
+      acceptedCommits: [accepted],
+    }
+    return { f, input }
+  }
+
+  it("merges against current Terminus and preserves both canonical and accepted history", async () => {
+    const { f, input } = await setup()
+    const current = (await f.change("terminus", "other.txt", "another Train\n"))
+      .commit
+    input.terminusCommit = current
+    const prepared = await f.host.prepareIntegration(input)
+    expect(prepared.ok).toBe(true)
+    if (!prepared.ok) throw new Error("Expected merge")
+    const merge = prepared.candidate.headCommit
+    const remote = (await f.repos.get(input.id)!.info()).remote
+    expect(
+      (
+        await execute("git", [
+          "--git-dir",
+          remote,
+          "show",
+          "-s",
+          "--format=%P",
+          merge,
+        ])
+      ).stdout.trim()
+    ).toBe(`${current} ${input.trainCommit}`)
+    expect(
+      (
+        await execute("git", [
+          "--git-dir",
+          remote,
+          "show",
+          `${merge}:train.txt`,
+        ])
+      ).stdout
+    ).toBe("accepted\n")
+    expect(
+      (
+        await execute("git", [
+          "--git-dir",
+          remote,
+          "show",
+          `${merge}:other.txt`,
+        ])
+      ).stdout
+    ).toBe("another Train\n")
+    expect(await f.head("terminus")).toBe(current)
+    expect(await f.head("train")).toBe(input.trainCommit)
+    expect(await f.host.prepareIntegration(input)).toEqual(prepared)
+    expect(f.grants.slice(-1)[0]!.map((access) => access.scope)).toEqual([
+      "write",
+      "read",
+    ])
+    await f.host.fastForward({
+      targetRepoId: "terminus",
+      sourceRepoId: input.id,
+      fromCommit: current,
+      toCommit: merge,
+    })
+    expect(await f.head("terminus")).toBe(merge)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("creates a merge commit even when the Train could fast-forward Terminus", async () => {
+    const { f, input } = await setup()
+    const result = await f.host.prepareIntegration(input)
+    if (!result.ok) throw new Error("Expected merge")
+    const remote = (await f.repos.get(input.id)!.info()).remote
+    const parents = (
+      await execute("git", [
+        "--git-dir",
+        remote,
+        "show",
+        "-s",
+        "--format=%P",
+        result.candidate.headCommit,
+      ])
+    ).stdout.trim()
+    expect(parents).toBe(`${input.terminusCommit} ${input.trainCommit}`)
+  })
+
+  it("reports conflicting paths without changing Terminus or the Train", async () => {
+    const { f, input } = await setup()
+    input.trainCommit = (
+      await f.change("train", "shared.txt", "Train changed\n")
+    ).commit
+    input.acceptedCommits.push(input.trainCommit)
+    input.terminusCommit = (
+      await f.change("terminus", "shared.txt", "Canonical changed\n")
+    ).commit
+    expect(await f.host.prepareIntegration(input)).toEqual({
+      ok: false,
+      conflictPaths: ["shared.txt"],
+    })
+    expect(await f.head("terminus")).toBe(input.terminusCommit)
+    expect(await f.head("train")).toBe(input.trainCommit)
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("recovers the same merge after candidate push succeeded but cleanup lost its response", async () => {
+    const { f, input } = await setup()
+    const open = f.workspaces.open.bind(f.workspaces)
+    let lose = false
+    f.workspaces.open = async (access) => {
+      const workspace = await open(access)
+      return {
+        ...workspace,
+        close: async () => {
+          await workspace.close()
+          if (lose) {
+            lose = false
+            throw new Error("Lost response")
+          }
+        },
+      }
+    }
+    f.setBeforePush(async () => {
+      lose = true
+    })
+    await expect(f.host.prepareIntegration(input)).rejects.toThrow(
+      "cleanup failed"
+    )
+    const saved = await f.head(input.id)
+    const retry = await f.host.prepareIntegration(input)
+    expect(retry).toEqual({
+      ok: true,
+      candidate: { repoId: input.id, headCommit: saved },
+    })
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("refuses a second promotion prepared against an old canonical head", async () => {
+    const { f, input } = await setup()
+    await f.host.fork({
+      sourceRepoId: "terminus",
+      commit: input.terminusCommit,
+      name: "train-two",
+    })
+    const second = (await f.change("train-two", "two.txt")).commit
+    const one = await f.host.prepareIntegration(input)
+    const two = await f.host.prepareIntegration({
+      ...input,
+      id: "integration-two",
+      trainRepoId: "train-two",
+      trainCommit: second,
+      acceptedCommits: [second],
+    })
+    if (!one.ok || !two.ok) throw new Error("Expected merges")
+    await f.host.fastForward({
+      targetRepoId: "terminus",
+      sourceRepoId: input.id,
+      fromCommit: input.terminusCommit,
+      toCommit: one.candidate.headCommit,
+    })
+    await expect(
+      f.host.fastForward({
+        targetRepoId: "terminus",
+        sourceRepoId: "integration-two",
+        fromCommit: input.terminusCommit,
+        toCommit: two.candidate.headCommit,
+      })
+    ).rejects.toBeInstanceOf(RepositoryMovedError)
+    expect(await f.head("terminus")).toBe(one.candidate.headCommit)
+  })
+
+  it("rejects missing accepted history before constructing a candidate", async () => {
+    const { f, input } = await setup()
+    const unrelated = await f.host.createTerminus({ name: "unrelated" })
+    await expect(
+      f.host.prepareIntegration({
+        ...input,
+        acceptedCommits: [unrelated.headCommit],
+      })
+    ).rejects.toThrow("ancestry")
+    expect(await f.head("terminus")).toBe(input.terminusCommit)
+  })
+})

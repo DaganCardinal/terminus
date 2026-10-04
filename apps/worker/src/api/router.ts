@@ -14,6 +14,8 @@ import {
   layLine,
   placeHold,
   releaseHold,
+  resolveConflict,
+  retryIntegration,
 } from "../agents/dispatcher"
 import { dispatcherPorts } from "../agents/ports"
 
@@ -24,6 +26,33 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/integrations" }),
+    async (_, env, { networkId }) => {
+      const { store } = dispatcherPorts(env)
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      return json(await store.integrations(networkId!))
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/integrations/:integrationId/retry" }),
+    async (_, env, { integrationId }) => {
+      await retryIntegration(dispatcherPorts(env), integrationId!)
+      return new Response(null, { status: 202 })
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/conflicts/:conflictId/resolve",
+    }),
+    async (_, env, { networkId, conflictId }) => {
+      await resolveConflict(dispatcherPorts(env), networkId!, conflictId!)
+      return new Response(null, { status: 204 })
+    },
+  ],
   [
     "GET",
     new URLPattern({ pathname: "/api/networks" }),

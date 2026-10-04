@@ -4,7 +4,7 @@ Guidance for coding agents working on the Terminus codebase.
 
 Terminus is an orchestration platform that coordinates many coding agents working on one shared codebase. It uses a railway network as its coordination model, and it runs on Cloudflare with **Cloudflare Artifacts** as its Git layer.
 
-> **Project status:** the domain core, D1 persistence and event log, Train and Station Workflows, Worker API, and a plain status page exist. Artifacts/Git and Sandbox/OpenCode Station execution adapters, independent validation, and model Conductor review are implemented, with a separate fake environment for offline development. Live Cloudflare verification still requires account/secret/project setup. Terminus integration, model-driven Dispatcher/Engineer/Technician roles, and the map are not built yet. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
+> **Project status:** the domain core, D1 persistence and event log, Train, Station, and Terminus integration Workflows, Worker API, and a plain status page exist. Artifacts/Git and Sandbox/OpenCode Station execution adapters, independent validation, and model Conductor review are implemented, with a separate fake environment for offline development. Live Cloudflare verification still requires account/secret/project setup. Model-driven Dispatcher/Engineer/Technician roles and the map are not built yet. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
 
 ## Project context
 

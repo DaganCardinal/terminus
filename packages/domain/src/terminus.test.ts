@@ -100,6 +100,7 @@ describe("completeIntegration", () => {
     train: integrating(allStationsDone().train),
     mergeCommit: "m1",
     evidence: passingEvidence,
+    expectedChecks: ["test"],
     conflicts: [],
     ...overrides,
   })
@@ -123,6 +124,13 @@ describe("completeIntegration", () => {
     )
   })
 
+  it("does not unload when project-wide evidence is missing", () => {
+    expectRejected(
+      completeIntegration(input({ evidence: { checks: [] } })),
+      "required_checks_failed"
+    )
+  })
+
   it("does not unload with an unresolved conflict", () => {
     expectRejected(
       completeIntegration(input({ conflicts: [conflict] })),
@@ -133,6 +141,22 @@ describe("completeIntegration", () => {
   it("rejects a Train that is not integrating", () => {
     expectRejected(
       completeIntegration(input({ train: awaiting(allStationsDone().train) })),
+      "invalid_state"
+    )
+  })
+})
+
+describe("deferIntegration", () => {
+  it("returns an unpromoted integration to its entry gate", async () => {
+    const { deferIntegration } = await import("./terminus")
+    const result = deferIntegration(integrating(allStationsDone().train))
+    expect(unwrap(result).state).toEqual({
+      status: "returning",
+      phase: "awaiting_clearance",
+    })
+    expect(eventTypes(result)).toEqual(["terminus.integration_deferred"])
+    expectRejected(
+      deferIntegration(awaiting(allStationsDone().train)),
       "invalid_state"
     )
   })

@@ -2,8 +2,10 @@ import type { RepositoryHost } from "@terminus/artifacts"
 import {
   createLine,
   createTrain,
+  evaluateTerminusEntry,
   placeHold as placeHoldTransition,
   releaseHold as releaseHoldTransition,
+  resolveConflict as resolveConflictTransition,
   type Hold,
   type HoldId,
   type Line,
@@ -18,6 +20,7 @@ import type {
   LayLineRequest,
   NetworkSummary,
   PlaceHoldRequest,
+  IntegrationAttempt,
 } from "@terminus/protocol"
 import type { NetworkStore, Write } from "../integrations/network-store"
 import { defaultValidation } from "../integrations/execution-config"
@@ -29,6 +32,7 @@ export interface DispatcherPorts {
   startTrain(trainId: TrainId): Promise<void>
   wakeTrain(trainId: TrainId): Promise<void>
   clearTrain(trainId: TrainId): Promise<void>
+  retryIntegration(integrationId: string): Promise<void>
   newId(prefix: string): string
   now(): string
 }
@@ -205,4 +209,101 @@ export async function clearTrain(
     throw new DispatchError(409, `Train ${trainId} is not blocked`)
   }
   await ports.clearTrain(trainId)
+}
+
+/**
+ * Deterministic Dispatcher entry control. Oldest eligible return goes first;
+ * D1 enforces exclusive clearance even if two Train Workflows ask together.
+ * This function never writes Train state.
+ */
+export async function requestTerminusClearance(
+  ports: Pick<DispatcherPorts, "store" | "newId">,
+  trainId: TrainId
+): Promise<IntegrationAttempt | null> {
+  const loaded = await ports.store.train(trainId)
+  if (!loaded) throw new DispatchError(404, `Unknown Train ${trainId}`)
+  if (
+    loaded.value.state.status !== "returning" ||
+    loaded.value.state.phase !== "awaiting_clearance"
+  )
+    throw new DispatchError(409, "Train is not awaiting Terminus clearance")
+  const previous = await ports.store.latestIntegration(trainId)
+  if (previous && previous.status !== "failed") {
+    if (previous.input.trainCommit !== loaded.value.headCommit)
+      throw new DispatchError(
+        409,
+        "Train changed after its integration clearance"
+      )
+    return previous
+  }
+  const network = await ports.store.network(loaded.networkId)
+  if (!network) throw new DispatchError(404, "Unknown network")
+  const [trains, holds, conflicts] = await Promise.all([
+    ports.store.returningTrains(network.id),
+    ports.store.holds(network.id),
+    ports.store.conflicts(network.id),
+  ])
+  const eligible = trains.filter(
+    ({ value }) =>
+      value.state.status === "returning" &&
+      value.state.phase === "awaiting_clearance" &&
+      evaluateTerminusEntry(value, { holds, conflicts, trainChecks: [] })
+        .kind === "clear"
+  )
+  if (eligible[0]?.value.id !== trainId) return null
+  const snapshot = await ports.store.snapshot(network.id)
+  const train = loaded.value
+  const acceptedCommits = train.carIds.map((id) => {
+    const car = snapshot?.cars.find(
+      (car) => car.id === id && car.trainId === trainId
+    )
+    if (!car)
+      throw new DispatchError(409, `Train is missing provenance for Car ${id}`)
+    return car.acceptedCommit
+  })
+  return ports.store.claimIntegration({
+    id: ports.newId("integration"),
+    networkId: network.id,
+    trainId,
+    trainRepoId: train.repoId,
+    trainCommit: train.headCommit,
+    trainBaseline: train.terminusBaseline,
+    terminusRepoId: network.terminusRepoId,
+    terminusCommit: network.terminusCommit,
+    acceptedCommits,
+    validation: network.validation ?? defaultValidation,
+  })
+}
+
+export async function resolveConflict(
+  ports: DispatcherPorts,
+  networkId: string,
+  conflictId: string
+): Promise<void> {
+  const conflict = (await ports.store.conflicts(networkId)).find(
+    (item) => item.id === conflictId
+  )
+  if (!conflict) throw new DispatchError(404, "Unknown conflict")
+  if (conflict.status === "resolved") return
+  const resolved = applied(resolveConflictTransition(conflict))
+  await ports.store.commit(
+    networkId,
+    [{ kind: "conflict", conflict: resolved.value }],
+    resolved.events
+  )
+}
+
+/** Explicit recovery for an errored attempt whose canonical write is uncertain. */
+export async function retryIntegration(
+  ports: DispatcherPorts,
+  integrationId: string
+): Promise<void> {
+  const attempt = await ports.store.integration(integrationId)
+  if (!attempt) throw new DispatchError(404, "Unknown integration attempt")
+  if (attempt.status === "completed" || attempt.status === "failed")
+    throw new DispatchError(
+      409,
+      "Attempt already finished; clear a blocked Train to start a new attempt"
+    )
+  await ports.retryIntegration(integrationId)
 }

@@ -77,6 +77,41 @@ export type DomainEvent =
   | { type: "hold.released"; holdId: HoldId }
   | { type: "terminus.integration_requested"; trainId: TrainId }
   | { type: "terminus.integration_started"; trainId: TrainId }
+  | { type: "terminus.integration_deferred"; trainId: TrainId }
+  | {
+      type: "terminus.integration_interrupted"
+      trainId: TrainId
+      integrationId: string
+      issues: Issue[]
+    }
+  | {
+      type: "terminus.integration_retried"
+      trainId: TrainId
+      integrationId: string
+    }
+  | {
+      type: "terminus.clearance_granted"
+      trainId: TrainId
+      integrationId: string
+    }
+  | {
+      type: "terminus.candidate_prepared"
+      trainId: TrainId
+      integrationId: string
+      mergeCommit: CommitId
+    }
+  | {
+      type: "terminus.promoted"
+      trainId: TrainId
+      integrationId: string
+      mergeCommit: CommitId
+    }
+  | {
+      type: "terminus.integration_failed"
+      trainId: TrainId
+      integrationId: string
+      issues: Issue[]
+    }
   | {
       type: "terminus.integration_completed"
       trainId: TrainId

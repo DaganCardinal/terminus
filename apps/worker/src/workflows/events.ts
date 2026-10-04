@@ -6,8 +6,8 @@ export const TRAIN_EVENTS = {
   wake: "train-wake",
   /** Intervention resolved a blocked Train's issue. */
   clear: "train-clear",
-  /** The Dispatcher cleared the Train into Terminus. */
-  terminusClearance: "terminus-clearance",
+  /** A persisted Terminus integration result is ready for the Train to consume. */
+  integrationOutcome: "integration-outcome",
 } as const
 
 export interface TrainWorkflowParams {

@@ -1,4 +1,8 @@
-import type { RepositoryHost, RepoRef } from "./repository-host"
+import type {
+  IntegrationMergeInput,
+  RepositoryHost,
+  RepoRef,
+} from "./repository-host"
 
 /**
  * A stateless stand-in for Artifacts. Repository ids are derived from names,
@@ -6,6 +10,18 @@ import type { RepositoryHost, RepoRef } from "./repository-host"
  * for running the network without touching real repositories.
  */
 export class FakeRepositoryHost implements RepositoryHost {
+  async head(): Promise<string> {
+    return "fake-root"
+  }
+  async prepareIntegration(input: IntegrationMergeInput) {
+    return {
+      ok: true as const,
+      candidate: {
+        repoId: `fake-${input.id}`,
+        headCommit: `fake-merge-${input.id}`,
+      },
+    }
+  }
   async createTerminus(input: { name: string }): Promise<RepoRef> {
     return { repoId: `fake-terminus-${input.name}`, headCommit: "fake-root" }
   }

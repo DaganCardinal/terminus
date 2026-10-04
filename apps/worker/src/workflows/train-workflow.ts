@@ -1,4 +1,9 @@
-import { stationOutcomeSchema, type StationOutcome } from "@terminus/protocol"
+import {
+  stationOutcomeSchema,
+  integrationOutcomeSchema,
+  type IntegrationOutcome,
+  type StationOutcome,
+} from "@terminus/protocol"
 import {
   WorkflowEntrypoint,
   type WorkflowEvent,
@@ -11,6 +16,7 @@ import {
   advanceTrain,
   clearTrain,
   recordStationOutcome,
+  recordIntegrationOutcome,
 } from "./train-operations"
 
 const stepConfig: WorkflowStepConfig = {
@@ -70,14 +76,30 @@ export class TrainWorkflow extends WorkflowEntrypoint<
           }
           break
         case "await_terminus":
-          // Terminus integration is not built yet; nothing sends this event.
           await waitFor(
             step,
-            `returning (${leg})`,
-            TRAIN_EVENTS.terminusClearance,
-            "1 day"
+            `clearance (${leg})`,
+            TRAIN_EVENTS.wake,
+            "1 minute"
           )
           break
+        case "await_integration": {
+          const payload = await waitFor<IntegrationOutcome>(
+            step,
+            `integrate ${move.integrationId} (${leg})`,
+            TRAIN_EVENTS.integrationOutcome,
+            "10 minutes"
+          )
+          if (payload !== null) {
+            const outcome = integrationOutcomeSchema.parse(payload)
+            await step.do(
+              `record integration ${move.integrationId} (${leg})`,
+              stepConfig,
+              () => recordIntegrationOutcome(ports, trainId, outcome)
+            )
+          }
+          break
+        }
         case "finished":
           return move
       }
@@ -90,7 +112,7 @@ async function waitFor<T extends Rpc.Serializable<T> = object>(
   step: WorkflowStep,
   name: string,
   type: string,
-  timeout: `${number} ${"minutes" | "day"}`
+  timeout: `${number} ${"minute" | "minutes" | "day"}`
 ): Promise<Readonly<T> | null> {
   try {
     const event = await step.waitForEvent<T>(name, { type, timeout })

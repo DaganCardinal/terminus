@@ -25,6 +25,11 @@
       "binding": "STATION_WORKFLOW",
       "class_name": "StationWorkflow",
     },
+    {
+      "name": "terminus-integration",
+      "binding": "INTEGRATION_WORKFLOW",
+      "class_name": "IntegrationWorkflow",
+    },
   ],
   "artifacts": [
     { "binding": "ARTIFACTS", "namespace": "default", "remote": true },
@@ -81,6 +86,11 @@
           "name": "terminus-station-fake",
           "binding": "STATION_WORKFLOW",
           "class_name": "StationWorkflow",
+        },
+        {
+          "name": "terminus-integration-fake",
+          "binding": "INTEGRATION_WORKFLOW",
+          "class_name": "IntegrationWorkflow",
         },
       ],
       "vars": {

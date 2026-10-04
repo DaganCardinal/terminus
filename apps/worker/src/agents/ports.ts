@@ -19,12 +19,17 @@ import {
   gatewayTransport,
 } from "../integrations/execution-config"
 import { TRAIN_EVENTS } from "../workflows/events"
+import {
+  FakeIntegrationValidator,
+  SandboxIntegrationValidator,
+} from "../integrations/integration-validator"
+import type { IntegrationPorts } from "../workflows/integration-operations"
 import type { StationPorts } from "../workflows/station-operations"
 import type {
   StationRunParams,
   TrainPorts,
 } from "../workflows/train-operations"
-import type { DispatcherPorts } from "./dispatcher"
+import { DispatchError, type DispatcherPorts } from "./dispatcher"
 
 /** A role configured as `fake` runs without a model. */
 const FAKE = "fake"
@@ -35,9 +40,33 @@ export function trainPorts(env: Env): TrainPorts {
     repositories: repositories(env),
     conductor: conductor(env),
     startStationRun: (params) => startStationRun(env, params),
+    startIntegration: async (integrationId) => {
+      try {
+        await env.INTEGRATION_WORKFLOW.create({
+          id: integrationId,
+          params: { integrationId },
+        })
+      } catch (error) {
+        await env.INTEGRATION_WORKFLOW.get(integrationId).catch(() => {
+          throw error
+        })
+      }
+    },
     wakeTrain: (trainId) => wakeTrain(env, trainId),
     newId,
     now: () => new Date().toISOString(),
+  }
+}
+
+export function integrationPorts(env: Env): IntegrationPorts {
+  const host = repositories(env)
+  return {
+    store: new NetworkStore(env.DB),
+    repositories: host,
+    validator:
+      host instanceof ArtifactsRepositoryHost
+        ? new SandboxIntegrationValidator(host, new SandboxWorkspaces(env))
+        : new FakeIntegrationValidator(),
   }
 }
 
@@ -60,6 +89,25 @@ export function dispatcherPorts(env: Env): DispatcherPorts {
     clearTrain: async (trainId) => {
       const instance = await env.TRAIN_WORKFLOW.get(trainId)
       await instance.sendEvent({ type: TRAIN_EVENTS.clear, payload: {} })
+    },
+    retryIntegration: async (integrationId) => {
+      const instance = await env.INTEGRATION_WORKFLOW.get(integrationId)
+      const status = await instance.status()
+      if (status.status !== "errored")
+        throw new DispatchError(
+          409,
+          "Only an errored integration Workflow can be retried"
+        )
+      const store = new NetworkStore(env.DB)
+      const attempt = await store.integration(integrationId)
+      if (!attempt) throw new DispatchError(404, "Unknown integration attempt")
+      await store.retryIntegration(integrationId)
+      const train = await store.train(attempt.input.trainId)
+      if (train?.value.state.status === "blocked") {
+        const workflow = await env.TRAIN_WORKFLOW.get(attempt.input.trainId)
+        await workflow.sendEvent({ type: TRAIN_EVENTS.clear, payload: {} })
+      }
+      await instance.restart()
     },
     newId,
     now: () => new Date().toISOString(),

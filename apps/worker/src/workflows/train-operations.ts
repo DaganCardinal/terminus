@@ -4,6 +4,10 @@ import {
   arrive,
   attachCar,
   beginReturn,
+  clearForTerminus,
+  completeIntegration,
+  deferIntegration,
+  detectConflict,
   blockStation,
   blockTrain,
   clearTrainBlock,
@@ -33,7 +37,9 @@ import {
   conductorVerdictSchema,
   type ConductorVerdict,
   type StationOutcome,
+  type IntegrationOutcome,
 } from "@terminus/protocol"
+import { requestTerminusClearance } from "../agents/dispatcher"
 import type { Loaded, NetworkStore, Write } from "../integrations/network-store"
 import { applied, TransitionRejectedError } from "./transitions"
 
@@ -49,6 +55,7 @@ export interface TrainPorts {
   conductor: Conductor
   /** Starts a Station run. Starting a run that already exists does nothing. */
   startStationRun(params: StationRunParams): Promise<void>
+  startIntegration(integrationId: string): Promise<void>
   /** Asks a held Train to evaluate its gate again. */
   wakeTrain(trainId: TrainId): Promise<void>
   newId(prefix: string): string
@@ -62,6 +69,7 @@ export type TrainMove =
   | { kind: "await_wake" }
   | { kind: "await_clear" }
   | { kind: "await_terminus" }
+  | { kind: "await_integration"; integrationId: string }
   | { kind: "finished"; status: "unloaded" | "siding" }
 
 /**
@@ -122,11 +130,115 @@ export async function advanceTrain(
     case "blocked":
       return { kind: "await_clear" }
     case "returning":
-      return { kind: "await_terminus" }
+      return returnToTerminus(ports, loaded)
     case "unloaded":
     case "siding":
       return { kind: "finished", status: state.status }
   }
+}
+
+async function returnToTerminus(
+  ports: TrainPorts,
+  train: Loaded<Train>
+): Promise<TrainMove> {
+  if (train.value.state.status !== "returning")
+    throw new Error("Train is not returning")
+  if (train.value.state.phase === "awaiting_clearance") {
+    const context = {
+      holds: await ports.store.holds(train.networkId),
+      conflicts: await ports.store.conflicts(train.networkId),
+      trainChecks: [],
+    }
+    const decision = evaluateTerminusEntry(train.value, context)
+    if (decision.kind !== "clear") return stopAtGate(ports, train, decision)
+    const clearance = await requestTerminusClearance(ports, train.value.id)
+    if (!clearance) return { kind: "await_terminus" }
+    const cleared = applied(clearForTerminus({ train: train.value, context }))
+    await ports.store.commit(
+      train.networkId,
+      [trainWrite(train, cleared.value)],
+      cleared.events
+    )
+    return { kind: "moved" }
+  }
+  const attempt = await ports.store.latestIntegration(train.value.id)
+  if (!attempt) throw new Error("Integrating Train has no Dispatcher clearance")
+  if (attempt.result) {
+    await recordIntegrationOutcome(ports, train.value.id, {
+      integrationId: attempt.input.id,
+      result: attempt.result,
+    })
+    return { kind: "moved" }
+  }
+  await ports.startIntegration(attempt.input.id)
+  return { kind: "await_integration", integrationId: attempt.input.id }
+}
+
+/** Only this Train Workflow applies an integration result to Train state. */
+export async function recordIntegrationOutcome(
+  ports: TrainPorts,
+  trainId: string,
+  outcome: IntegrationOutcome
+): Promise<void> {
+  const train = await loadTrain(ports, trainId)
+  if (
+    train.value.state.status !== "returning" ||
+    train.value.state.phase !== "integrating"
+  )
+    return
+  const attempt = await ports.store.latestIntegration(trainId)
+  if (
+    !attempt ||
+    attempt.input.id !== outcome.integrationId ||
+    !attempt.result ||
+    attempt.input.trainCommit !== train.value.headCommit
+  )
+    return
+  // Event payloads are wakeups. Durable, validated evidence is authoritative.
+  const result = attempt.result
+  if (result.ok) {
+    const completed = applied(
+      completeIntegration({
+        train: train.value,
+        mergeCommit: result.mergeCommit,
+        evidence: result.evidence,
+        expectedChecks: attempt.input.validation.map((check) => check.name),
+        conflicts: await ports.store.conflicts(train.networkId),
+      })
+    )
+    await ports.store.commit(
+      train.networkId,
+      [trainWrite(train, completed.value)],
+      completed.events
+    )
+    return
+  }
+  if (result.holds) {
+    const deferred = applied(deferIntegration(train.value))
+    const held = applied(holdTrain(deferred.value, result.holds))
+    await ports.store.commit(
+      train.networkId,
+      [trainWrite(train, held.value)],
+      [...deferred.events, ...held.events]
+    )
+    return
+  }
+  const blocked = applied(blockTrain(train.value, result.issues))
+  const writes: Write[] = [trainWrite(train, blocked.value)]
+  const events = [...blocked.events]
+  if (result.conflictPaths?.length) {
+    const conflict = applied(
+      detectConflict({
+        id: `conflict-${outcome.integrationId}`,
+        trainIds: [trainId],
+        paths: result.conflictPaths,
+        description: result.issues.map((issue) => issue.detail).join("; "),
+      })
+    )
+    writes.push({ kind: "conflict", conflict: conflict.value })
+    events.push(...conflict.events)
+  }
+  await ports.store.commit(train.networkId, writes, events)
 }
 
 /**

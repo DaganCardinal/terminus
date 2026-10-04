@@ -118,6 +118,7 @@ describe("a Train's full journey", () => {
         train,
         mergeCommit: "merge",
         evidence: passingEvidence,
+        expectedChecks: ["test"],
         conflicts: [],
       })
     )

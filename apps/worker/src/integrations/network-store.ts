@@ -19,6 +19,15 @@ import {
   type ConductorVerdict,
   stationRunResultSchema,
   validationCommandsSchema,
+  integrationAttemptSchema,
+  integrationInputSchema,
+  integrationCandidateSchema,
+  integrationResultSchema,
+  evidenceSchema,
+  type IntegrationAttempt,
+  type IntegrationInput,
+  type IntegrationCandidate,
+  type IntegrationResult,
 } from "@terminus/protocol"
 import type {
   ReviewInput,
@@ -89,6 +98,244 @@ export class NetworkStore {
 
   constructor(db: D1Database) {
     this.#db = db
+  }
+
+  async integration(id: string): Promise<IntegrationAttempt | null> {
+    const row = await this.#db
+      .prepare("SELECT * FROM integration_attempts WHERE id = ?")
+      .bind(id)
+      .first<IntegrationRow>()
+    return row ? toIntegration(row) : null
+  }
+
+  async latestIntegration(trainId: string): Promise<IntegrationAttempt | null> {
+    const row = await this.#db
+      .prepare(
+        "SELECT * FROM integration_attempts WHERE train_id = ? ORDER BY rowid DESC LIMIT 1"
+      )
+      .bind(trainId)
+      .first<IntegrationRow>()
+    return row ? toIntegration(row) : null
+  }
+
+  /** Report an uncertain write as a blocker, while retaining exclusive clearance. */
+  async interruptIntegration(
+    id: string,
+    detail: string
+  ): Promise<IntegrationResult> {
+    const attempt = await this.integration(id)
+    if (!attempt) throw new Error("Unknown integration attempt")
+    if (attempt.result) return attempt.result
+    const result: IntegrationResult = {
+      ok: false,
+      issues: [{ kind: "integration_failed", detail }],
+    }
+    await this.#db.batch([
+      this.#db
+        .prepare(
+          "UPDATE integration_attempts SET result = ? WHERE id = ? AND status IN ('cleared', 'prepared') AND result IS NULL"
+        )
+        .bind(JSON.stringify(result), id),
+      this.#integrationEvent(attempt.input, {
+        type: "terminus.integration_interrupted",
+        trainId: attempt.input.trainId,
+        integrationId: id,
+        issues: result.issues,
+      }),
+    ])
+    return result
+  }
+
+  /** Explicit recovery keeps the candidate, evidence and reservation intact. */
+  async retryIntegration(id: string): Promise<void> {
+    const attempt = await this.integration(id)
+    if (
+      !attempt ||
+      (attempt.status !== "cleared" && attempt.status !== "prepared")
+    )
+      throw new Error("Integration no longer holds clearance")
+    if (!attempt.result) return
+    await this.#db.batch([
+      this.#db
+        .prepare(
+          "UPDATE integration_attempts SET result = NULL WHERE id = ? AND status IN ('cleared', 'prepared')"
+        )
+        .bind(id),
+      this.#integrationEvent(attempt.input, {
+        type: "terminus.integration_retried",
+        trainId: attempt.input.trainId,
+        integrationId: id,
+      }),
+    ])
+  }
+
+  async integrations(networkId: string): Promise<IntegrationAttempt[]> {
+    const { results } = await this.#db
+      .prepare(
+        "SELECT * FROM integration_attempts WHERE network_id = ? ORDER BY rowid"
+      )
+      .bind(networkId)
+      .all<IntegrationRow>()
+    return results.map(toIntegration)
+  }
+
+  /** Returning Trains in domain request order, without loading the event history. */
+  async returningTrains(networkId: string): Promise<Loaded<Train>[]> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT record, version, network_id FROM trains
+      WHERE network_id = ? AND status = 'returning'
+      ORDER BY COALESCE((SELECT MAX(seq) FROM events WHERE train_id = trains.id
+        AND type = 'terminus.integration_requested'), 9223372036854775807), id`
+      )
+      .bind(networkId)
+      .all<VersionedRow>()
+    return results.map((row) => loaded<Train>(row))
+  }
+
+  /** Atomically grants one Dispatcher clearance per network, with its event. */
+  async claimIntegration(
+    input: IntegrationInput
+  ): Promise<IntegrationAttempt | null> {
+    const validated = integrationInputSchema.parse(input)
+    await this.#db.batch([
+      this.#db
+        .prepare(
+          `INSERT INTO integration_attempts (id, network_id, train_id, status, input, created_at)
+        SELECT ?, ?, ?, 'cleared', ?, ? WHERE NOT EXISTS
+        (SELECT 1 FROM integration_attempts WHERE network_id = ? AND status IN ('cleared', 'prepared'))
+        AND EXISTS (SELECT 1 FROM networks WHERE id = ? AND terminus_commit = ?)`
+        )
+        .bind(
+          input.id,
+          input.networkId,
+          input.trainId,
+          JSON.stringify(validated),
+          new Date().toISOString(),
+          input.networkId,
+          input.networkId,
+          input.terminusCommit
+        ),
+      this.#integrationEvent(input, {
+        type: "terminus.clearance_granted",
+        trainId: input.trainId,
+        integrationId: input.id,
+      }),
+    ])
+    return this.integration(input.id)
+  }
+
+  async prepareIntegration(
+    id: string,
+    candidate: IntegrationCandidate,
+    evidence: import("@terminus/domain").Evidence
+  ): Promise<void> {
+    candidate = integrationCandidateSchema.parse(candidate)
+    evidence = evidenceSchema.parse(evidence)
+    const attempt = await this.integration(id)
+    if (!attempt) throw new Error("Unknown integration attempt")
+    if (attempt.status !== "cleared") {
+      if (
+        JSON.stringify(attempt.candidate) !== JSON.stringify(candidate) ||
+        JSON.stringify(attempt.evidence) !== JSON.stringify(evidence)
+      )
+        throw new Error(
+          "Integration already has a different candidate or evidence"
+        )
+      return
+    }
+    await this.#db.batch([
+      this.#db
+        .prepare(
+          "UPDATE integration_attempts SET status = 'prepared', candidate = ?, evidence = ? WHERE id = ? AND status = 'cleared'"
+        )
+        .bind(JSON.stringify(candidate), JSON.stringify(evidence), id),
+      this.#integrationEvent(attempt.input, {
+        type: "terminus.candidate_prepared",
+        trainId: attempt.input.trainId,
+        integrationId: id,
+        mergeCommit: candidate.headCommit,
+      }),
+    ])
+  }
+
+  /** Called only after the canonical Git head has been confirmed. Releases clearance atomically. */
+  async finishIntegration(
+    id: string,
+    result: IntegrationResult
+  ): Promise<void> {
+    const attempt = await this.integration(id)
+    if (!attempt) throw new Error("Unknown integration attempt")
+    const validated = integrationResultSchema.parse(result)
+    if (attempt.result) {
+      if (JSON.stringify(attempt.result) !== JSON.stringify(validated))
+        throw new Error("Integration already has a different result")
+      return
+    }
+    const { input } = attempt
+    const statements: D1PreparedStatement[] = []
+    if (validated.ok) {
+      if (
+        attempt.status !== "prepared" ||
+        attempt.candidate?.headCommit !== validated.mergeCommit ||
+        JSON.stringify(attempt.evidence) !== JSON.stringify(validated.evidence)
+      )
+        throw new Error("Cannot promote an unprepared candidate")
+      statements.push(
+        this.#db
+          .prepare(
+            `UPDATE networks SET terminus_commit =
+        CASE WHEN terminus_commit = ? THEN ? ELSE NULL END WHERE id = ?`
+          )
+          .bind(input.terminusCommit, validated.mergeCommit, input.networkId)
+      )
+    }
+    statements.push(
+      this.#db
+        .prepare(
+          "UPDATE integration_attempts SET status = ?, result = ? WHERE id = ? AND result IS NULL"
+        )
+        .bind(
+          validated.ok ? "completed" : "failed",
+          JSON.stringify(validated),
+          id
+        ),
+      this.#integrationEvent(
+        input,
+        validated.ok
+          ? {
+              type: "terminus.promoted",
+              trainId: input.trainId,
+              integrationId: id,
+              mergeCommit: validated.mergeCommit,
+            }
+          : {
+              type: "terminus.integration_failed",
+              trainId: input.trainId,
+              integrationId: id,
+              issues: validated.issues,
+            }
+      )
+    )
+    await this.#db.batch(statements)
+  }
+
+  #integrationEvent(
+    input: IntegrationInput,
+    event: DomainEvent
+  ): D1PreparedStatement {
+    return this.#db
+      .prepare(
+        `INSERT INTO events (network_id, type, train_id, payload, occurred_at)
+      SELECT ?, ?, ?, ?, ? WHERE changes() = 1`
+      )
+      .bind(
+        input.networkId,
+        event.type,
+        input.trainId,
+        JSON.stringify(event),
+        new Date().toISOString()
+      )
   }
 
   async conductorReview(
@@ -535,4 +782,22 @@ function reviewId(input: ReviewInput): string {
     input.proposal.headCommit,
     input.revisionCount,
   ])
+}
+
+interface IntegrationRow {
+  input: string
+  status: string
+  candidate: string | null
+  evidence: string | null
+  result: string | null
+}
+
+function toIntegration(row: IntegrationRow): IntegrationAttempt {
+  return integrationAttemptSchema.parse({
+    input: JSON.parse(row.input),
+    status: row.status,
+    candidate: row.candidate ? JSON.parse(row.candidate) : null,
+    evidence: row.evidence ? JSON.parse(row.evidence) : null,
+    result: row.result ? JSON.parse(row.result) : null,
+  })
 }
