@@ -12,6 +12,7 @@ import type {
   StationStatus,
   Train,
   TrainId,
+  TrainState,
   DispatchPlan,
 } from "@terminus/domain"
 import { signalFor } from "@terminus/domain"
@@ -86,6 +87,12 @@ interface NetworkRow {
   terminus_commit: string
   created_at: string
   validation: string
+}
+
+interface TrainRow extends RecordRow {
+  state_entered_at: string | null
+  previous_state: string | null
+  previous_entered_at: string | null
 }
 
 interface EventRow {
@@ -522,6 +529,16 @@ export class NetworkStore {
     return results.map((row) => loaded<Station>(row))
   }
 
+  async stations(networkId: NetworkId): Promise<Loaded<Station>[]> {
+    const { results } = await this.#db
+      .prepare(
+        "SELECT record, version, network_id FROM stations WHERE network_id = ?"
+      )
+      .bind(networkId)
+      .all<VersionedRow>()
+    return results.map((row) => loaded<Station>(row))
+  }
+
   /** Current statuses of the given Stations, on any Line. Unknown ids are absent. */
   async stationStatuses(
     ids: StationId[]
@@ -566,7 +583,7 @@ export class NetworkStore {
   ): Promise<void> {
     const occurredAt = new Date().toISOString()
     const statements = [
-      ...writes.map((write) => this.#statement(networkId, write)),
+      ...writes.map((write) => this.#statement(networkId, write, occurredAt)),
       ...events.map((event) =>
         this.#db
           .prepare(
@@ -633,7 +650,18 @@ export class NetworkStore {
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
       select("lines"),
       select("stations"),
-      select("trains"),
+      this.#db
+        .prepare(
+          // Trains written before their timing was tracked fall back to their
+          // latest event, which is when their last status change happened.
+          `SELECT record, previous_state, previous_entered_at,
+             COALESCE(state_entered_at, (
+               SELECT max(occurred_at) FROM events
+               WHERE events.network_id = trains.network_id AND events.train_id = trains.id
+             )) AS state_entered_at
+           FROM trains WHERE network_id = ?`
+        )
+        .bind(networkId),
       select("cars"),
       select("holds"),
       select("conflicts"),
@@ -650,10 +678,21 @@ export class NetworkStore {
       network: toNetwork(network),
       lines: records<Line>(lines),
       stations: records<Station>(stations),
-      trains: records<Train>(trains).map((train) => ({
-        train,
-        signal: signalFor(train),
-      })),
+      trains: (trains!.results as TrainRow[]).map((row) => {
+        const train = parse<Train>(row)
+        return {
+          train,
+          signal: signalFor(train),
+          stateEnteredAt: row.state_entered_at ?? network.created_at,
+          previous:
+            row.previous_state && row.previous_entered_at
+              ? {
+                  state: JSON.parse(row.previous_state) as TrainState,
+                  enteredAt: row.previous_entered_at,
+                }
+              : null,
+        }
+      }),
       cars: records<Car>(cars).sort(
         (a, b) => a.trainId.localeCompare(b.trainId) || a.position - b.position
       ),
@@ -674,7 +713,11 @@ export class NetworkStore {
     return results.map((row) => parse<T>(row))
   }
 
-  #statement(networkId: NetworkId, write: Write): D1PreparedStatement {
+  #statement(
+    networkId: NetworkId,
+    write: Write,
+    occurredAt: string
+  ): D1PreparedStatement {
     const db = this.#db
     switch (write.kind) {
       case "dispatch_plan": {
@@ -740,20 +783,34 @@ export class NetworkStore {
         return version === null
           ? db
               .prepare(
-                "INSERT INTO trains (id, network_id, line_id, status, record, version) VALUES (?, ?, ?, ?, ?, 0)"
+                "INSERT INTO trains (id, network_id, line_id, status, record, version, state_entered_at) VALUES (?, ?, ?, ?, ?, 0, ?)"
               )
               .bind(
                 train.id,
                 networkId,
                 train.lineId,
                 train.state.status,
-                record
+                record,
+                occurredAt
               )
           : db
               .prepare(
-                "UPDATE trains SET status = ?, record = ?, version = ? WHERE id = ?"
+                // SET expressions read the row as it was, so a status change
+                // moves the old state and its start time into previous_*.
+                `UPDATE trains SET
+                   previous_state = CASE WHEN status = ?1 THEN previous_state ELSE json_extract(record, '$.state') END,
+                   previous_entered_at = CASE WHEN status = ?1 THEN previous_entered_at ELSE state_entered_at END,
+                   state_entered_at = CASE WHEN status = ?1 THEN state_entered_at ELSE ?2 END,
+                   status = ?1, record = ?3, version = ?4
+                 WHERE id = ?5`
               )
-              .bind(train.state.status, record, version + 1, train.id)
+              .bind(
+                train.state.status,
+                occurredAt,
+                record,
+                version + 1,
+                train.id
+              )
       }
       case "car":
         return db

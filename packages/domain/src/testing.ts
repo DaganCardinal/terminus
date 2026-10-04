@@ -38,6 +38,10 @@ export function eventTypes<T>(transition: Transition<T>): string[] {
 export function manifest(overrides: Partial<WorkManifest> = {}): WorkManifest {
   return {
     goal: "Do the thing",
+    repositoryChange: {
+      kind: "implementation",
+      description: "Implement the requested behavior",
+    },
     scope: [],
     expectedAreas: ["src/"],
     avoidAreas: [],

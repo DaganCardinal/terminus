@@ -52,6 +52,11 @@ export const api = {
     }),
   clearTrain: (trainId: string) =>
     request<void>(`/trains/${trainId}/clear`, { method: "POST" }),
+  removeStation: (networkId: string, stationId: string, reason: string) =>
+    request<void>(`/networks/${networkId}/stations/${stationId}/remove`, {
+      method: "POST",
+      body: { reason },
+    }),
   previewTrain: async (trainId: string) =>
     trainPreviewSchema.parse(
       await request(`/trains/${trainId}/preview`, { method: "POST" })

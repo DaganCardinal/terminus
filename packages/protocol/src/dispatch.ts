@@ -1,5 +1,9 @@
 import { z } from "zod"
-import { workManifestSchema } from "./manifest"
+import {
+  concreteRepositoryChangeSchema,
+  repositoryChangeSchema,
+  workManifestSchema,
+} from "./manifest"
 
 const text = z.string().trim().min(1).max(2000)
 const key = z.string().regex(/^[a-z][a-z0-9-]{0,39}$/)
@@ -30,6 +34,7 @@ const area = z
 const manifest = workManifestSchema
   .extend({
     goal: text,
+    repositoryChange: concreteRepositoryChangeSchema,
     scope: z.array(text).min(1).max(20),
     expectedAreas: z.array(area).min(1).max(20),
     avoidAreas: z.array(area).max(20),
@@ -96,7 +101,32 @@ const assessment = z.object({
     })
   ),
 })
-const reviewed = { proposal: dispatchProposalSchema, assessment }
+// Older persisted plans remain inspectable; assessment rejects their launch
+// until they declare repository deliverables. New model output stays strict.
+const storedStation =
+  dispatchProposalSchema.shape.lines.element.shape.stations.element.extend({
+    manifest: manifest.extend({
+      repositoryChange: repositoryChangeSchema.optional(),
+    }),
+  })
+const storedProposal = z
+  .strictObject({
+    ...dispatchProposalSchema.shape,
+    lines: z
+      .array(
+        dispatchProposalSchema.shape.lines.element.extend({
+          stations: z.array(storedStation).min(1).max(6),
+        })
+      )
+      .min(1)
+      .max(4),
+  })
+  .refine(
+    (proposal) =>
+      proposal.lines.reduce((n, line) => n + line.stations.length, 0) <= 12,
+    "Plan at most twelve Stations"
+  )
+const reviewed = { proposal: storedProposal, assessment }
 export const dispatchPlanSchema = z.object({
   id: z.string(),
   networkId: z.string(),

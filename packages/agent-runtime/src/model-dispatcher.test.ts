@@ -27,6 +27,37 @@ const input: DispatchPlanningInput = {
 }
 
 describe("model Dispatcher", () => {
+  it("repairs verification-only Stations through the bounded planning loop", async () => {
+    const valid = await new FakeDispatchPlanner().plan(input)
+    const invalid = JSON.parse(JSON.stringify(valid)) as typeof valid
+    invalid.lines[0]!.stations[0]!.manifest.repositoryChange = {
+      kind: "verification",
+      description: "Run existing tests",
+    }
+    const generateStructured = vi
+      .fn<ModelProvider["generateStructured"]>()
+      .mockResolvedValueOnce(invalid)
+      .mockResolvedValueOnce(valid)
+    expect(
+      await new ModelDispatcher("configured", { generateStructured }).plan(
+        input
+      )
+    ).toEqual(valid)
+    expect(generateStructured).toHaveBeenCalledTimes(2)
+    expect(generateStructured.mock.calls[0]![0].system).toContain(
+      "Terminus already owns final integration"
+    )
+    expect(generateStructured.mock.calls[1]![0].input).toMatchObject({
+      repair: {
+        issues: [
+          {
+            path: "lines.0.stations.0.manifest.repositoryChange.kind",
+            code: "invalid_value",
+          },
+        ],
+      },
+    })
+  })
   it("uses repository and network context through the configured role, without executing the plan", async () => {
     const proposal = await new FakeDispatchPlanner().plan(input)
     const generateStructured = vi.fn<ModelProvider["generateStructured"]>(
@@ -73,6 +104,7 @@ describe("model Dispatcher", () => {
     expect([
       ...new Set(result.error.issues.map((issue) => issue.path.join("."))),
     ]).toEqual([
+      "lines.0.stations.0.manifest.repositoryChange",
       "lines.0.stations.0.manifest.expectedAreas.1",
       "lines.0.stations.0.manifest.avoidAreas.6",
     ])
@@ -80,6 +112,12 @@ describe("model Dispatcher", () => {
       JSON.stringify(liveDispatcherProposal)
     ) as typeof liveDispatcherProposal
     const work = corrected.lines[0]!.stations[0]!.manifest
+    Object.assign(work, {
+      repositoryChange: {
+        kind: "configuration",
+        description: "Update the primary theme tokens",
+      },
+    })
     work.expectedAreas[1] = "src/components/ui/button.tsx"
     work.avoidAreas.pop()
     work.invariants.push(

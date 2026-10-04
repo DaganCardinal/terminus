@@ -3,6 +3,7 @@ export type IssueKind =
   | "conflict"
   | "dependency_unresolvable"
   | "station_failed"
+  | "station_change_required"
   | "station_retries_exhausted"
   | "review_escalated"
   | "integration_failed"

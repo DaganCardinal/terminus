@@ -63,6 +63,69 @@ async function waitUntil(
 }
 
 describe("the API with real Workflows", () => {
+  it("removes a rejected Station through its Train Workflow and resumes the Line", async () => {
+    const network = await createNetwork()
+    const response = await post(`/networks/${network.id}/lines`, {
+      name: "Legacy Line",
+      stations: [
+        {
+          key: "verify",
+          name: "Verify only",
+          manifest: manifest({ repositoryChange: undefined }),
+        },
+      ],
+    })
+    expect(response.status).toBe(201)
+    await waitUntil(
+      async () =>
+        (await snapshot(network.id)).trains[0]?.train.state.status === "blocked"
+    )
+    const before = await snapshot(network.id)
+    const stationId = before.stations[0]!.id
+    expect(before.stations[0]!.state.status).toBe("waiting")
+    expect(
+      (
+        await post(`/networks/${network.id}/stations/${stationId}/remove`, {
+          reason: " ",
+        })
+      ).status
+    ).toBe(400)
+    const other = await createNetwork()
+    expect(
+      (
+        await post(`/networks/${other.id}/stations/${stationId}/remove`, {
+          reason: "Remove",
+        })
+      ).status
+    ).toBe(404)
+    expect(
+      (
+        await post(`/networks/${network.id}/stations/${stationId}/remove`, {
+          reason: "Checks are already covered",
+        })
+      ).status
+    ).toBe(202)
+    await waitUntil(
+      async () =>
+        (await snapshot(network.id)).trains[0]?.train.state.status ===
+        "unloaded"
+    )
+    const after = await snapshot(network.id)
+    expect(after.stations[0]!.state).toEqual({
+      status: "cancelled",
+      reason: "Checks are already covered",
+    })
+    expect(after.lines[0]!.stationIds).toEqual(before.lines[0]!.stationIds)
+    expect(after.cars).toHaveLength(0)
+    const events = eventsResponseSchema.parse(
+      await (await api(`/networks/${network.id}/events?after=0`)).json()
+    ).events
+    expect(events.map((e) => e.event.type)).toContain(
+      "station.removal_requested"
+    )
+    expect(events.map((e) => e.event.type)).toContain("station.cancelled")
+    expect(events.map((e) => e.event.type)).not.toContain("station.signaled")
+  }, 20_000)
   it("persists a proposal, waits for explicit launch, and runs the planned Train to Terminus", async () => {
     const network = await createNetwork()
     const request = {

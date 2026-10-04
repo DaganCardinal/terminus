@@ -210,6 +210,12 @@ function PlanPreview({
                               )
                               .join("; ") || "None declared"}
                           </dd>
+                          <dt>Repository change</dt>
+                          <dd>
+                            {station.manifest.repositoryChange
+                              ? `${station.manifest.repositoryChange.kind}: ${station.manifest.repositoryChange.description}`
+                              : "No repository change declared"}
+                          </dd>
                           <dt>Invariants</dt>
                           <dd>{station.manifest.invariants.join("; ")}</dd>
                           <dt>Acceptance</dt>

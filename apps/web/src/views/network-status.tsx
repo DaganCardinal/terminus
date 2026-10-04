@@ -256,9 +256,12 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
             <p className="detail-lead">This item is no longer on the map.</p>
           ) : station ? (
             <StationDetails
+              key={station.id}
               snapshot={snapshot}
               station={station}
               onSelect={select}
+              pending={pending}
+              run={run}
             />
           ) : (
             <TrainDetails

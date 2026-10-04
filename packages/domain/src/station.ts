@@ -73,6 +73,8 @@ export interface Station {
   lineId: LineId
   name: string
   manifest: WorkManifest
+  /** Durable command, consumed and revalidated by the Train Workflow. */
+  removalRequest?: { reason: string }
   /** How many times the Conductor has returned this Station's work. */
   revisionCount: number
   /** Automatic revisions since the last explicit restart. Optional for older records. */
@@ -168,6 +170,8 @@ export function cancelStation(
   reason: string
 ): Transition<Station> {
   const { status } = station.state
+  if (!reason.trim())
+    return reject("invalid_input", "Removing a Station requires a reason")
   if (status !== "waiting" && status !== "blocked") {
     return reject(
       "invalid_state",

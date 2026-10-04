@@ -80,6 +80,8 @@ export type DomainEvent =
   | { type: "station.blocked"; stationId: StationId; issues: Issue[] }
   | { type: "station.reset"; stationId: StationId }
   | { type: "station.cancelled"; stationId: StationId; reason: string }
+  | { type: "station.removal_requested"; stationId: StationId; reason: string }
+  | { type: "station.removal_refused"; stationId: StationId; reason: string }
   | { type: "review.started"; trainId: TrainId; stationId: StationId }
   | {
       type: "car.attached"

@@ -32,6 +32,10 @@ const redLine: LayLineRequest = {
       name: "Footer tests",
       manifest: manifest({
         goal: "Cover the footer with component tests",
+        repositoryChange: {
+          kind: "tests",
+          description: "Add footer component tests",
+        },
         expectedAreas: ["src/components/footer.test.tsx"],
         contracts: [{ name: "Footer", kind: "symbol", change: "depends_on" }],
         dependencies: ["footer"],
@@ -68,6 +72,7 @@ function manifest(
   fields: Pick<WorkManifest, "goal" | "expectedAreas"> & Partial<WorkManifest>
 ): WorkManifest {
   return {
+    repositoryChange: { kind: "implementation", description: fields.goal },
     scope: [],
     avoidAreas: ["package.json"],
     contracts: [],

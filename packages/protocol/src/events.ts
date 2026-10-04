@@ -6,6 +6,7 @@ export const issueSchema = z.object({
     "conflict",
     "dependency_unresolvable",
     "station_failed",
+    "station_change_required",
     "station_retries_exhausted",
     "review_escalated",
     "integration_failed",
@@ -108,6 +109,8 @@ export const domainEventSchema = z.discriminatedUnion("type", [
   stationEvent("station.blocked").extend({ issues }),
   stationEvent("station.reset"),
   stationEvent("station.cancelled").extend({ reason: z.string() }),
+  stationEvent("station.removal_requested").extend({ reason: z.string() }),
+  stationEvent("station.removal_refused").extend({ reason: z.string() }),
   trainAtStationEvent("review.started"),
   trainAtStationEvent("car.attached").extend({
     carId: z.string(),

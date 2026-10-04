@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { seedLine, seedNetwork, testPorts } from "../../test/fixtures"
+import type { Train } from "@terminus/domain"
 import { StaleWriteError } from "./network-store"
 
 describe("NetworkStore", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it("round-trips entities and appends events in order", async () => {
     const ports = testPorts()
     const network = await seedNetwork(ports)
@@ -75,6 +80,59 @@ describe("NetworkStore", () => {
     })
     expect(snapshot?.stations).toHaveLength(2)
     expect(await ports.store.snapshot("missing")).toBeNull()
+  })
+
+  it("records when each Train status began and the state it left", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-10-04T10:00:00.000Z"))
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const { train, stations } = await seedLine(ports, network.id)
+    const view = async () =>
+      (await ports.store.snapshot(network.id))!.trains.find(
+        (v) => v.train.id === train.id
+      )!
+    const write = async (state: Train["state"], version: number) => {
+      vi.setSystemTime(Date.now() + 60_000)
+      await ports.store.commit(
+        network.id,
+        [{ kind: "train", train: { ...train, state }, version }],
+        []
+      )
+    }
+    expect(await view()).toMatchObject({
+      stateEnteredAt: "2026-10-04T10:00:00.000Z",
+      previous: null,
+    })
+
+    const ready = { status: "ready" as const, at: { kind: "depot" as const } }
+    const moving: Train["state"] = {
+      status: "in_transit",
+      from: { kind: "depot" },
+      toward: stations[0]!.id,
+    }
+    await write(moving, 0)
+    expect(await view()).toMatchObject({
+      stateEnteredAt: "2026-10-04T10:01:00.000Z",
+      previous: { state: ready, enteredAt: "2026-10-04T10:00:00.000Z" },
+    })
+
+    // Writes that keep the status keep its start time.
+    await write(moving, 1)
+    expect((await view()).stateEnteredAt).toBe("2026-10-04T10:01:00.000Z")
+
+    await write(
+      {
+        status: "blocked",
+        issues: [{ kind: "conflict", detail: "Conflict" }],
+        resume: ready,
+      },
+      2
+    )
+    expect(await view()).toMatchObject({
+      stateEnteredAt: "2026-10-04T10:03:00.000Z",
+      previous: { state: moving, enteredAt: "2026-10-04T10:01:00.000Z" },
+    })
   })
 
   it("reports Station statuses and signal counts", async () => {

@@ -20,9 +20,11 @@ import {
   nextStation,
   releaseTrain,
   resetStation,
+  removeStation,
   returnToStation,
   startReview,
   type DepartureContext,
+  type DomainEvent,
   type GateDecision,
   type Issue,
   type Line,
@@ -94,6 +96,7 @@ export async function advanceTrain(
   trainId: TrainId
 ): Promise<TrainMove> {
   const loaded = await loadTrain(ports, trainId)
+  if (await applyStationRemoval(ports, loaded)) return { kind: "moved" }
   const { state } = loaded.value
   switch (state.status) {
     case "ready":
@@ -139,6 +142,51 @@ export async function advanceTrain(
     case "siding":
       return { kind: "finished", status: state.status }
   }
+}
+
+/** Commands are durable Station metadata, revalidated against current network state. */
+async function applyStationRemoval(
+  ports: TrainPorts,
+  train: Loaded<Train>
+): Promise<boolean> {
+  const stations = await ports.store.stations(train.networkId)
+  const requested = stations.find(
+    (s) => s.value.lineId === train.value.lineId && s.value.removalRequest
+  )
+  if (!requested) return false
+  const line = await ports.store.line(train.value.lineId)
+  if (!line) throw new Error("Train has no Line")
+  const { removalRequest, ...station } = requested.value
+  const result = removeStation({
+    train: train.value,
+    line,
+    station,
+    stations: stations.map((s) => s.value),
+    reason: removalRequest!.reason,
+  })
+  if (!result.ok) {
+    await ports.store.commit(
+      train.networkId,
+      [stationWrite(requested, station)],
+      [
+        {
+          type: "station.removal_refused",
+          stationId: station.id,
+          reason: result.error.message,
+        },
+      ]
+    )
+    return true
+  }
+  await ports.store.commit(
+    train.networkId,
+    [
+      stationWrite(requested, result.value.station),
+      trainWrite(train, result.value.train),
+    ],
+    result.events
+  )
+  return true
 }
 
 async function returnToTerminus(
@@ -394,10 +442,25 @@ async function stopAtGate(
       ? holdTrain(loaded.value, decision.reasons)
       : blockTrain(loaded.value, decision.issues)
   )
+  const alerts: DomainEvent[] = []
+  if (
+    decision.kind === "block" &&
+    decision.issues.some((issue) => issue.kind === "station_change_required")
+  ) {
+    const { stations } = await loadLine(ports, loaded.value.lineId)
+    const next = nextStation(stations.map((s) => s.value))
+    if (next)
+      alerts.push({
+        type: "dispatcher.user_attention_requested",
+        trainId: loaded.value.id,
+        stationId: next.id,
+        issues: decision.issues,
+      })
+  }
   await ports.store.commit(
     loaded.networkId,
     [trainWrite(loaded, stopped.value)],
-    stopped.events
+    [...stopped.events, ...alerts]
   )
   return { kind: "moved" }
 }
@@ -569,7 +632,19 @@ async function blockTrainAndStation(
   issues: Issue[],
   feedback?: ReviewFeedback
 ): Promise<void> {
-  const blockedStation = applied(blockStation(station.value, issues, feedback))
+  const blockedStation = applied(
+    blockStation(
+      station.value,
+      issues,
+      feedback ??
+        (station.value.state.status === "in_review"
+          ? {
+              summary: issues.map((issue) => issue.detail).join("; "),
+              findings: [],
+            }
+          : undefined)
+    )
+  )
   const blockedTrain = applied(blockTrain(train.value, issues))
   await ports.store.commit(
     train.networkId,

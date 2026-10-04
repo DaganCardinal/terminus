@@ -26,28 +26,50 @@ const toneByStatus: Record<string, keyof typeof tones> = {
   unloaded: "done",
 }
 
-export function StatusBadge({ status }: { status: string }) {
+/** Statuses where work is underway, so their dot pulses. */
+const pulsing = new Set([
+  "in_transit",
+  "approaching",
+  "docked",
+  "reviewing",
+  "blocked",
+  "returning",
+  "signaled",
+  "active",
+  "ready_for_pickup",
+  "in_review",
+  "revising",
+])
+
+const toneFor = (status: string) => toneByStatus[status] ?? "idle"
+
+export function StatusBadge({
+  status,
+  dot = false,
+}: {
+  status: string
+  /** Leads with a status dot that pulses while work is underway. */
+  dot?: boolean
+}) {
+  const tone = toneFor(status)
   return (
     <span
       className={cn(
-        "inline-flex rounded px-1.5 py-0.5 font-mono text-xs",
-        tones[toneByStatus[status] ?? "idle"]
+        "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-xs",
+        tones[tone]
       )}
     >
+      {dot && (
+        <i
+          aria-hidden="true"
+          className={cn(
+            "status-dot",
+            `status-dot-${tone}`,
+            pulsing.has(status) && "status-dot-pulse"
+          )}
+        />
+      )}
       {status.replaceAll("_", " ")}
     </span>
-  )
-}
-
-export function SignalLamp({ signal }: { signal: "green" | "red" | null }) {
-  if (!signal) return null
-  return (
-    <span
-      title={`Signal ${signal}`}
-      className={cn(
-        "inline-block size-2.5 rounded-full",
-        signal === "green" ? "bg-emerald-500" : "bg-red-500"
-      )}
-    />
   )
 }

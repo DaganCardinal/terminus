@@ -3,6 +3,7 @@ import { z } from "zod"
 import {
   createDispatchPlanRequestSchema,
   dispatchProposalSchema,
+  dispatchPlanSchema,
 } from "./dispatch"
 
 const proposal = {
@@ -17,6 +18,10 @@ const proposal = {
           name: "Footer",
           manifest: {
             goal: "Add footer",
+            repositoryChange: {
+              kind: "implementation",
+              description: "Add a footer component",
+            },
             scope: ["Footer"],
             expectedAreas: ["src/footer.tsx"],
             avoidAreas: [],
@@ -33,6 +38,70 @@ const proposal = {
 }
 
 describe("planning boundaries", () => {
+  it("requires concrete repository deliverables while preserving legacy plan inspection", () => {
+    const p = JSON.parse(JSON.stringify(proposal)) as typeof proposal
+    for (const repositoryChange of [
+      undefined,
+      { kind: "verification", description: "Run existing checks" },
+      { kind: "tests", description: " " },
+    ]) {
+      const invalid = {
+        ...p,
+        lines: [
+          {
+            ...p.lines[0]!,
+            stations: [
+              {
+                ...p.lines[0]!.stations[0]!,
+                manifest: {
+                  ...p.lines[0]!.stations[0]!.manifest,
+                  repositoryChange,
+                },
+              },
+            ],
+          },
+        ],
+      }
+      expect(dispatchProposalSchema.safeParse(invalid).success).toBe(false)
+    }
+    p.lines[0]!.stations[0]!.manifest.repositoryChange = {
+      kind: "tests",
+      description: "Add regression tests",
+    }
+    expect(dispatchProposalSchema.safeParse(p).success).toBe(true)
+    const legacy = {
+      ...p,
+      lines: [
+        {
+          ...p.lines[0]!,
+          stations: [
+            {
+              ...p.lines[0]!.stations[0]!,
+              manifest: {
+                ...p.lines[0]!.stations[0]!.manifest,
+                repositoryChange: undefined,
+              },
+            },
+          ],
+        },
+      ],
+    }
+    expect(
+      dispatchPlanSchema.safeParse({
+        id: "plan",
+        networkId: "network",
+        goal: "Goal",
+        terminusCommit: "base",
+        model: "fake",
+        createdAt: "now",
+        state: {
+          status: "ready",
+          proposal: legacy,
+          assessment: { errors: [], collisions: [] },
+        },
+      }).success
+    ).toBe(true)
+  })
   it("requires an idempotency identity and a bounded nonempty goal", () => {
     expect(
       createDispatchPlanRequestSchema.safeParse({

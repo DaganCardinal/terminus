@@ -50,6 +50,26 @@ const plan = () =>
 const ready = () => unwrap(readyDispatchPlan(plan(), proposal(), context))
 
 describe("Dispatcher plan lifecycle", () => {
+  it("refuses launch of a plan without concrete changes", () => {
+    for (const repositoryChange of [
+      undefined,
+      { kind: "verification" as const, description: "Confirm earlier work" },
+    ]) {
+      const p = proposal()
+      p.lines[0]!.stations[0]!.manifest.repositoryChange = repositoryChange
+      expect(assessDispatchProposal(p, context).errors.join(" ")).toContain(
+        "concrete repository change"
+      )
+      expectRejected(
+        requestPlanLaunch(
+          unwrap(readyDispatchPlan(plan(), p, context)),
+          "base",
+          context
+        ),
+        "invalid_input"
+      )
+    }
+  })
   it("records request, reviewable proposal, explicit launch and completed kickoff separately", () => {
     expect(eventTypes(createDispatchPlan(plan()))).toEqual([
       "dispatcher.plan_requested",

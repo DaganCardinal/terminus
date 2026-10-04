@@ -110,6 +110,10 @@ export function describeEvent(
       return `${name(event.stationId)} reset to run again`
     case "station.cancelled":
       return `${name(event.stationId)} cancelled: ${event.reason}`
+    case "station.removal_requested":
+      return `${name(event.stationId)} removal requested: ${event.reason}`
+    case "station.removal_refused":
+      return `${name(event.stationId)} removal refused: ${event.reason}`
     case "review.started":
       return `Conductor reviewing ${name(event.stationId)}`
     case "car.attached":

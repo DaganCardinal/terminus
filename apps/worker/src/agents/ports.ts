@@ -101,6 +101,16 @@ export function dispatcherPorts(env: Env): DispatcherPorts {
       const instance = await env.TRAIN_WORKFLOW.get(trainId)
       await instance.sendEvent({ type: TRAIN_EVENTS.clear, payload: {} })
     },
+    notifyTrainCommand: async (trainId) => {
+      const instance = await env.TRAIN_WORKFLOW.get(trainId)
+      await Promise.allSettled([
+        instance.sendEvent({ type: TRAIN_EVENTS.wake, payload: {} }),
+        instance.sendEvent({
+          type: TRAIN_EVENTS.clear,
+          payload: { reevaluateOnly: true },
+        }),
+      ])
+    },
     retryIntegration: async (integrationId) => {
       const instance = await env.INTEGRATION_WORKFLOW.get(integrationId)
       const status = await instance.status()

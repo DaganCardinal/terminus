@@ -8,13 +8,8 @@ import {
 } from "react"
 import { Minus, Plus, Scan } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
-import {
-  BULLET_OFFSET,
-  HUB_RADIUS,
-  TRACK_WIDTH,
-  layoutNetwork,
-  trainPoint,
-} from "./layout"
+import { BULLET_OFFSET, HUB_RADIUS, TRACK_WIDTH, layoutNetwork } from "./layout"
+import { useTrainMotion } from "./use-train-motion"
 
 export type MapSelection = { lineId: string; stationId?: string }
 /** Screen space kept clear of floating UI when fitting the network. */
@@ -119,6 +114,17 @@ export function NetworkMap({
     ({ train }) => train.state.status === "siding"
   )
   const capsule = hubHalfHeight > HUB_RADIUS
+  const trainRef = useTrainMotion(
+    routes.flatMap((route) =>
+      snapshot.trains
+        .filter(({ train }) => train.lineId === route.line.id)
+        .map((view) => ({
+          id: view.train.id,
+          motion: { ...view, state: view.train.state },
+          route,
+        }))
+    )
+  )
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -407,13 +413,16 @@ export function NetworkMap({
                     if (!station) return null
                     const p = route.stations[i]!
                     const status = station.state.status
-                    const active = ![
+                    const blocked = status === "blocked"
+                    const working = ![
                       "waiting",
                       "complete",
                       "cancelled",
+                      "blocked",
                     ].includes(status)
                     const chosen = selection?.stationId === id
-                    const showStatus = status !== "waiting"
+                    // The dot, spinner and check show every other state.
+                    const showStatus = blocked
                     const label = wrap(station.name, 16, 3)
                     const nameBaseline =
                       p.y - LABEL_GAP - (showStatus ? STATUS_LEADING : 0)
@@ -442,15 +451,35 @@ export function NetworkMap({
                           fill="transparent"
                         />
                         <title>{`${station.name} · ${words(status)}`}</title>
-                        {(active || chosen) && (
+                        {(working || blocked || chosen) && (
                           <circle
                             cx={p.x}
                             cy={p.y}
                             r="13"
                             fill="var(--map-paper)"
-                            stroke={chosen ? "var(--map-ink)" : color}
+                            stroke={
+                              chosen
+                                ? "var(--map-ink)"
+                                : blocked
+                                  ? "var(--map-danger)"
+                                  : color
+                            }
+                            strokeOpacity={chosen || blocked ? 1 : 0.22}
                             strokeWidth="2"
-                            strokeDasharray={chosen ? undefined : "3 3"}
+                          />
+                        )}
+                        {working && (
+                          <circle
+                            cx={p.x}
+                            cy={p.y}
+                            r="13"
+                            fill="none"
+                            stroke={color}
+                            strokeWidth="2.5"
+                            strokeLinecap="round"
+                            // An arc of about a quarter of the ring.
+                            strokeDasharray="22 60"
+                            className="station-spinner"
                           />
                         )}
                         <circle
@@ -460,9 +489,7 @@ export function NetworkMap({
                           fill={
                             status === "complete" ? color : "var(--map-paper)"
                           }
-                          stroke={
-                            status === "blocked" ? "var(--map-danger)" : color
-                          }
+                          stroke={blocked ? "var(--map-danger)" : color}
                           strokeWidth="3"
                         />
                         {status === "complete" && (
@@ -494,7 +521,7 @@ export function NetworkMap({
                             x={p.x}
                             y={p.y - LABEL_GAP}
                             textAnchor="middle"
-                            className={`station-state ${status === "blocked" ? "state-blocked" : ""}`}
+                            className="station-state state-blocked"
                           >
                             {words(status)}
                           </text>
@@ -503,15 +530,18 @@ export function NetworkMap({
                     )
                   })}
                   {views.map((view) => {
-                    const p = trainPoint(view.train.state, route)
-                    if (!p) return null
                     const status = view.train.state.status
+                    if (status === "unloaded" || status === "siding")
+                      return null
                     const label = words(status)
-                    // Icon, label and signal lamp sized to the label's length.
+                    // Icon, label and status dot sized to the label's length.
+                    // Drawn around the Train's track position, which
+                    // useTrainMotion sets as the group's transform.
                     const half = 30 + label.length * 3.4
                     return (
                       <g
                         key={view.train.id}
+                        ref={trainRef(view.train.id)}
                         className={`map-target train-marker train-${status}`}
                         role="button"
                         tabIndex={0}
@@ -523,8 +553,8 @@ export function NetworkMap({
                       >
                         <rect
                           className="train-hitbox"
-                          x={p.x - half - 4}
-                          y={p.y + 8}
+                          x={-half - 4}
+                          y={8}
                           width={half * 2 + 8}
                           height="56"
                           fill="transparent"
@@ -532,20 +562,17 @@ export function NetworkMap({
                         <title>
                           {`Train · ${label} · ${view.train.carIds.length} Cars`}
                         </title>
-                        <path
-                          d={`M${p.x},${p.y + 15} V${p.y + 36}`}
-                          className="train-leader"
-                        />
+                        <path d="M0,15 V36" className="train-leader" />
                         <rect
                           className="train-body"
-                          x={p.x - half}
-                          y={p.y + 36}
+                          x={-half}
+                          y={36}
                           width={half * 2}
                           height="26"
                           rx="13"
                         />
                         <g
-                          transform={`translate(${p.x - half + 11},${p.y + 42})`}
+                          transform={`translate(${-half + 11},42)`}
                           fill="none"
                           stroke="currentColor"
                           strokeWidth="1.5"
@@ -555,21 +582,21 @@ export function NetworkMap({
                           <rect width="11" height="11" rx="2" />
                           <path d="M2 3h7v3.5H2z M2.5 14l1.5-2.5 M8.5 14L7 11.5" />
                         </g>
-                        <text
-                          x={p.x + (view.signal ? 0 : 6)}
-                          y={p.y + 53.5}
-                          className="train-label"
-                        >
+                        <text x={0} y={53.5} className="train-label">
                           {label}
                         </text>
-                        {view.signal && (
-                          <circle
-                            cx={p.x + half - 13}
-                            cy={p.y + 49}
-                            r="4"
-                            className={`train-signal signal-${view.signal}`}
-                          />
-                        )}
+                        <circle
+                          cx={half - 13}
+                          cy={49}
+                          r="4"
+                          className="train-dot train-dot-pulse"
+                        />
+                        <circle
+                          cx={half - 13}
+                          cy={49}
+                          r="4"
+                          className="train-dot"
+                        />
                       </g>
                     )
                   })}
@@ -698,9 +725,6 @@ function MapKey({ compact }: { compact: boolean }) {
         </span>
         <span>
           <i className="key-train" /> Train
-        </span>
-        <span>
-          <i className="key-signal" /> Red signal
         </span>
       </div>
     </details>

@@ -6,6 +6,7 @@ import type {
   SignalAspect,
   Station,
   Train,
+  TrainState,
   DispatchPlan,
 } from "@terminus/domain"
 import { z } from "zod"
@@ -44,6 +45,16 @@ export const layLineRequestSchema = z.object({
 
 export type LayLineRequest = z.infer<typeof layLineRequestSchema>
 
+export const removeStationRequestSchema = z
+  .object({ reason: z.string().trim().min(1).max(2000) })
+  .strict()
+export type RemoveStationRequest = z.infer<typeof removeStationRequestSchema>
+
+/** A command wakeup must not implicitly clear an unrelated Train blocker. */
+export const trainClearEventSchema = z
+  .object({ reevaluateOnly: z.boolean().optional() })
+  .strict()
+
 export const placeHoldRequestSchema = holdSchema.omit({ id: true })
 
 export type PlaceHoldRequest = z.infer<typeof placeHoldRequestSchema>
@@ -78,6 +89,11 @@ export interface TrainView {
   train: Train
   /** The Engineer's current gate decision, as shown on the map. */
   signal: SignalAspect | null
+  /** When the Train entered its current status (ISO 8601). */
+  stateEnteredAt: string
+  /** The state the Train left to enter its current status, and when it had
+   * entered that one. Null for Trains recorded before this was tracked. */
+  previous: { state: TrainState; enteredAt: string } | null
 }
 
 /** Everything needed to draw a network, as of event `lastSeq`. */

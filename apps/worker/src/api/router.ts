@@ -3,6 +3,7 @@ import {
   layLineRequestSchema,
   placeHoldRequestSchema,
   createDispatchPlanRequestSchema,
+  removeStationRequestSchema,
   type ApiError,
   type EventsResponse,
 } from "@terminus/protocol"
@@ -18,6 +19,7 @@ import {
   releaseHold,
   resolveConflict,
   retryIntegration,
+  removeStation,
 } from "../agents/dispatcher"
 import { dispatcherPorts, dispatchPlanningPorts } from "../agents/ports"
 import {
@@ -33,6 +35,17 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/stations/:stationId/remove",
+    }),
+    async (request, env, { networkId, stationId }) => {
+      const body = await parse(request, removeStationRequestSchema)
+      await removeStation(dispatcherPorts(env), networkId!, stationId!, body)
+      return new Response(null, { status: 202 })
+    },
+  ],
   [
     "POST",
     new URLPattern({ pathname: "/api/trains/:trainId/preview" }),

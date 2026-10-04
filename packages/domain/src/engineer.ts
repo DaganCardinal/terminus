@@ -5,6 +5,7 @@ import type { StationId } from "./ids"
 import type { Issue } from "./issue"
 import type { Station, StationStatus } from "./station"
 import type { Train } from "./train"
+import { hasConcreteRepositoryChange } from "./manifest"
 
 /**
  * The Engineer's decision at a gate. `hold` is an expected stop that clears on
@@ -61,6 +62,12 @@ export function evaluateDeparture(
 ): GateDecision {
   const issues = blockingIssues(train, context)
   const reasons = holdReasons(train, context)
+
+  if (!hasConcreteRepositoryChange(station.manifest))
+    issues.push({
+      kind: "station_change_required",
+      detail: `Station ${station.id} has no declared concrete repository change. Revise the plan or remove the Station.`,
+    })
 
   for (const dependency of station.manifest.dependencies) {
     const status = context.dependencies[dependency]

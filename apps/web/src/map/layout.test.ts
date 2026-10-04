@@ -4,10 +4,20 @@ import {
   TRACK_WIDTH,
   layoutNetwork,
   routeShapes,
+  isMoving,
   shapeForLine,
-  trainPoint,
+  trainDistance,
+  type TrainMotion,
 } from "./layout"
 import { pointOnTrack, type Point } from "./track"
+
+const T0 = Date.parse("2026-10-04T10:00:00.000Z")
+const at = (seconds: number) => new Date(T0 + seconds * 1000).toISOString()
+const motion = (
+  state: TrainState,
+  enteredAt = 0,
+  previous: TrainMotion["previous"] = null
+): TrainMotion => ({ state, stateEnteredAt: at(enteredAt), previous })
 
 const line = (id: string, count = 3): Line => ({
   id,
@@ -75,7 +85,7 @@ describe("network map projection", () => {
       new Set([...byShape.values()].map((p) => JSON.stringify(p))).size
     ).toBe(6)
   })
-  it("uses backend locations for ready, held, blocked, docked and reviewing Trains", () => {
+  it("uses backend locations for ready, held, docked and reviewing Trains", () => {
     const { routes } = layoutNetwork([line("a")])
     const route = routes[0]!
     const ready: TrainState = {
@@ -89,45 +99,118 @@ describe("network map projection", () => {
         reasons: [{ kind: "dependency", stationId: "elsewhere" }],
         resume: ready,
       },
-      {
-        status: "blocked",
-        issues: [{ kind: "conflict", detail: "Conflict" }],
-        resume: ready,
-      },
       { status: "docked", at: "a-s1", from: { kind: "depot" } },
       { status: "reviewing", at: "a-s1", from: { kind: "depot" } },
     ] satisfies TrainState[])
-      expect(trainPoint(state, route)).toEqual(route.stations[1])
+      expect(trainDistance(motion(state), route, T0 + 90_000)).toBe(
+        route.stationDistances[1]
+      )
     expect(
-      trainPoint({ status: "ready", at: { kind: "depot" } }, route)
-    ).toEqual(route.depot)
+      trainDistance(
+        motion({ status: "ready", at: { kind: "depot" } }),
+        route,
+        T0
+      )
+    ).toBe(0)
+    expect(pointOnTrack(route.track, 0)).toEqual(route.depot)
   })
-  it("shows lifecycle phases without simulating progress and removes terminal Trains from track", () => {
+  it("eases a Train in transit toward a point short of its Station, never reaching it", () => {
     const { routes } = layoutNetwork([line("a")])
     const route = routes[0]!
-    const moving: TrainState = {
+    const [first, second] = route.stationDistances as [number, number]
+    const moving = motion({
       status: "in_transit",
-      from: { kind: "depot" },
-      toward: "a-s0",
-    }
-    expect(trainPoint(moving, route)).not.toEqual(route.stations[0])
-    expect(trainPoint(moving, route)).toEqual(
-      trainPoint(structuredClone(moving), route)
-    )
-    expect(trainPoint({ ...moving, status: "approaching" }, route)).not.toEqual(
-      trainPoint(moving, route)
-    )
-    expect(
-      trainPoint({ status: "unloaded", mergeCommit: "abc" }, route)
-    ).toBeNull()
-    expect(
-      trainPoint({ status: "siding", reason: "Abandoned" }, route)
-    ).toBeNull()
-    expect(
-      trainPoint({ status: "returning", phase: "awaiting_clearance" }, route)
-    ).not.toEqual(route.stations.at(-1))
-  })
+      from: { kind: "station", stationId: "a-s0" },
+      toward: "a-s1",
+    })
+    const after = (seconds: number) =>
+      trainDistance(moving, route, T0 + seconds * 1000)!
+    const wait = after(1_000_000)
 
+    expect(after(0)).toBe(first)
+    expect(wait).toBeLessThan(second)
+    expect(after(60) - first).toBeCloseTo((wait - first) / 2)
+    expect(after(120) - first).toBeCloseTo(((wait - first) * 3) / 4)
+    // Deterministic, so reloads and polling redraw it in the same place.
+    expect(trainDistance(structuredClone(moving), route, T0 + 60_000)).toBe(
+      after(60)
+    )
+    expect(isMoving(moving)).toBe(true)
+  })
+  it("sends a Train on to its Station only once the work is ready", () => {
+    const { routes } = layoutNetwork([line("a")])
+    const route = routes[0]!
+    const toward = { from: { kind: "depot" as const }, toward: "a-s0" }
+    const approaching = motion({ status: "approaching", ...toward }, 30)
+
+    expect(trainDistance(approaching, route, T0 + 30_000)).toBe(
+      route.stationDistances[0]
+    )
+    expect(isMoving(approaching)).toBe(false)
+  })
+  it("leaves a blocked Train where it stopped", () => {
+    const { routes } = layoutNetwork([line("a")])
+    const route = routes[0]!
+    const ready: TrainState = {
+      status: "ready",
+      at: { kind: "station", stationId: "a-s0" },
+    }
+    const blocked: TrainState = {
+      status: "blocked",
+      issues: [{ kind: "conflict", detail: "Conflict" }],
+      resume: ready,
+    }
+    const moving = motion({
+      status: "in_transit",
+      from: ready.at,
+      toward: "a-s1",
+    })
+    const stoppedMoving = motion(blocked, 60, {
+      state: moving.state,
+      enteredAt: moving.stateEnteredAt,
+    })
+    const stoppedDocked = motion(blocked, 60, {
+      state: { status: "docked", from: ready.at, at: "a-s1" },
+      enteredAt: at(0),
+    })
+
+    expect(trainDistance(stoppedMoving, route, T0 + 600_000)).toBe(
+      trainDistance(moving, route, T0 + 60_000)
+    )
+    expect(trainDistance(stoppedDocked, route, T0 + 600_000)).toBe(
+      route.stationDistances[1]
+    )
+    // Without a recorded previous state, it falls back to where it resumes.
+    expect(trainDistance(motion(blocked), route, T0)).toBe(
+      route.stationDistances[0]
+    )
+    expect(isMoving(stoppedMoving)).toBe(false)
+  })
+  it("removes terminal Trains from track and parks returning ones past the last Station", () => {
+    const { routes } = layoutNetwork([line("a")])
+    const route = routes[0]!
+    expect(
+      trainDistance(
+        motion({ status: "unloaded", mergeCommit: "abc" }),
+        route,
+        T0
+      )
+    ).toBeNull()
+    expect(
+      trainDistance(
+        motion({ status: "siding", reason: "Abandoned" }),
+        route,
+        T0
+      )
+    ).toBeNull()
+    expect(
+      trainDistance(
+        motion({ status: "returning", phase: "awaiting_clearance" }),
+        route,
+        T0
+      )
+    ).toBeGreaterThan(route.stationDistances.at(-1)!)
+  })
   it("joins every change of direction with a curve, never a hard corner", () => {
     for (const count of [1, 3, 6, 8, 13, 24]) {
       const { routes } = layoutNetwork(

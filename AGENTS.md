@@ -204,7 +204,7 @@ Each kind of state has exactly one owner. Never create a second authoritative co
 
 - The backend owns the truth, and the frontend renders it. The UI never decides whether a Train may move, never infers completion from an animation, never merges, and never runs workflows.
 - Animation never drives state. The order is state change → agent behavior → visualization.
-- `in_transit` means work is in progress. It is **not** a progress percentage or a timer. A Train moves to `approaching` because its Station became `ready_for_pickup`.
+- `in_transit` means work is in progress. It is **not** a progress percentage or a timer. A Train moves to `approaching` because its Station became `ready_for_pickup`. The map eases a moving Train toward a waiting point short of its next Station as presentation only; it never draws the Train at the Station before `approaching`.
 - Movement must never hide a blocker. `held` and `blocked` must be explicit in the domain and visible on the map.
 
 ### Topology and the work loop

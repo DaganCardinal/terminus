@@ -17,6 +17,16 @@ export interface Contract {
  */
 export interface WorkManifest {
   goal: string
+  /** Explicit repository deliverable. Optional only for older persisted manifests. */
+  repositoryChange?: {
+    kind:
+      | "implementation"
+      | "tests"
+      | "documentation"
+      | "configuration"
+      | "verification"
+    description: string
+  }
   /** What the Station covers, in prose. */
   scope: string[]
   /** Paths or globs the Station is expected to change. */
@@ -29,4 +39,18 @@ export interface WorkManifest {
   dependencies: StationId[]
   acceptanceCriteria: string[]
   expectedEvidence: string[]
+}
+
+/** Checks declared intent, not whether execution will actually produce a diff. */
+export function hasConcreteRepositoryChange(manifest: WorkManifest): boolean {
+  const change = manifest.repositoryChange
+  return (
+    !!change &&
+    ["implementation", "tests", "documentation", "configuration"].includes(
+      change.kind
+    ) &&
+    !!change.description.trim() &&
+    manifest.expectedAreas.length > 0 &&
+    manifest.expectedAreas.every((path) => !!path.trim())
+  )
 }

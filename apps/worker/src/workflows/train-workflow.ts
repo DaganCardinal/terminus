@@ -1,6 +1,7 @@
 import {
   stationOutcomeSchema,
   integrationOutcomeSchema,
+  trainClearEventSchema,
   type IntegrationOutcome,
   type StationOutcome,
 } from "@terminus/protocol"
@@ -61,20 +62,23 @@ export class TrainWorkflow extends WorkflowEntrypoint<
           // Wakes are a shortcut; the gate is re-checked periodically anyway.
           await waitFor(step, `held (${leg})`, TRAIN_EVENTS.wake, "10 minutes")
           break
-        case "await_clear":
+        case "await_clear": {
+          const payload = await waitFor(
+            step,
+            `blocked (${leg})`,
+            TRAIN_EVENTS.clear,
+            "1 minute"
+          )
           if (
-            (await waitFor(
-              step,
-              `blocked (${leg})`,
-              TRAIN_EVENTS.clear,
-              "1 day"
-            )) !== null
+            payload !== null &&
+            !trainClearEventSchema.parse(payload).reevaluateOnly
           ) {
             await step.do(`clear (${leg})`, stepConfig, () =>
               clearTrain(ports, trainId)
             )
           }
           break
+        }
         case "await_terminus":
           await waitFor(
             step,

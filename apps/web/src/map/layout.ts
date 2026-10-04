@@ -1,4 +1,4 @@
-import type { Line, TrainState } from "@terminus/protocol"
+import type { Line, TrainState, TrainView } from "@terminus/protocol"
 import {
   pointOnTrack,
   roundTrack,
@@ -353,37 +353,97 @@ export function layoutNetwork(lines: Line[]) {
   return { width, height, hub, hubHalfHeight, routes }
 }
 
-/** Positions represent lifecycle phases, never time elapsed or % complete. */
-export function trainPoint(
-  state: TrainState,
-  route: RouteLayout
-): Point | null {
-  const ids = route.line.stationIds
-  const station = (id: string) => route.stations[ids.indexOf(id)] ?? route.depot
+/** Seconds for a Train in transit to cover half the distance to where it
+ * waits; each further 60 seconds halves what remains. */
+const TRANSIT_HALF_LIFE = 60
+/** How far short of the next Station a Train waits for the work. */
+const WAIT_GAP = 44
+
+/** What the map needs to place a Train: its state and when it began. */
+export type TrainMotion = Pick<TrainView, "stateEnteredAt" | "previous"> & {
+  state: TrainState
+}
+
+const secondsBetween = (from: string, to: number) =>
+  Math.max(0, (to - Date.parse(from)) / 1000)
+
+/** Track distances of the run toward a Station: where it starts, where a
+ * Train waits for the work, and the Station itself. */
+function leg(route: RouteLayout, toward: string) {
+  const index = route.line.stationIds.indexOf(toward)
+  const to = route.stationDistances[index] ?? 0
+  const from = index > 0 ? route.stationDistances[index - 1]! : 0
+  return { from, to, wait: Math.max((from + to) / 2, to - WAIT_GAP) }
+}
+
+function transitDistance(route: RouteLayout, toward: string, seconds: number) {
+  const { from, wait } = leg(route, toward)
+  return from + (wait - from) * (1 - 0.5 ** (seconds / TRANSIT_HALF_LIFE))
+}
+
+/** Where a Train is drawn while it is not moving. */
+function restingDistance(state: TrainState, route: RouteLayout): number | null {
+  const station = (id: string) =>
+    route.stationDistances[route.line.stationIds.indexOf(id)] ?? 0
   switch (state.status) {
     case "unloaded":
     case "siding":
       return null
     case "held":
     case "blocked":
-      return trainPoint(state.resume, route)
+      return restingDistance(state.resume, route)
     case "ready":
-      return state.at.kind === "depot"
-        ? route.depot
-        : station(state.at.stationId)
+      return state.at.kind === "depot" ? 0 : station(state.at.stationId)
     case "docked":
     case "reviewing":
       return station(state.at)
     case "in_transit":
-    case "approaching": {
-      const index = ids.indexOf(state.toward)
-      const to = route.stationDistances[index] ?? 0
-      const from = index > 0 ? route.stationDistances[index - 1]! : 0
-      const phase = state.status === "approaching" ? 0.72 : 0.32
-      return pointOnTrack(route.track, from + (to - from) * phase)
-    }
+      return leg(route, state.toward).wait
+    case "approaching":
+      return leg(route, state.toward).to
     case "returning":
       // Past the last Station, on straight track short of the approach lanes.
-      return pointOnTrack(route.track, route.trackEnd - TRACK_TAIL * 0.45)
+      return route.trackEnd - TRACK_TAIL * 0.45
   }
+}
+
+/**
+ * A Train's distance along its route at time `now`, or null when it is off the
+ * track. Motion is presentation only and never claims progress the backend has
+ * not reported: a Train in transit eases toward a point short of the next
+ * Station and waits there, reaching the Station only once its work is ready
+ * (`approaching`). A blocked Train stays where it was when it stopped. The
+ * renderer eases the drawn Train toward this target, which produces the
+ * arrival run however briefly `approaching` lasts.
+ */
+export function trainDistance(
+  motion: TrainMotion,
+  route: RouteLayout,
+  now: number
+): number | null {
+  const { state, previous } = motion
+  const seconds = secondsBetween(motion.stateEnteredAt, now)
+  switch (state.status) {
+    case "in_transit":
+      return transitDistance(route, state.toward, seconds)
+    case "blocked":
+      return previous && previous.state.status !== "blocked"
+        ? trainDistance(
+            {
+              state: previous.state,
+              stateEnteredAt: previous.enteredAt,
+              previous: null,
+            },
+            route,
+            Date.parse(motion.stateEnteredAt)
+          )
+        : restingDistance(state, route)
+    default:
+      return restingDistance(state, route)
+  }
+}
+
+/** True while a Train's target position changes over time. */
+export function isMoving(motion: TrainMotion): boolean {
+  return motion.state.status === "in_transit"
 }

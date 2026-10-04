@@ -81,6 +81,9 @@ export function testPorts(
         wakes.push(trainId)
       },
       clearTrain: async () => {},
+      notifyTrainCommand: async (trainId) => {
+        wakes.push(trainId)
+      },
       retryIntegration: async () => {},
       newId,
       now,
@@ -143,6 +146,10 @@ export async function runStation(
 export function manifest(overrides: Partial<WorkManifest> = {}): WorkManifest {
   return {
     goal: "Do the thing",
+    repositoryChange: {
+      kind: "implementation",
+      description: "Implement the requested behavior",
+    },
     scope: [],
     expectedAreas: ["src/thing.ts"],
     avoidAreas: [],

@@ -72,6 +72,41 @@ describe("evaluateStationRetry", () => {
 })
 
 describe("evaluateDeparture", () => {
+  it("blocks absent, verification-only and empty deliverables before signaling", () => {
+    for (const work of [
+      manifest({ repositoryChange: undefined }),
+      manifest({
+        repositoryChange: {
+          kind: "verification",
+          description: "Run existing tests",
+        },
+      }),
+      manifest({ repositoryChange: { kind: "tests", description: " " } }),
+      manifest({ expectedAreas: [] }),
+    ]) {
+      expect(
+        evaluateDeparture(train, { ...station, manifest: work }, clearContext())
+      ).toMatchObject({
+        kind: "block",
+        issues: [{ kind: "station_change_required" }],
+      })
+    }
+    expect(
+      evaluateDeparture(
+        train,
+        {
+          ...station,
+          manifest: manifest({
+            repositoryChange: {
+              kind: "tests",
+              description: "Add regression tests",
+            },
+          }),
+        },
+        clearContext()
+      ).kind
+    ).toBe("clear")
+  })
   it("clears when no hard rule applies", () => {
     expect(evaluateDeparture(train, station, clearContext())).toEqual({
       kind: "clear",

@@ -1,4 +1,4 @@
-import type { WorkManifest } from "./manifest"
+import { hasConcreteRepositoryChange, type WorkManifest } from "./manifest"
 import { accept, reject, type Transition } from "./transition"
 
 export interface PlannedLine {
@@ -79,6 +79,10 @@ export function assessDispatchProposal(
     const seen = new Set<string>()
     for (const station of line.stations) {
       const label = `${line.name} / ${station.name}`
+      if (!hasConcreteRepositoryChange(station.manifest))
+        errors.push(
+          `${label}: declare a concrete repository change; verification-only Stations are not supported.`
+        )
       if (stationKeys.has(station.key))
         errors.push(`Duplicate Station key: ${station.key}`)
       stationKeys.add(station.key)

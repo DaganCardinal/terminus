@@ -6,6 +6,7 @@ import {
   placeHold as placeHoldTransition,
   releaseHold as releaseHoldTransition,
   resolveConflict as resolveConflictTransition,
+  requestStationRemoval,
   type Hold,
   type HoldId,
   type Line,
@@ -22,6 +23,7 @@ import type {
   NetworkSummary,
   PlaceHoldRequest,
   IntegrationAttempt,
+  RemoveStationRequest,
 } from "@terminus/protocol"
 import type { NetworkStore, Write } from "../integrations/network-store"
 import { defaultValidation } from "../integrations/execution-config"
@@ -33,6 +35,7 @@ export interface DispatcherPorts {
   startTrain(trainId: TrainId): Promise<void>
   wakeTrain(trainId: TrainId): Promise<void>
   clearTrain(trainId: TrainId): Promise<void>
+  notifyTrainCommand(trainId: TrainId): Promise<void>
   retryIntegration(integrationId: string): Promise<void>
   newId(prefix: string): string
   now(): string
@@ -126,6 +129,18 @@ export async function layLine(
   if (unknown.length > 0) {
     throw new DispatchError(400, `Unknown dependencies: ${unknown.join(", ")}`)
   }
+  for (const id of external) {
+    const dependency = await ports.store.station(id)
+    if (
+      dependency?.networkId !== networkId ||
+      dependency.value.state.status === "cancelled" ||
+      dependency.value.removalRequest
+    )
+      throw new DispatchError(
+        409,
+        `Dependency ${id} is unavailable or being removed`
+      )
+  }
 
   const created = createLine({
     id: ports.newId("line"),
@@ -169,10 +184,19 @@ export async function layLine(
     })),
     { kind: "train", train: train.value, version: null },
   ]
-  await ports.store.commit(networkId, writes, [
-    ...created.events,
-    ...train.events,
-  ])
+  try {
+    await ports.store.commit(networkId, writes, [
+      ...created.events,
+      ...train.events,
+    ])
+  } catch (error) {
+    if (String(error).includes("station_dependency_unavailable"))
+      throw new DispatchError(
+        409,
+        "A dependency was removed while laying the Line; revise the dependencies"
+      )
+    throw error
+  }
   await ports.startTrain(trainId)
   return { line, stations, train: train.value }
 }
@@ -233,6 +257,40 @@ export async function clearTrain(
     throw new DispatchError(409, `Train ${trainId} is not blocked`)
   }
   await ports.clearTrain(trainId)
+}
+
+/** Persist the request first; only the Train Workflow applies the cancellation. */
+export async function removeStation(
+  ports: DispatcherPorts,
+  networkId: string,
+  stationId: string,
+  request: RemoveStationRequest
+): Promise<void> {
+  const station = await ports.store.station(stationId)
+  if (!station || station.networkId !== networkId)
+    throw new DispatchError(404, "Unknown Station")
+  if (station.value.state.status === "cancelled") return
+  const line = await ports.store.line(station.value.lineId)
+  const train = (await ports.store.trains(networkId)).find(
+    (t) => t.value.lineId === station.value.lineId
+  )
+  if (!line || !train) throw new DispatchError(404, "Station has no Line Train")
+  const requested = requestStationRemoval({
+    train: train.value,
+    line,
+    station: station.value,
+    stations: (await ports.store.stations(networkId)).map((s) => s.value),
+    reason: request.reason,
+  })
+  if (!requested.ok) throw new DispatchError(409, requested.error.message)
+  if (requested.events.length)
+    await ports.store.commit(
+      networkId,
+      [{ kind: "station", station: requested.value, version: station.version }],
+      requested.events
+    )
+  // Best effort: periodic gate reads recover a lost wakeup from the durable request.
+  await ports.notifyTrainCommand(train.value.id).catch(() => {})
 }
 
 /**
