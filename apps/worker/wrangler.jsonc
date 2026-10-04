@@ -16,6 +16,11 @@
   ],
   "workflows": [
     {
+      "name": "terminus-technician",
+      "binding": "TECHNICIAN_WORKFLOW",
+      "class_name": "TechnicianWorkflow",
+    },
+    {
       "name": "terminus-dispatch",
       "binding": "DISPATCH_WORKFLOW",
       "class_name": "DispatchWorkflow",
@@ -59,7 +64,8 @@
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
     "PREVIEW_BASE_URL": "",
-    // Both roles use the inexpensive testing model. No automatic fallback.
+    // All real roles use the inexpensive testing model. No automatic fallback.
+    "TECHNICIAN_MODEL": "@cf/zai-org/glm-5.3-flash",
     "STATION_AGENT_MODEL": "@cf/zai-org/glm-5.3-flash",
     "CONDUCTOR_MODEL": "@cf/zai-org/glm-5.3-flash",
     "DISPATCHER_MODEL": "@cf/zai-org/glm-5.3-flash",
@@ -67,6 +73,7 @@
     "AI_GATEWAY_ACCOUNT_ID": "",
     "AI_GATEWAY_ID": "default",
     // How long a fake Station Agent takes, so Trains visibly travel.
+    "FAKE_INTEGRATION_CONFLICT_PATHS": "",
     "FAKE_AGENT_DELAY_MS": "4000",
     // How many times the fake Conductor returns each Station's work.
     "FAKE_CONDUCTOR_RETURNS": "1",
@@ -87,6 +94,11 @@
         },
       ],
       "workflows": [
+        {
+          "name": "terminus-technician-fake",
+          "binding": "TECHNICIAN_WORKFLOW",
+          "class_name": "TechnicianWorkflow",
+        },
         {
           "name": "terminus-dispatch-fake",
           "binding": "DISPATCH_WORKFLOW",
@@ -111,10 +123,12 @@
       "vars": {
         "REPOSITORY_MODE": "fake",
         "PREVIEW_BASE_URL": "",
+        "TECHNICIAN_MODEL": "fake",
         "STATION_AGENT_MODEL": "fake",
         "CONDUCTOR_MODEL": "fake",
         "DISPATCHER_MODEL": "fake",
         "STATION_MAX_RETRIES": "3",
+        "FAKE_INTEGRATION_CONFLICT_PATHS": "",
         "FAKE_AGENT_DELAY_MS": "4000",
         "FAKE_CONDUCTOR_RETURNS": "1",
         "AI_GATEWAY_ACCOUNT_ID": "",

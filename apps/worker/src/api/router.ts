@@ -1,3 +1,5 @@
+import { dispatchTechnician, approveTechnician } from "../agents/technician"
+import { technicianPorts } from "../agents/ports"
 import {
   createNetworkRequestSchema,
   layLineRequestSchema,
@@ -35,6 +37,29 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/conflicts/:conflictId/technician",
+    }),
+    async (_, env, { networkId, conflictId }) =>
+      json(
+        await dispatchTechnician(technicianPorts(env), networkId!, conflictId!),
+        202
+      ),
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/repairs/:repairId/approve",
+    }),
+    async (_, env, { networkId, repairId }) =>
+      json(
+        await approveTechnician(technicianPorts(env), networkId!, repairId!),
+        202
+      ),
+  ],
+
   [
     "POST",
     new URLPattern({

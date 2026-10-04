@@ -283,14 +283,6 @@ button:disabled {
 .sync-state .sync-error {
   background: #b87511;
 }
-.terminus-commit {
-  font-size: 12px;
-  color: var(--map-secondary);
-}
-.terminus-commit code {
-  font-size: 11px;
-  color: var(--map-ink);
-}
 .network-stats {
   display: flex;
   flex-wrap: wrap;
@@ -766,8 +758,11 @@ button:disabled {
   animation: drawer-in 220ms cubic-bezier(0.2, 0.7, 0.2, 1);
   transition: width 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
+/* Expanded, the drawer reaches the top edge, so it rises above the
+ * top-right controls (25) to keep its own collapse and close buttons usable. */
 .drawer-expanded {
   top: 12px;
+  z-index: 26;
   width: min(85vw, 1120px);
 }
 @keyframes drawer-in {
@@ -934,7 +929,11 @@ button:disabled {
   color: var(--foreground);
 }
 .drawer-body .detail-callout .callout-lead {
-  font-weight: 550;
+  font-weight: 500;
+}
+/* The Conductor's findings support its summary. */
+.drawer-body .detail-callout .callout-lead ~ ul li {
+  color: var(--muted-foreground);
 }
 .detail-callout h4 {
   color: var(--muted-foreground);
@@ -991,19 +990,7 @@ button:disabled {
 .drawer-body details > :not(summary) {
   margin-top: 6px;
 }
-.detail-grid {
-  display: grid;
-  gap: 14px;
-}
-.drawer-expanded .detail-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px 40px;
-}
-.detail-grid dt {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
+.detail-tags,
 .drawer-body .detail-tags {
   display: flex;
   flex-wrap: wrap;
@@ -1011,7 +998,7 @@ button:disabled {
   list-style: none;
   padding: 0;
 }
-.drawer-body .detail-tags li {
+.detail-tags li {
   padding: 1px 7px;
   border-radius: 5px;
   background: var(--muted);
@@ -1019,9 +1006,167 @@ button:disabled {
   line-height: 1.6;
   color: var(--foreground);
 }
-.drawer-body .detail-tags .tag-code {
+.detail-tags .tag-code {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11.5px;
+}
+/* Work Manifest: what changes, when it is done, what must stay true.
+ * Labels are supporting text; the content is what people read. */
+.manifest-fields {
+  display: grid;
+  gap: 16px;
+}
+.manifest-fields dt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.manifest-fields dt span {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.manifest-fields dd,
+.manifest-fields p,
+.manifest-fields li,
+.prose p,
+.prose li {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+.manifest-fields ul,
+.prose ul {
+  list-style: disc;
+  padding-left: 18px;
+}
+.manifest-fields li + li,
+.prose li + li {
+  margin-top: 2px;
+}
+/* An agent's written report, kept readable in a narrow drawer. */
+.prose {
+  max-width: 68ch;
+}
+.prose > * + * {
+  margin-top: 8px;
+}
+.prose code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--muted);
+  font-size: 11.5px;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.prose strong {
+  font-weight: 600;
+}
+/* Validation as one row of named checks. */
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.check-row > span {
+  color: var(--muted-foreground);
+}
+.check-row ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  list-style: none;
+  padding: 0;
+}
+.drawer-body .check-row ul {
+  padding: 0;
+  list-style: none;
+}
+.drawer-body .check-row li,
+.check-row li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--foreground);
+}
+.check-row svg {
+  color: var(--muted-foreground);
+}
+.check-row .check-passed svg {
+  color: #25865a;
+}
+.check-row .check-failed svg {
+  color: var(--map-danger);
+}
+.dark .check-row .check-passed svg {
+  color: #4fbf8a;
+}
+.check-row em {
+  font-style: normal;
+  color: var(--muted-foreground);
+}
+/* Commits, files and contracts: available, but out of the way. */
+.tech-details {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.drawer-body .tech-details summary,
+.tech-details summary {
+  cursor: pointer;
+  width: max-content;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.tech-details summary:hover {
+  color: var(--foreground);
+}
+.tech-details dl {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.tech-details dt {
+  margin-bottom: 2px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.drawer-body .tech-details dd,
+.tech-details dd {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.tech-details .detail-tags li {
+  color: var(--muted-foreground);
+}
+.dispatch-lines .tech-details {
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.dispatcher-alert-body .dispatcher-alert-note {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.dispatch-reasoning h3 {
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.dispatcher-modal .dispatch-reasoning p {
+  color: var(--foreground);
 }
 /* The Train as a locomotive and Cars, on a rail. */
 .consist-wrap {
@@ -1089,32 +1234,6 @@ button:disabled {
 }
 .train-preview {
   margin-top: 12px;
-}
-.drawer-body .check-list {
-  list-style: none;
-  padding: 0;
-}
-.check-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.check-list i {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--map-secondary);
-}
-.check-list .check-passed i {
-  background: #25865a;
-}
-.check-list .check-failed i {
-  background: var(--map-danger);
-}
-.check-list span {
-  margin-left: auto;
-  font-size: 12px;
 }
 .detail-train + .detail-train {
   margin-top: 24px;
@@ -1194,11 +1313,6 @@ button:disabled {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--muted-foreground);
-}
-.event-feed code {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-soft);
 }
 
 /* ── Dispatcher ──────────────────────────────────────── */
@@ -1516,25 +1630,18 @@ button:disabled {
   padding-left: 20px;
   margin-top: 12px;
 }
-.dispatch-lines li + li {
+.dispatch-lines ol > li + li {
   margin-top: 8px;
 }
-.dispatch-lines li summary {
+.dispatch-lines ol > li > details > summary {
   font-weight: 500;
 }
-.dispatch-lines li p {
+.dispatch-lines ol > li > details > p {
   margin-top: 8px;
+  color: var(--foreground);
 }
-.dispatch-lines dl {
+.dispatch-lines .manifest-fields {
   margin-top: 12px;
-}
-.dispatch-lines dt {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  margin-top: 8px;
-}
-.dispatch-lines dd {
-  overflow-wrap: anywhere;
 }
 .dispatcher-modal .dispatch-error {
   color: var(--danger-ink);
@@ -1754,9 +1861,6 @@ button:disabled {
     gap: 8px;
     font-size: 12px;
   }
-  .event-feed code {
-    display: none;
-  }
 }
 @keyframes sheet-in {
   from {
@@ -1787,4 +1891,40 @@ button:disabled {
   .consist-loading {
     animation: none;
   }
+}
+
+.technician-repairs {
+  margin: 20px;
+}
+.technician-repairs h3,
+.technician-repair h4 {
+  font-size: 14px;
+  font-weight: 600;
+}
+.technician-repairs p {
+  max-width: 65ch;
+  margin: 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.technician-repair {
+  padding: 16px 0;
+}
+.technician-repair + .technician-repair {
+  border-top: 1px solid var(--border);
+}
+.technician-repair .technician-status {
+  font-weight: 600;
+}
+.technician-repair details {
+  margin: 8px 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.technician-repair pre {
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  background: var(--muted);
+  font-size: 12px;
 }

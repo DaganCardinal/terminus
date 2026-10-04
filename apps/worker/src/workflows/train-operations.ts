@@ -7,6 +7,8 @@ import {
   clearForTerminus,
   completeIntegration,
   deferIntegration,
+  conflictsForRepair,
+  repairMatches,
   detectConflict,
   blockStation,
   blockTrain,
@@ -134,8 +136,41 @@ export async function advanceTrain(
       return review(ports, loaded, await loadStation(ports, state.at))
     case "held":
       return reconsiderHold(ports, loaded)
-    case "blocked":
+    case "blocked": {
+      const repair = await ports.store.approvedRepair(trainId)
+      const network = repair && (await ports.store.network(loaded.networkId))
+      const previous = repair && (await ports.store.latestIntegration(trainId))
+      const conflicts =
+        repair && network
+          ? conflictsForRepair(
+              await ports.store.conflicts(loaded.networkId),
+              repair,
+              {
+                trainCommit: loaded.value.headCommit,
+                terminusCommit: network.terminusCommit,
+              }
+            )
+          : []
+      if (
+        repair &&
+        network &&
+        previous?.status === "failed" &&
+        state.resume.status === "returning" &&
+        repairMatches(repair, {
+          trainCommit: loaded.value.headCommit,
+          terminusCommit: network.terminusCommit,
+        }) &&
+        evaluateTerminusEntry(loaded.value, {
+          holds: [],
+          conflicts,
+          trainChecks: [],
+        }).kind !== "block"
+      ) {
+        await clearTrain(ports, trainId)
+        return { kind: "moved" }
+      }
       return { kind: "await_clear" }
+    }
     case "returning":
       return returnToTerminus(ports, loaded)
     case "unloaded":
@@ -196,9 +231,18 @@ async function returnToTerminus(
   if (train.value.state.status !== "returning")
     throw new Error("Train is not returning")
   if (train.value.state.phase === "awaiting_clearance") {
+    const repair = await ports.store.approvedRepair(train.value.id)
+    const network = await ports.store.network(train.networkId)
     const context = {
       holds: await ports.store.holds(train.networkId),
-      conflicts: await ports.store.conflicts(train.networkId),
+      conflicts: conflictsForRepair(
+        await ports.store.conflicts(train.networkId),
+        repair,
+        {
+          trainCommit: train.value.headCommit,
+          terminusCommit: network!.terminusCommit,
+        }
+      ),
       trainChecks: [],
     }
     const decision = evaluateTerminusEntry(train.value, context)
@@ -404,9 +448,18 @@ async function reconsiderHold(
 
   let decision: GateDecision
   if (train.state.resume.status === "returning") {
+    const repair = await ports.store.approvedRepair(train.id)
+    const network = await ports.store.network(loaded.networkId)
     decision = evaluateTerminusEntry(train, {
       holds: await ports.store.holds(loaded.networkId),
-      conflicts: await ports.store.conflicts(loaded.networkId),
+      conflicts: conflictsForRepair(
+        await ports.store.conflicts(loaded.networkId),
+        repair,
+        {
+          trainCommit: train.headCommit,
+          terminusCommit: network!.terminusCommit,
+        }
+      ),
       trainChecks: [],
     })
   } else {

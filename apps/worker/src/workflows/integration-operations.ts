@@ -1,4 +1,6 @@
 import {
+  conflictsForRepair,
+  repairMatches,
   evaluateTerminusEntry,
   unmetRequiredChecks,
   type Evidence,
@@ -43,7 +45,32 @@ export async function prepareIntegration(
     train.value.state.phase !== "integrating"
   )
     throw new Error("Train no longer matches Dispatcher clearance")
-  const merged = await ports.repositories.prepareIntegration(input)
+  let merged: import("@terminus/artifacts").IntegrationMerge
+  if (input.repairId) {
+    const repair = (await ports.store.repair(input.repairId))?.value
+    if (
+      !repair ||
+      repair.state.status !== "approved" ||
+      repair.source.trainId !== input.trainId ||
+      !repairMatches(repair, input) ||
+      JSON.stringify(repair.source.acceptedCommits) !==
+        JSON.stringify(input.acceptedCommits)
+    )
+      throw new Error("Approved repair no longer matches integration sources")
+    const candidate = {
+      repoId: repair.state.workspaceRepoId,
+      headCommit: repair.state.proposal.headCommit,
+    }
+    const snapshot = await ports.repositories.inspectRepair(repair, candidate)
+    if (
+      snapshot.diff !== repair.state.proposal.diff ||
+      snapshot.repairDiff !== repair.state.repairDiff ||
+      JSON.stringify(snapshot.repairPaths) !==
+        JSON.stringify(repair.state.repairPaths)
+    )
+      throw new Error("Repair no longer matches the reviewed diffs")
+    merged = { ok: true, candidate }
+  } else merged = await ports.repositories.prepareIntegration(input)
   if (!merged.ok) {
     await ports.store.finishIntegration(id, {
       ok: false,
@@ -121,9 +148,24 @@ export async function promoteIntegration(
     train.value.state.phase !== "integrating"
   )
     throw new Error("Train changed before Terminus promotion")
+  const repair = input.repairId
+    ? ((await ports.store.repair(input.repairId))?.value ?? null)
+    : null
+  if (
+    input.repairId &&
+    (!repair ||
+      repair.state.status !== "approved" ||
+      !repairMatches(repair, input) ||
+      repair.state.proposal.headCommit !== candidate.headCommit)
+  )
+    throw new Error("Repair approval changed before promotion")
   const gate = evaluateTerminusEntry(train.value, {
     holds: await ports.store.holds(input.networkId),
-    conflicts: await ports.store.conflicts(input.networkId),
+    conflicts: conflictsForRepair(
+      await ports.store.conflicts(input.networkId),
+      repair,
+      input
+    ),
     trainChecks: evidence.checks,
   })
   if (gate.kind !== "clear") {

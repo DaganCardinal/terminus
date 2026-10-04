@@ -54,6 +54,26 @@ export function describeEvent(
   name: (id: string) => string
 ): string {
   switch (event.type) {
+    case "technician.integration_failed":
+      return `Technician candidate stopped during integration; inspect the evidence`
+    case "technician.validated":
+      return `Technician candidate independently validated`
+    case "technician.dispatched":
+      return `Technician dispatched for ${name(event.trainId)}`
+    case "technician.started":
+      return `Technician repairing ${name(event.trainId)} integration`
+    case "technician.candidate_prepared":
+      return `Technician candidate ready for Conductor review`
+    case "technician.reviewed":
+      return `Conductor reviewed the Technician candidate`
+    case "technician.approved":
+      return `Technician repair approved for integration`
+    case "technician.failed":
+      return `Technician stopped; inspect the repair details`
+    case "technician.integrated":
+      return `Technician repair integrated into Terminus`
+    case "technician.stale":
+      return `Technician candidate superseded after its source moved`
     case "dispatcher.user_attention_requested":
       return `Dispatcher requests user intervention for ${name(event.stationId)}: ${describeIssues(event.issues)}`
     case "dispatcher.plan_requested":
@@ -97,11 +117,11 @@ export function describeEvent(
     case "station.signaled":
       return `${name(event.stationId)} signaled`
     case "station.workspace_created":
-      return `${name(event.stationId)} workspace forked at ${short(event.baseCommit)}`
+      return `${name(event.stationId)} workspace prepared`
     case "station.started":
       return `${name(event.stationId)} Station Agent started`
     case "station.ready_for_pickup":
-      return `${name(event.stationId)} ready for pickup at ${short(event.headCommit)}`
+      return `${name(event.stationId)} ready for pickup`
     case "station.returned":
       return `${name(event.stationId)} returned: ${event.feedback.summary}`
     case "station.blocked":
@@ -119,7 +139,7 @@ export function describeEvent(
     case "car.attached":
       return `Car attached to ${name(event.trainId)} from ${name(event.stationId)}`
     case "conflict.detected":
-      return `Conflict detected on ${event.paths.join(", ")}`
+      return `Conflict detected in ${plural(event.paths.length, "file")}`
     case "conflict.resolved":
       return `Conflict resolved`
     case "hold.placed":
@@ -139,13 +159,13 @@ export function describeEvent(
     case "terminus.clearance_granted":
       return `Dispatcher cleared ${name(event.trainId)} into Terminus`
     case "terminus.candidate_prepared":
-      return `${name(event.trainId)} merge candidate saved at ${short(event.mergeCommit)}`
+      return `${name(event.trainId)} prepared its merge into Terminus`
     case "terminus.promoted":
-      return `Terminus advanced to ${short(event.mergeCommit)}`
+      return "Terminus updated with accepted work"
     case "terminus.integration_failed":
       return `${name(event.trainId)} integration stopped: ${describeIssues(event.issues)}`
     case "terminus.integration_completed":
-      return `${name(event.trainId)} integrated at ${short(event.mergeCommit)}`
+      return `${name(event.trainId)} integrated into Terminus`
   }
 }
 
@@ -161,8 +181,4 @@ export function describeIssues(issues: Issue[]): string {
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`
-}
-
-function short(commit: string): string {
-  return commit.length > 24 ? `${commit.slice(0, 24)}…` : commit
 }

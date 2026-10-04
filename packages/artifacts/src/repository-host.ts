@@ -24,6 +24,16 @@ export type IntegrationMerge =
  * detail of Artifacts and Git; nothing outside this package sees them.
  */
 export interface RepositoryHost {
+  /** Independently verifies durable repair ancestry, scope and actual diffs. */
+  inspectRepair(
+    input: import("./technician-git").RepairGitInput,
+    candidate: RepoRef
+  ): Promise<{
+    changedPaths: string[]
+    diff: string
+    repairPaths: string[]
+    repairDiff: string
+  }>
   readContext(repoId: RepoId, commit: CommitId): Promise<RepositoryContext>
   head(repoId: RepoId): Promise<CommitId>
   /** Persists a merge candidate separately from both Terminus and the Train. */

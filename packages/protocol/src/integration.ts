@@ -4,6 +4,7 @@ import { holdReasonSchema, issueSchema } from "./events"
 import { validationCommandsSchema } from "./execution"
 
 export const integrationInputSchema = z.object({
+  repairId: z.string().min(1).optional(),
   id: z.string().min(1),
   networkId: z.string().min(1),
   trainId: z.string().min(1),

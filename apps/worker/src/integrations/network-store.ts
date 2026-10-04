@@ -14,9 +14,16 @@ import type {
   TrainId,
   TrainState,
   DispatchPlan,
+  TechnicianRepair,
 } from "@terminus/domain"
-import { signalFor } from "@terminus/domain"
 import {
+  signalFor,
+  integrateRepair,
+  resolveConflict,
+  rejectApprovedRepair,
+} from "@terminus/domain"
+import {
+  technicianRepairSchema,
   conductorVerdictSchema,
   type ConductorVerdict,
   stationRunResultSchema,
@@ -53,6 +60,11 @@ export interface Loaded<T> {
 
 /** A row write. `version` is the version read, or null to insert. */
 export type Write =
+  | {
+      kind: "technician_repair"
+      repair: TechnicianRepair
+      version: number | null
+    }
   | { kind: "dispatch_plan"; plan: DispatchPlan; version: number | null }
   | { kind: "network"; network: NetworkSummary }
   | { kind: "line"; line: Line }
@@ -108,6 +120,37 @@ export class NetworkStore {
 
   constructor(db: D1Database) {
     this.#db = db
+  }
+
+  async repair(id: string): Promise<Loaded<TechnicianRepair> | null> {
+    const row = await this.#db
+      .prepare(
+        "SELECT record, version, network_id FROM technician_repairs WHERE id = ?"
+      )
+      .bind(id)
+      .first<VersionedRow>()
+    return row
+      ? {
+          ...loaded<TechnicianRepair>(row),
+          value: technicianRepairSchema.parse(JSON.parse(row.record)),
+        }
+      : null
+  }
+
+  async repairs(networkId: string): Promise<TechnicianRepair[]> {
+    return (
+      await this.#records<TechnicianRepair>("technician_repairs", networkId)
+    ).map((repair) => technicianRepairSchema.parse(repair))
+  }
+
+  async approvedRepair(trainId: string): Promise<TechnicianRepair | null> {
+    const row = await this.#db
+      .prepare(
+        "SELECT record FROM technician_repairs WHERE train_id = ? AND status = 'approved' ORDER BY rowid DESC LIMIT 1"
+      )
+      .bind(trainId)
+      .first<RecordRow>()
+    return row ? technicianRepairSchema.parse(JSON.parse(row.record)) : null
   }
 
   async dispatchPlan(id: string): Promise<Loaded<DispatchPlan> | null> {
@@ -342,6 +385,93 @@ export class NetworkStore {
             }
       )
     )
+    if (validated.ok && input.repairId) {
+      const loaded = await this.repair(input.repairId)
+      const conflict = (await this.conflicts(input.networkId)).find(
+        (item) => item.id === loaded?.value.conflictId
+      )
+      if (
+        !loaded ||
+        !conflict ||
+        loaded.value.state.status !== "approved" ||
+        loaded.value.state.proposal.headCommit !== validated.mergeCommit
+      )
+        throw new Error("Promotion does not match an approved repair")
+      const repaired = integrateRepair(loaded.value, id)
+      const resolved = resolveConflict(conflict)
+      if (!repaired.ok || !resolved.ok)
+        throw new Error("Repair cannot complete")
+      const now = new Date().toISOString()
+      statements.push(
+        this.#statement(
+          input.networkId,
+          {
+            kind: "technician_repair",
+            repair: repaired.value,
+            version: loaded.version,
+          },
+          now
+        ),
+        this.#statement(
+          input.networkId,
+          { kind: "conflict", conflict: resolved.value },
+          now
+        )
+      )
+      for (const event of [...repaired.events, ...resolved.events])
+        statements.push(
+          this.#db
+            .prepare(
+              "INSERT INTO events (network_id, type, train_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(
+              input.networkId,
+              event.type,
+              input.trainId,
+              JSON.stringify(event),
+              now
+            )
+        )
+    }
+    if (!validated.ok && !validated.holds && input.repairId) {
+      const loaded = await this.repair(input.repairId)
+      if (loaded?.value.state.status === "approved") {
+        const rejected = rejectApprovedRepair(
+          loaded.value,
+          id,
+          validated.issues.map((issue) => issue.detail).join("; "),
+          validated.evidence
+        )
+        if (!rejected.ok)
+          throw new Error("Repair failure could not be recorded")
+        const now = new Date().toISOString()
+        statements.push(
+          this.#statement(
+            input.networkId,
+            {
+              kind: "technician_repair",
+              repair: rejected.value,
+              version: loaded.version,
+            },
+            now
+          )
+        )
+        for (const event of rejected.events)
+          statements.push(
+            this.#db
+              .prepare(
+                "INSERT INTO events (network_id, type, train_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?)"
+              )
+              .bind(
+                input.networkId,
+                event.type,
+                input.trainId,
+                JSON.stringify(event),
+                now
+              )
+          )
+      }
+    }
     await this.#db.batch(statements)
   }
 
@@ -646,6 +776,7 @@ export class NetworkStore {
       conflicts,
       seq,
       plans,
+      repairs,
     ] = await this.#db.batch([
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
       select("lines"),
@@ -669,6 +800,7 @@ export class NetworkStore {
         .prepare("SELECT max(seq) AS seq FROM events WHERE network_id = ?")
         .bind(networkId),
       select("dispatch_plans"),
+      select("technician_repairs"),
     ])
     const network = networks!.results[0] as NetworkRow | undefined
     if (!network) return null
@@ -701,6 +833,9 @@ export class NetworkStore {
       plans: records<DispatchPlan>(plans).map((plan) =>
         dispatchPlanSchema.parse(plan)
       ),
+      repairs: records<TechnicianRepair>(repairs).map((repair) =>
+        technicianRepairSchema.parse(repair)
+      ),
       lastSeq: (seq!.results[0] as { seq: number | null }).seq ?? 0,
     }
   }
@@ -720,6 +855,30 @@ export class NetworkStore {
   ): D1PreparedStatement {
     const db = this.#db
     switch (write.kind) {
+      case "technician_repair": {
+        const { repair, version } = write
+        const record = JSON.stringify(technicianRepairSchema.parse(repair))
+        if (repair.networkId !== networkId)
+          throw new Error("Repair belongs to another network")
+        return version === null
+          ? db
+              .prepare(
+                "INSERT INTO technician_repairs (id, network_id, train_id, conflict_id, status, record, version) VALUES (?, ?, ?, ?, ?, ?, 0)"
+              )
+              .bind(
+                repair.id,
+                networkId,
+                repair.source.trainId,
+                repair.conflictId,
+                repair.state.status,
+                record
+              )
+          : db
+              .prepare(
+                "UPDATE technician_repairs SET status = ?, record = ?, version = ? WHERE id = ?"
+              )
+              .bind(repair.state.status, record, version + 1, repair.id)
+      }
       case "dispatch_plan": {
         const { plan, version } = write
         const record = JSON.stringify(dispatchPlanSchema.parse(plan))

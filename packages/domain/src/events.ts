@@ -18,6 +18,24 @@ import type { ReviewFeedback } from "./station"
  */
 export type DomainEvent =
   | {
+      type: "technician.integration_failed"
+      repairId: string
+      trainId: TrainId
+    }
+  | { type: "technician.validated"; repairId: string; trainId: TrainId }
+  | { type: "technician.dispatched"; repairId: string; trainId: TrainId }
+  | { type: "technician.started"; repairId: string; trainId: TrainId }
+  | {
+      type: "technician.candidate_prepared"
+      repairId: string
+      trainId: TrainId
+    }
+  | { type: "technician.reviewed"; repairId: string; trainId: TrainId }
+  | { type: "technician.approved"; repairId: string; trainId: TrainId }
+  | { type: "technician.failed"; repairId: string; trainId: TrainId }
+  | { type: "technician.integrated"; repairId: string; trainId: TrainId }
+  | { type: "technician.stale"; repairId: string; trainId: TrainId }
+  | {
       type: "dispatcher.user_attention_requested"
       trainId: TrainId
       stationId: StationId

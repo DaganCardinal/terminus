@@ -49,6 +49,17 @@ const stationEvent = <T extends string>(type: T) =>
 const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
+  trainEvent("technician.integration_failed").extend({ repairId: z.string() }),
+  trainEvent("technician.validated").extend({ repairId: z.string() }),
+  trainEvent("technician.dispatched").extend({ repairId: z.string() }),
+  trainEvent("technician.started").extend({ repairId: z.string() }),
+  trainEvent("technician.candidate_prepared").extend({ repairId: z.string() }),
+  trainEvent("technician.reviewed").extend({ repairId: z.string() }),
+  trainEvent("technician.approved").extend({ repairId: z.string() }),
+  trainEvent("technician.failed").extend({ repairId: z.string() }),
+  trainEvent("technician.integrated").extend({ repairId: z.string() }),
+  trainEvent("technician.stale").extend({ repairId: z.string() }),
+
   trainAtStationEvent("dispatcher.user_attention_requested").extend({ issues }),
   z.object({
     type: z.literal("dispatcher.plan_requested"),

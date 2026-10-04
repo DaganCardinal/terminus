@@ -2,7 +2,7 @@
 
 Terminus coordinates coding agents on concurrent Lines of work. Each Train accumulates accepted Station work; D1 owns the railway state, Artifacts owns repositories, and Workflows coordinate execution. The browser polls snapshots and the domain event log.
 
-The domain, persistence, API, Train/Station/Terminus integration Workflows, and React/SVG railway map are implemented. Real Artifacts and Sandbox/OpenCode adapters and a model Conductor are available alongside fakes. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Returning Trains receive Dispatcher clearance, merge and validate against current Terminus, and unload after promotion. Focused model-driven Dispatcher planning is implemented: a goal becomes a persisted proposal that the user reviews and explicitly launches. This new planning path still needs live verification. Model-assisted Engineer decisions and Technician execution remain future work.
+The domain, persistence, API, Train/Station/Terminus integration Workflows, and React/SVG railway map are implemented. Real Artifacts and Sandbox/OpenCode adapters and a model Conductor are available alongside fakes. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Returning Trains receive Dispatcher clearance, merge and validate against current Terminus, and unload after promotion. Focused model-driven Dispatcher planning is implemented: a goal becomes a persisted proposal that the user reviews and explicitly launches. This new planning path still needs live verification. Technician reconciliation of failed Terminus merges is implemented with durable candidates, independent validation, Conductor review, and explicit approval; it still needs live Artifacts/Sandbox verification. Model-assisted Engineer decisions remain future work.
 
 ## Local development with fakes
 
@@ -56,7 +56,7 @@ AI_GATEWAY_ID=default
 AI_GATEWAY_TOKEN=YOUR_ACCOUNT_SCOPED_WORKERS_AI_TOKEN
 ```
 
-`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, and `DISPATCHER_MODEL` are configured as **`@cf/zai-org/glm-5.3-flash`** for testing. OpenCode's primary and small-model settings use that same configured identity. The calls use low reasoning effort for testing. There is no automatic fallback to the expensive production models mentioned in the design documents.
+`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, `DISPATCHER_MODEL`, and `TECHNICIAN_MODEL` are configured as **`@cf/zai-org/glm-5.3-flash`** for testing. OpenCode's primary and small-model settings use that same configured identity. The calls use low reasoning effort for testing. There is no automatic fallback to the expensive production models mentioned in the design documents.
 
 The Sandbox image pins OpenCode 1.18.32 and Node 24. OpenCode's internal snapshots are disabled: their Git subprocesses reproduced a harness hang in local Sandboxes. Terminus captures candidate commits, diffs, and validation evidence independently after the harness exits. The required Sandbox Durable Object is only a container adapter; it stores no orchestration state. Outbound access is limited to its explicitly granted repository, the configured model endpoint, and the npm registry. Repository tokens are short-lived and repo-scoped, and the Worker injects them into Git requests. The Station process receives neither repository tokens nor model secrets. Orchestration uses separate workspaces for writes to a Train.
 
@@ -191,3 +191,26 @@ curl -X POST http://localhost:8787/api/integrations/INTEGRATION_ID/retry
 ```
 
 Architecture and ownership rules are in [AGENTS.md](./AGENTS.md), [the outline](./docs/outline-updated.md), and [technology architecture](./docs/technology-architecture.md).
+
+## Technician repairs
+
+When a Terminus merge fails with actual conflict paths, open the Dispatcher and choose **Dispatch Technician**. The Train stays blocked while a Technician works in a separate Artifacts repository. The harness can write only that repository and can read the affected Train; it receives no Terminus write capability or model credential. The Worker uses `TECHNICIAN_MODEL` through the existing outbound Gateway handler.
+
+This first slice handles one Train's failed Terminus merge and limits repair edits to the recorded conflicted files. Clean automatic merge results must remain intact. Broader compatibility patches, Station recovery, and automatic repair revisions are not implemented. A rejection or execution failure requires an explicit fresh dispatch. A changed conflict set also stops the repair for intervention.
+
+The Worker constructs a merge commit with the original Terminus and Train commits as its two parents, preserving accepted Car identities. It persists the candidate before running project-wide validation in a fresh, read-only Sandbox and submitting the actual full integration diff and reconciliation diff to the affected Conductor. The Dispatcher shows the checks, Conductor findings, diffs, and provenance. Choose **Approve repair and integrate** only after reviewing those results.
+
+Approval records the exact source snapshots. A stale candidate cannot promote: dispatch a fresh Technician to reconcile against current Terminus. Unrelated conflicts and user holds still gate integration. The final integration process verifies the durable candidate again, reruns project-wide checks, and promotes exactly that reviewed commit. Only successful promotion resolves the linked conflict; the Train Workflow then unloads the Train. Rejected candidates, feedback, failed validation evidence, and source provenance remain inspectable.
+
+Restart the updated Worker to load `TECHNICIAN_WORKFLOW` and `TECHNICIAN_MODEL`. Local dev applies `0007_technician.sql` automatically. Remote migration and deployment remain maintainer actions. No additional secret is required.
+
+To exercise the flow offline, set `FAKE_INTEGRATION_CONFLICT_PATHS` in the `env.fake.vars` section of `apps/worker/wrangler.jsonc` to `src/App.tsx`, restart `npm run dev:fake`, and lay demo Lines in a new network. Every ordinary fake integration will report that scripted conflict; the fake Technician follows the same persisted review and explicit approval path. Set the value back to the empty string for ordinary fake integration. Fake diffs and checks are simulations and incur no model charges.
+
+The HTTP commands are:
+
+```text
+POST /api/networks/:networkId/conflicts/:conflictId/technician
+POST /api/networks/:networkId/repairs/:repairId/approve
+```
+
+Repair history is included in `GET /api/networks/:networkId` snapshots, and `technician.*` changes use the existing domain event feed. Execution continues with no browser connected; the approval command is the only user gate.

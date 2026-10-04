@@ -1,13 +1,15 @@
 import { harnessEventSchema, type CommandResult } from "@terminus/protocol"
 import type { StationRunInput } from "./roles"
+import { stationAgentPrompt } from "./station-agent-prompt"
 
 export function stationPrompt(input: StationRunInput): string {
   return [
-    "Implement exactly this Terminus Work Manifest in the current Station repository.",
-    "Read AGENTS.md if present. Preserve existing behaviour and avoid the listed areas.",
-    "Commit your candidate changes locally. Do not push, edit Git remotes, rewrite history, or accept your own work.",
-    "Orchestration independently validates and pushes the result. Your summary is not validation evidence.",
+    stationAgentPrompt,
+    `Station base commit: ${input.workspace.baseCommit}`,
     `Manifest: ${JSON.stringify(input.manifest)}`,
+    input.validation
+      ? `Trusted project validation (all checks required; command arrays): ${JSON.stringify(input.validation.map(({ name, command }) => ({ name, command })))}`
+      : "Project validation commands were not supplied. Inspect documented project scripts; do not infer commands from evidence names.",
     input.feedback
       ? `Conductor revision feedback: ${JSON.stringify(input.feedback)}`
       : "",

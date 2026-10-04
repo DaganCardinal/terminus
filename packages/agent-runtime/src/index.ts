@@ -4,3 +4,5 @@ export * from "./model-provider"
 export * from "./model-conductor"
 export * from "./model-dispatcher"
 export * from "./opencode"
+
+export * from "./technician"

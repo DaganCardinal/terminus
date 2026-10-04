@@ -56,6 +56,7 @@ export const sandboxNetworkSchema = z.object({
     })
   ),
   allowModel: z.boolean(),
+  modelRole: z.enum(["station_agent", "technician"]).optional(),
 })
 export type SandboxNetwork = z.infer<typeof sandboxNetworkSchema>
 

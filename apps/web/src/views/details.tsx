@@ -23,11 +23,20 @@ import { StatusBadge } from "@/components/status-badge"
 import { lineColor } from "@/map/layout"
 import type { MapSelection } from "@/map/network-map"
 import { api } from "@/state/api"
+import {
+  CheckRow,
+  type Fact,
+  List,
+  ManifestView,
+  Prose,
+  TechnicalDetails,
+  manifestFacts,
+  shortCommit,
+} from "./detail-parts"
 import { describeEvent, describeLocation, namesFor } from "./describe"
 import { TrainPreviewButton } from "./train-preview-button"
 
 type Run = (command: () => Promise<unknown>) => Promise<void>
-type Checks = { name: string; status: string; required: boolean }[]
 
 export function LineHeading({
   snapshot,
@@ -90,114 +99,6 @@ function Callout({
   )
 }
 
-function List({ items, empty }: { items: string[]; empty?: string }) {
-  if (items.length === 0) return empty ? <p>{empty}</p> : null
-  return (
-    <ul>
-      {items.map((item, i) => (
-        <li key={i}>{item}</li>
-      ))}
-    </ul>
-  )
-}
-
-/** Short identifiers as chips; paths and symbols set in monospace. */
-function Tags({ items }: { items: string[] }) {
-  return (
-    <ul className="detail-tags">
-      {items.map((item, i) => (
-        <li key={i} className={/\s/.test(item) ? undefined : "tag-code"}>
-          {item}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function CheckList({ checks }: { checks: Checks }) {
-  if (checks.length === 0) return <p>No checks recorded.</p>
-  return (
-    <ul className="check-list">
-      {checks.map((check, i) => (
-        <li key={i} className={`check-${check.status}`}>
-          <i aria-hidden="true" />
-          {check.name}
-          <span>
-            {check.status}
-            {check.required ? "" : " · optional"}
-          </span>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function Manifest({
-  manifest,
-  name,
-}: {
-  manifest: Station["manifest"]
-  name: (id: string) => string
-}) {
-  const fields: { label: string; items: string[]; tags?: boolean }[] = [
-    {
-      label: "Repository change",
-      items: manifest.repositoryChange
-        ? [
-            `${manifest.repositoryChange.kind}: ${manifest.repositoryChange.description}`,
-          ]
-        : [],
-    },
-    { label: "Acceptance criteria", items: manifest.acceptanceCriteria },
-    { label: "Invariants", items: manifest.invariants },
-    { label: "Scope", items: manifest.scope, tags: true },
-    { label: "Expected areas", items: manifest.expectedAreas, tags: true },
-    { label: "Areas to avoid", items: manifest.avoidAreas, tags: true },
-    {
-      label: "Contracts",
-      items: manifest.contracts.map(
-        (c) => `${c.name} · ${c.kind}, ${c.change.replaceAll("_", " ")}`
-      ),
-      tags: true,
-    },
-    {
-      label: "Expected evidence",
-      items: manifest.expectedEvidence,
-      tags: true,
-    },
-    {
-      label: "Dependencies",
-      items: manifest.dependencies.map(name),
-      tags: true,
-    },
-  ]
-  const declared = fields.filter((f) => f.items.length > 0)
-  const undeclared = fields.filter((f) => f.items.length === 0)
-  return (
-    <Section title="Work manifest">
-      <dl className="detail-grid">
-        {declared.map((field) => (
-          <div key={field.label}>
-            <dt>{field.label}</dt>
-            <dd>
-              {field.tags ? (
-                <Tags items={field.items} />
-              ) : (
-                <List items={field.items} />
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      {undeclared.length > 0 && (
-        <p className="detail-note">
-          Not declared: {undeclared.map((f) => f.label).join(", ")}
-        </p>
-      )}
-    </Section>
-  )
-}
-
 export function StationDetails({
   snapshot,
   station,
@@ -219,6 +120,48 @@ export function StationDetails({
     state.status === "complete"
       ? snapshot.cars.find((c) => c.id === state.carId)
       : undefined
+  const proposal =
+    state.status === "ready_for_pickup" || state.status === "in_review"
+      ? state.proposal
+      : undefined
+  const report = car?.agentSummary ?? proposal?.agentSummary
+  const agent = car?.stationAgent ?? proposal?.agent
+  const facts: Fact[] = [
+    ...(car
+      ? [
+          {
+            label: "Accepted commit",
+            value: [shortCommit(car.acceptedCommit)],
+          },
+          { label: "Forked from", value: [shortCommit(car.sourceCommit)] },
+          { label: "Changed files", value: car.changedPaths },
+        ]
+      : proposal
+        ? [
+            {
+              label: "Candidate commit",
+              value: [shortCommit(proposal.headCommit)],
+            },
+            { label: "Changed files", value: proposal.changedPaths },
+          ]
+        : "workspace" in state && state.workspace
+          ? [
+              {
+                label: "Forked from",
+                value: [shortCommit(state.workspace.baseCommit)],
+              },
+            ]
+          : []),
+    ...(agent
+      ? [
+          {
+            label: "Station Agent",
+            value: `${agent.model} via ${agent.harness}`,
+          },
+        ]
+      : []),
+    ...manifestFacts(manifest),
+  ]
   return (
     <>
       <div className="detail-status">
@@ -244,17 +187,11 @@ export function StationDetails({
           <p>
             {state.status === "signaled"
               ? "Signaled. The Station workspace is being prepared."
-              : "A Station Agent is working in its isolated workspace."}
+              : "A Station Agent is working on this in its own isolated workspace."}
           </p>
-          {state.workspace && (
-            <p>
-              Forked from <code>{state.workspace.baseCommit}</code>
-            </p>
-          )}
         </Callout>
       )}
-      {(state.status === "ready_for_pickup" ||
-        state.status === "in_review") && (
+      {proposal && (
         <Callout
           tone="review"
           icon={<ClipboardCheck size={15} />}
@@ -265,18 +202,11 @@ export function StationDetails({
           }
         >
           <p>
-            Candidate <code>{state.proposal.headCommit}</code>
+            {state.status === "in_review"
+              ? "The Conductor is checking this work against the manifest before it joins the Train."
+              : "The Station Agent has finished. The Conductor will review it next."}
           </p>
-          <h4>Changed paths</h4>
-          <List items={state.proposal.changedPaths} empty="No changes." />
-          <h4>Validation</h4>
-          <CheckList checks={state.proposal.evidence.checks} />
-          {state.proposal.agentSummary && (
-            <>
-              <h4>Station Agent summary</h4>
-              <p>{state.proposal.agentSummary}</p>
-            </>
-          )}
+          <CheckRow checks={proposal.evidence.checks} />
         </Callout>
       )}
       {state.status === "revising" && (
@@ -288,10 +218,7 @@ export function StationDetails({
           <p className="callout-lead">{state.feedback.summary}</p>
           <List items={state.feedback.findings} />
           {station.lastReview && (
-            <p>
-              Returned candidate{" "}
-              <code>{station.lastReview.proposal.headCommit}</code>
-            </p>
+            <CheckRow checks={station.lastReview.proposal.evidence.checks} />
           )}
         </Callout>
       )}
@@ -317,17 +244,41 @@ export function StationDetails({
         >
           <p className="callout-lead">{car.review.summary}</p>
           <List items={car.review.findings} />
-          <p>
-            Accepted <code>{car.acceptedCommit}</code>
-          </p>
-          <h4>Changed paths</h4>
-          <List items={car.changedPaths} empty="No changes." />
-          <h4>Validation</h4>
-          <CheckList checks={car.evidence.checks} />
+          <CheckRow checks={car.evidence.checks} />
         </Callout>
       )}
 
-      <Manifest manifest={manifest} name={name} />
+      {report && (
+        <Section title="Station Agent's report">
+          <Prose text={report} />
+        </Section>
+      )}
+
+      <Section title="Work manifest">
+        <ManifestView manifest={manifest} name={name} />
+      </Section>
+
+      {(station.revisionCount > 0 || station.lastReview) && (
+        <Section title="Revisions">
+          <p>
+            {station.revisionCount === 0
+              ? "No revisions requested."
+              : `The Conductor asked for ${station.revisionCount} ${station.revisionCount === 1 ? "revision" : "revisions"}.`}
+            {station.retryCount
+              ? ` ${station.retryCount} since the last restart.`
+              : ""}
+          </p>
+          {/* While revising, the callout above already shows this review. */}
+          {station.lastReview && state.status !== "revising" && (
+            <details>
+              <summary>Latest Conductor feedback</summary>
+              <p>{station.lastReview.feedback.summary}</p>
+              <List items={station.lastReview.feedback.findings} />
+              <CheckRow checks={station.lastReview.proposal.evidence.checks} />
+            </details>
+          )}
+        </Section>
+      )}
 
       {(state.status === "waiting" || state.status === "blocked") && (
         <Section title="Remove Station">
@@ -375,28 +326,7 @@ export function StationDetails({
         </Section>
       )}
 
-      <Section title="Revisions">
-        <p>
-          {station.revisionCount === 0
-            ? "No revisions requested."
-            : `${station.revisionCount} ${station.revisionCount === 1 ? "revision" : "revisions"} requested in total.`}
-          {station.retryCount
-            ? ` ${station.retryCount} since the last restart.`
-            : ""}
-        </p>
-        {/* While revising, the callout above already shows this review. */}
-        {station.lastReview && state.status !== "revising" && (
-          <details>
-            <summary>Latest returned candidate</summary>
-            <p>{station.lastReview.feedback.summary}</p>
-            <List items={station.lastReview.feedback.findings} />
-            <p>
-              Candidate <code>{station.lastReview.proposal.headCommit}</code>
-            </p>
-            <CheckList checks={station.lastReview.proposal.evidence.checks} />
-          </details>
-        )}
-      </Section>
+      <TechnicalDetails facts={facts} />
     </>
   )
 }
@@ -416,12 +346,10 @@ function Consist({
   color,
   cars,
   stations,
-  name,
 }: {
   color: string
   cars: Car[]
   stations: Station[]
-  name: (id: string) => string
 }) {
   const open = stations.filter(
     (s) => s.state.status !== "complete" && s.state.status !== "cancelled"
@@ -430,7 +358,6 @@ function Consist({
     ...cars.map((car) => ({
       key: car.id,
       kind: "accepted",
-      title: `Car ${car.position} · ${name(car.stationId)}`,
     })),
     ...open.map((s) => ({
       key: s.id,
@@ -439,7 +366,6 @@ function Consist({
         : s.state.status === "blocked"
           ? "blocked"
           : "planned",
-      title: `${s.name} · ${s.state.status.replaceAll("_", " ")}`,
     })),
   ]
   const shown = slots.slice(0, MAX_CONSIST)
@@ -456,11 +382,7 @@ function Consist({
           <TrainFront size={13} />
         </span>
         {shown.map((slot) => (
-          <span
-            key={slot.key}
-            className={`consist-car consist-${slot.kind}`}
-            title={slot.title}
-          />
+          <span key={slot.key} className={`consist-car consist-${slot.kind}`} />
         ))}
         {slots.length > shown.length && (
           <span className="consist-more">+{slots.length - shown.length}</span>
@@ -555,19 +477,13 @@ export function TrainDetails({
               </Section>
             )}
             <Section title="Cars">
-              <Consist
-                color={color}
-                cars={cars}
-                stations={stations}
-                name={name}
-              />
+              <Consist color={color} cars={cars} stations={stations} />
               {cars.map((car) => (
                 <details key={car.id}>
                   <summary>
                     {car.position}. {name(car.stationId)}
                   </summary>
                   <p>{car.review.summary}</p>
-                  <code>{car.acceptedCommit}</code>
                 </details>
               ))}
             </Section>
@@ -644,7 +560,6 @@ export function ActivityFeed({
               })}
             </time>
             <span>{describeEvent(envelope.event, name)}</span>
-            <code>#{envelope.seq}</code>
           </li>
         ))}
     </ol>

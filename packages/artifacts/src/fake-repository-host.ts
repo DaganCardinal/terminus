@@ -1,4 +1,5 @@
 import type {
+  IntegrationMerge,
   IntegrationMergeInput,
   RepositoryHost,
   RepoRef,
@@ -10,6 +11,18 @@ import type {
  * for running the network without touching real repositories.
  */
 export class FakeRepositoryHost implements RepositoryHost {
+  private readonly conflictPaths: string[]
+  constructor(conflictPaths: string[] = []) {
+    this.conflictPaths = conflictPaths
+  }
+  async inspectRepair(input: import("./technician-git").RepairGitInput) {
+    return {
+      changedPaths: input.scope,
+      diff: "Fake integration diff",
+      repairPaths: input.scope,
+      repairDiff: "Fake reconciliation diff",
+    }
+  }
   async readContext(_repoId: string, commit: string) {
     return {
       commit,
@@ -25,7 +38,11 @@ export class FakeRepositoryHost implements RepositoryHost {
   async head(): Promise<string> {
     return "fake-root"
   }
-  async prepareIntegration(input: IntegrationMergeInput) {
+  async prepareIntegration(
+    input: IntegrationMergeInput
+  ): Promise<IntegrationMerge> {
+    if (this.conflictPaths.length)
+      return { ok: false, conflictPaths: this.conflictPaths }
     return {
       ok: true as const,
       candidate: {

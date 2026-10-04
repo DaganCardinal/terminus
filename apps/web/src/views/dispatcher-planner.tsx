@@ -3,6 +3,7 @@ import { Route, Send, TrainFront } from "lucide-react"
 import type { DispatchPlan, NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { api } from "@/state/api"
+import { ManifestView, TechnicalDetails, manifestFacts } from "./detail-parts"
 
 const statusLabels: Record<DispatchPlan["state"]["status"], string> = {
   planning: "Preparing proposal",
@@ -174,7 +175,10 @@ function PlanPreview({
       )}
       {"proposal" in state && (
         <>
-          <p>{state.proposal.summary}</p>
+          <div className="dispatch-reasoning">
+            <h3>The Dispatcher&rsquo;s plan</h3>
+            <p>{state.proposal.summary}</p>
+          </div>
           <div className="dispatch-lines">
             {state.proposal.lines.map((line) => (
               <details key={line.key} open>
@@ -191,52 +195,17 @@ function PlanPreview({
                       <details>
                         <summary>{station.name}</summary>
                         <p>{station.manifest.goal}</p>
-                        <dl>
-                          <dt>Scope</dt>
-                          <dd>{station.manifest.scope.join("; ")}</dd>
-                          <dt>Expected areas</dt>
-                          <dd>{station.manifest.expectedAreas.join(", ")}</dd>
-                          <dt>Avoid areas</dt>
-                          <dd>
-                            {station.manifest.avoidAreas.join(", ") ||
-                              "None declared"}
-                          </dd>
-                          <dt>Contracts</dt>
-                          <dd>
-                            {station.manifest.contracts
-                              .map(
-                                (c) =>
-                                  `${c.name} (${c.kind}, ${c.change.replaceAll("_", " ")})`
-                              )
-                              .join("; ") || "None declared"}
-                          </dd>
-                          <dt>Repository change</dt>
-                          <dd>
-                            {station.manifest.repositoryChange
-                              ? `${station.manifest.repositoryChange.kind}: ${station.manifest.repositoryChange.description}`
-                              : "No repository change declared"}
-                          </dd>
-                          <dt>Invariants</dt>
-                          <dd>{station.manifest.invariants.join("; ")}</dd>
-                          <dt>Acceptance</dt>
-                          <dd>
-                            {station.manifest.acceptanceCriteria.join("; ")}
-                          </dd>
-                          <dt>Evidence</dt>
-                          <dd>
-                            {station.manifest.expectedEvidence.join(", ")}
-                          </dd>
-                          <dt>Dependencies</dt>
-                          <dd>
-                            {station.manifest.dependencies
-                              .map(
-                                (key) =>
-                                  line.stations.find((s) => s.key === key)
-                                    ?.name ?? key
-                              )
-                              .join(", ") || "None"}
-                          </dd>
-                        </dl>
+                        <ManifestView
+                          manifest={station.manifest}
+                          name={(key) =>
+                            line.stations.find((s) => s.key === key)?.name ??
+                            key
+                          }
+                        />
+                        <TechnicalDetails
+                          facts={manifestFacts(station.manifest)}
+                          summary="Files, contracts and evidence"
+                        />
                       </details>
                     </li>
                   ))}
@@ -265,7 +234,8 @@ function PlanPreview({
               <ul>
                 {state.assessment.collisions.map((collision, index) => (
                   <li key={index}>
-                    {collision.line} / {collision.otherLine}:{" "}
+                    <strong>{collision.line}</strong> and{" "}
+                    <strong>{collision.otherLine}</strong> both touch{" "}
                     {[...collision.paths, ...collision.contracts].join(", ")}
                   </li>
                 ))}

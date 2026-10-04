@@ -2,6 +2,7 @@ import type { NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { AlertTriangle, ArrowUpRight } from "lucide-react"
 import { describeIssues, namesFor } from "./describe"
+import { CheckRow } from "./detail-parts"
 
 /** User-facing projection of issues the Engineer raised to the Dispatcher,
  * plus anything else that puts the Dispatcher in its attention state. */
@@ -11,7 +12,9 @@ export function DispatcherAlerts({
   error,
   retry,
   openTrain,
+  showConflicts = true,
 }: {
+  showConflicts?: boolean
   snapshot: NetworkSnapshot
   pending: boolean
   error: string | null
@@ -29,7 +32,9 @@ export function DispatcherAlerts({
     )
   const stopped = blocked.filter(exhausted)
   const otherBlocked = blocked.filter((view) => !exhausted(view))
-  const conflicts = snapshot.conflicts.filter((c) => c.status === "open")
+  const conflicts = showConflicts
+    ? snapshot.conflicts.filter((c) => c.status === "open")
+    : []
   if (!blocked.length && !conflicts.length) return null
   return (
     <section className="dispatcher-alerts" aria-label="Dispatcher alerts">
@@ -61,7 +66,7 @@ export function DispatcherAlerts({
                   .map((issue, index) => <p key={index}>{issue.detail}</p>)}
               {station?.lastReview && (
                 <details>
-                  <summary>Latest feedback and validation</summary>
+                  <summary>Latest Conductor feedback</summary>
                   <p>{station.lastReview.feedback.summary}</p>
                   <ul>
                     {station.lastReview.feedback.findings.map(
@@ -70,19 +75,9 @@ export function DispatcherAlerts({
                       )
                     )}
                   </ul>
-                  <p>
-                    Candidate{" "}
-                    <code>{station.lastReview.proposal.headCommit}</code>
-                  </p>
-                  <ul>
-                    {station.lastReview.proposal.evidence.checks.map(
-                      (check, index) => (
-                        <li key={index}>
-                          {check.name}: {check.status}
-                        </li>
-                      )
-                    )}
-                  </ul>
+                  <CheckRow
+                    checks={station.lastReview.proposal.evidence.checks}
+                  />
                 </details>
               )}
               <p>
@@ -131,8 +126,10 @@ export function DispatcherAlerts({
             </h4>
             <p>{conflict.description}</p>
             {conflict.paths.length > 0 && (
-              <p>
-                <code>{conflict.paths.join(", ")}</code>
+              <p className="dispatcher-alert-note">
+                Affects {conflict.paths.length}{" "}
+                {conflict.paths.length === 1 ? "file" : "files"}:{" "}
+                {conflict.paths.join(", ")}
               </p>
             )}
           </div>

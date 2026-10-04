@@ -1,4 +1,7 @@
 import {
+  FakeTechnicianRunner,
+  FakeRepairConductor,
+  ModelRepairConductor,
   FakeConductor,
   FakeStationRunner,
   GatewayModelProvider,
@@ -15,6 +18,8 @@ import {
 } from "@terminus/artifacts"
 import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
+import { SandboxTechnicianRunner } from "../integrations/technician-runner"
+import type { TechnicianPorts } from "./technician"
 import { SandboxStationRunner } from "../integrations/station-runner"
 import {
   gatewayConfig,
@@ -72,6 +77,44 @@ export function integrationPorts(env: Env): IntegrationPorts {
       host instanceof ArtifactsRepositoryHost
         ? new SandboxIntegrationValidator(host, new SandboxWorkspaces(env))
         : new FakeIntegrationValidator(),
+  }
+}
+
+export function technicianPorts(env: Env): TechnicianPorts {
+  const host = repositories(env)
+  return {
+    ...dispatcherPorts(env),
+    repositories: host,
+    runner:
+      env.TECHNICIAN_MODEL === FAKE
+        ? new FakeTechnicianRunner()
+        : new SandboxTechnicianRunner(env, realRepositories(env)),
+    reviewer:
+      env.CONDUCTOR_MODEL === FAKE
+        ? new FakeRepairConductor()
+        : new ModelRepairConductor(env.CONDUCTOR_MODEL, {
+            generateStructured: (request) =>
+              new GatewayModelProvider(
+                gatewayConfig(env, env.CONDUCTOR_MODEL),
+                gatewayTransport
+              ).generateStructured(request),
+          }),
+    validator:
+      host instanceof ArtifactsRepositoryHost
+        ? new SandboxIntegrationValidator(host, new SandboxWorkspaces(env))
+        : new FakeIntegrationValidator(),
+    startRepair: async (repairId) => {
+      try {
+        await env.TECHNICIAN_WORKFLOW.create({
+          id: repairId,
+          params: { repairId },
+        })
+      } catch (error) {
+        await env.TECHNICIAN_WORKFLOW.get(repairId).catch(() => {
+          throw error
+        })
+      }
+    },
   }
 }
 
@@ -189,7 +232,12 @@ function realRepositories(env: Env): ArtifactsRepositoryHost {
 }
 
 function repositories(env: Env): RepositoryHost {
-  if (env.REPOSITORY_MODE === "fake") return new FakeRepositoryHost()
+  if (env.REPOSITORY_MODE === "fake")
+    return new FakeRepositoryHost(
+      env.FAKE_INTEGRATION_CONFLICT_PATHS.split(",")
+        .map((path) => path.trim())
+        .filter(Boolean)
+    )
   if (env.REPOSITORY_MODE !== "artifacts")
     throw new Error("Configure REPOSITORY_MODE as artifacts or fake")
   return realRepositories(env)

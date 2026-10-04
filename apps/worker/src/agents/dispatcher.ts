@@ -1,5 +1,7 @@
 import type { RepositoryHost } from "@terminus/artifacts"
 import {
+  conflictsForRepair,
+  repairMatches,
   createLine,
   createTrain,
   evaluateTerminusEntry,
@@ -325,12 +327,29 @@ export async function requestTerminusClearance(
     ports.store.holds(network.id),
     ports.store.conflicts(network.id),
   ])
+  const repairs = await ports.store.repairs(network.id)
+  const repairFor = (train: Train) =>
+    repairs.find(
+      (repair) =>
+        repair.state.status === "approved" &&
+        repair.source.trainId === train.id &&
+        repairMatches(repair, {
+          trainCommit: train.headCommit,
+          terminusCommit: network.terminusCommit,
+        })
+    ) ?? null
   const eligible = trains.filter(
     ({ value }) =>
       value.state.status === "returning" &&
       value.state.phase === "awaiting_clearance" &&
-      evaluateTerminusEntry(value, { holds, conflicts, trainChecks: [] })
-        .kind === "clear"
+      evaluateTerminusEntry(value, {
+        holds,
+        conflicts: conflictsForRepair(conflicts, repairFor(value), {
+          trainCommit: value.headCommit,
+          terminusCommit: network.terminusCommit,
+        }),
+        trainChecks: [],
+      }).kind === "clear"
   )
   if (eligible[0]?.value.id !== trainId) return null
   const snapshot = await ports.store.snapshot(network.id)
@@ -344,6 +363,7 @@ export async function requestTerminusClearance(
     return car.acceptedCommit
   })
   return ports.store.claimIntegration({
+    ...(repairFor(train) ? { repairId: repairFor(train)!.id } : {}),
     id: ports.newId("integration"),
     networkId: network.id,
     trainId,
@@ -367,6 +387,19 @@ export async function resolveConflict(
   )
   if (!conflict) throw new DispatchError(404, "Unknown conflict")
   if (conflict.status === "resolved") return
+  if (
+    (await ports.store.repairs(networkId)).some(
+      (repair) =>
+        repair.conflictId === conflictId &&
+        ["requested", "running", "reviewing", "ready", "approved"].includes(
+          repair.state.status
+        )
+    )
+  )
+    throw new DispatchError(
+      409,
+      "An active Technician repair resolves this conflict only after promotion"
+    )
   const resolved = applied(resolveConflictTransition(conflict))
   await ports.store.commit(
     networkId,

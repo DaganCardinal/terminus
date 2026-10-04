@@ -176,6 +176,33 @@ describe("configured model routing", () => {
 })
 
 describe("OpenCode outcomes", () => {
+  it("supplies the manifest, revision feedback, and all configured checks as harness task data", () => {
+    const validation = [
+      {
+        name: "test",
+        command: ["npm", "run", "verify", "--", "--filter=footer test"],
+      },
+      { name: "build", command: ["npm", "run", "build"] },
+    ]
+    const feedback = {
+      summary: "Missing accessible navigation",
+      findings: ["Label the footer navigation"],
+    }
+    const command = opencodeCommand(model, { ...run, validation, feedback })
+    expect(command.at(-2)).toBe("--")
+    const prompt = command.at(-1)!
+    const data = (prefix: string): unknown => {
+      const line = prompt.split("\n").find((line) => line.startsWith(prefix))
+      expect(line).toBeDefined()
+      return JSON.parse(line!.slice(prefix.length)) as unknown
+    }
+    expect(data("Manifest: ")).toEqual(manifest)
+    expect(data("Conductor revision feedback: ")).toEqual(feedback)
+    expect(
+      data("Trusted project validation (all checks required; command arrays): ")
+    ).toEqual(validation)
+    expect(prompt).toContain(`Station base commit: ${run.workspace.baseCommit}`)
+  })
   it("collects summaries from JSON events without treating them as evidence", () => {
     expect(
       harnessOutcome({

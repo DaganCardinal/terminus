@@ -129,6 +129,87 @@ describe("Sandbox outbound capabilities", () => {
     }
     expect(send).toHaveBeenCalledTimes(1)
   })
+  it("limits Technician access to its configured model, writable workspace and read-only Train", async () => {
+    const roleEnv = { ...env, TECHNICIAN_MODEL: "@cf/test/technician" }
+    const repairRemote = remote.replace("station.git", "repair.git")
+    const trainRemote = remote.replace("station.git", "train.git")
+    const repairNetwork = {
+      repositories: [
+        {
+          remote: repairRemote,
+          token: "repair-token",
+          scope: "write" as const,
+        },
+        {
+          remote: trainRemote,
+          token: "train-read-token",
+          scope: "read" as const,
+        },
+      ],
+      allowModel: true,
+      modelRole: "technician" as const,
+    }
+    const send = vi.fn<typeof fetch>(async () => new Response("ok"))
+    const request = (model: string) =>
+      new Request(
+        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
+        { method: "POST", body: JSON.stringify({ model }) }
+      )
+    expect(
+      (
+        await outboundRequest(
+          request(roleEnv.TECHNICIAN_MODEL),
+          roleEnv,
+          repairNetwork,
+          send
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      (
+        await outboundRequest(
+          request(env.STATION_AGENT_MODEL),
+          roleEnv,
+          repairNetwork,
+          send
+        )
+      ).status
+    ).toBe(403)
+    expect(
+      (
+        await outboundRequest(
+          new Request(`${repairRemote}/git-receive-pack`, { method: "POST" }),
+          roleEnv,
+          repairNetwork,
+          send
+        )
+      ).status
+    ).toBe(200)
+    for (const url of [
+      `${trainRemote}/git-receive-pack`,
+      `${repairRemote.replace("repair.git", "terminus.git")}/git-receive-pack`,
+    ])
+      expect(
+        (
+          await outboundRequest(
+            new Request(url, { method: "POST" }),
+            roleEnv,
+            repairNetwork,
+            send
+          )
+        ).status
+      ).toBe(403)
+    expect(
+      (
+        await outboundRequest(
+          new Request(`${trainRemote}/git-upload-pack`, { method: "POST" }),
+          roleEnv,
+          repairNetwork,
+          send
+        )
+      ).status
+    ).toBe(200)
+  })
   it("refuses writes with a read-only grant and strips credentials from npm requests", async () => {
     const send = vi.fn<typeof fetch>(async () => new Response("ok"))
     const readOnly = {

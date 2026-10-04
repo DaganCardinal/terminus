@@ -1,6 +1,7 @@
 import { handleApi } from "./api/router"
 import { routeTrainPreview } from "./integrations/train-preview"
 
+export { TechnicianWorkflow } from "./workflows/technician-workflow"
 export { StationWorkflow } from "./workflows/station-workflow"
 export { TrainWorkflow } from "./workflows/train-workflow"
 export { IntegrationWorkflow } from "./workflows/integration-workflow"

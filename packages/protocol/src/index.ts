@@ -7,3 +7,5 @@ export * from "./manifest"
 export * from "./integration"
 export * from "./dispatch"
 export * from "./preview"
+
+export * from "./technician"

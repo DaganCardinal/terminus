@@ -43,6 +43,12 @@ const pulsing = new Set([
 
 const toneFor = (status: string) => toneByStatus[status] ?? "idle"
 
+/** `ready_for_pickup` → "Ready for pickup". */
+const label = (status: string) => {
+  const words = status.replaceAll("_", " ")
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
 export function StatusBadge({
   status,
   dot = false,
@@ -55,7 +61,7 @@ export function StatusBadge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-mono text-xs",
+        "inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium",
         tones[tone]
       )}
     >
@@ -69,7 +75,7 @@ export function StatusBadge({
           )}
         />
       )}
-      {status.replaceAll("_", " ")}
+      {label(status)}
     </span>
   )
 }

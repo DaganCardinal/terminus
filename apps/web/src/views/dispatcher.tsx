@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react"
 import { ArrowUpRight, Route, X } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
+import { TechnicianRepairs } from "./technician-repairs"
 import { DispatcherAlerts } from "./dispatcher-alerts"
 import { DispatcherPlanner } from "./dispatcher-planner"
 import { dispatcherIndicator } from "./dispatcher-state"
@@ -84,11 +85,13 @@ export function DispatcherModal({
         <div className="dispatcher-modal-body">
           <DispatcherAlerts
             snapshot={snapshot}
+            showConflicts={false}
             pending={pending}
             error={error}
             retry={retry}
             openTrain={openTrain}
           />
+          <TechnicianRepairs snapshot={snapshot} />
           <DispatcherPlanner snapshot={snapshot} />
           {snapshot.lines.length === 0 && (
             <div className="dispatcher-demo">

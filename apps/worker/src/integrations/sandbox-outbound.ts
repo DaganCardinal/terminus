@@ -14,7 +14,8 @@ export async function outboundRequest(
     | "AI_GATEWAY_ID"
     | "AI_GATEWAY_TOKEN"
     | "STATION_AGENT_MODEL"
-  >,
+  > &
+    Partial<Pick<Env, "TECHNICIAN_MODEL">>,
   network: SandboxNetwork,
   send: typeof fetch = fetch
 ): Promise<Response> {
@@ -67,7 +68,10 @@ export async function outboundRequest(
     )
     if (
       !payload.success ||
-      payload.data.model !== env.STATION_AGENT_MODEL ||
+      payload.data.model !==
+        (network.modelRole === "technician"
+          ? env.TECHNICIAN_MODEL
+          : env.STATION_AGENT_MODEL) ||
       !env.AI_GATEWAY_TOKEN
     )
       return denied()

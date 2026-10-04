@@ -293,7 +293,6 @@ export function NetworkMap({
           className="railway-map"
           aria-label="Lines run from their depots toward Terminus"
         >
-          <title>{`${snapshot.network.name} railway network`}</title>
           <defs>
             <pattern
               id="map-dots"
@@ -362,7 +361,6 @@ export function NetworkMap({
                     }
                     className="map-target"
                   >
-                    <title>{line.name}</title>
                     <rect
                       x={bullet.x - 70}
                       y={depot.y - 70}
@@ -450,7 +448,6 @@ export function NetworkMap({
                           height="122"
                           fill="transparent"
                         />
-                        <title>{`${station.name} · ${words(status)}`}</title>
                         {(working || blocked || chosen) && (
                           <circle
                             cx={p.x}
@@ -559,9 +556,6 @@ export function NetworkMap({
                           height="56"
                           fill="transparent"
                         />
-                        <title>
-                          {`Train · ${label} · ${view.train.carIds.length} Cars`}
-                        </title>
                         <path d="M0,15 V36" className="train-leader" />
                         <rect
                           className="train-body"

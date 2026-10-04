@@ -143,13 +143,7 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           <h1>{snapshot.network.name}</h1>
           <span className="sync-state" role="status">
             <i className={error ? "sync-error" : ""} />
-            {error ? "Reconnecting" : "Live"} · event {snapshot.lastSeq}
-          </span>
-          <span className="terminus-commit">
-            Terminus{" "}
-            <code title={snapshot.network.terminusCommit}>
-              {snapshot.network.terminusCommit.slice(0, 12)}
-            </code>
+            {error ? "Reconnecting" : "Live"}
           </span>
         </div>
         <dl className="network-stats">
@@ -226,9 +220,9 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           label={
             panel.kind === "activity"
               ? "Network activity"
-              : panel.kind === "station"
-                ? `Station ${panel.stationId}`
-                : `Train on ${panel.lineId}`
+              : station
+                ? `Station ${station.name}`
+                : `Train on ${line?.name ?? "this Line"}`
           }
           heading={
             panel.kind === "activity" ? (

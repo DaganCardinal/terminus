@@ -1,4 +1,5 @@
 import {
+  technicianRepairSchema,
   eventsResponseSchema,
   dispatchPlanSchema,
   trainPreviewSchema,
@@ -50,6 +51,19 @@ export const api = {
     request<void>(`/networks/${networkId}/holds/${holdId}`, {
       method: "DELETE",
     }),
+  dispatchTechnician: async (networkId: string, conflictId: string) =>
+    technicianRepairSchema.parse(
+      await request(
+        `/networks/${networkId}/conflicts/${conflictId}/technician`,
+        { method: "POST" }
+      )
+    ),
+  approveRepair: async (networkId: string, repairId: string) =>
+    technicianRepairSchema.parse(
+      await request(`/networks/${networkId}/repairs/${repairId}/approve`, {
+        method: "POST",
+      })
+    ),
   clearTrain: (trainId: string) =>
     request<void>(`/trains/${trainId}/clear`, { method: "POST" }),
   removeStation: (networkId: string, stationId: string, reason: string) =>

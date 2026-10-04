@@ -4,7 +4,7 @@ Guidance for coding agents working on the Terminus codebase.
 
 Terminus is an orchestration platform that coordinates many coding agents working on one shared codebase. It uses a railway network as its coordination model, and it runs on Cloudflare with **Cloudflare Artifacts** as its Git layer.
 
-> **Project status:** the domain core, D1 persistence and event log, Train, Station, and Terminus integration Workflows, Worker API, and React/SVG railway map are implemented. Real Artifacts/Git and Sandbox/OpenCode Station execution, independent validation, and model Conductor review are available alongside an offline fake environment. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Focused model-driven Dispatcher planning (goal → persisted proposal → explicit launch) is implemented and needs live verification. Model-assisted Engineer decisions and Technician execution remain future work. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
+> **Project status:** the domain core, D1 persistence and event log, Train, Station, and Terminus integration Workflows, Worker API, and React/SVG railway map are implemented. Real Artifacts/Git and Sandbox/OpenCode Station execution, independent validation, and model Conductor review are available alongside an offline fake environment. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Focused model-driven Dispatcher planning (goal → persisted proposal → explicit launch) is implemented and needs live verification. Technician reconciliation of failed Terminus merges (isolated candidate → independent validation → Conductor review → explicit approval → integration) is implemented and needs live verification. Model-assisted Engineer decisions remain future work. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
 
 ## Project context
 
@@ -266,7 +266,7 @@ Workspace-specific commands:
 - Add a shadcn component: `npx shadcn@latest add <component> -c apps/web`. Components are written to `packages/ui/src/components` and imported as `@terminus/ui/components/<name>`.
 - Regenerate Worker binding types after editing `apps/worker/wrangler.jsonc`: `npm run cf-typegen -w @terminus/worker`.
 - During implementation/testing, **all real roles use `@cf/zai-org/glm-5.3-flash`** per maintainer instruction. Do not substitute the more expensive design-doc defaults or introduce an automatic fallback.
-- Role models are Worker vars in `apps/worker/wrangler.jsonc` (`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, `DISPATCHER_MODEL`). `fake` runs a role without a model; `FAKE_AGENT_DELAY_MS` and `FAKE_CONDUCTOR_RETURNS` tune the fakes.
+- Role models are Worker vars in `apps/worker/wrangler.jsonc` (`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, `DISPATCHER_MODEL`, `TECHNICIAN_MODEL`). `fake` runs a role without a model; `FAKE_AGENT_DELAY_MS` and `FAKE_CONDUCTOR_RETURNS` tune the fakes.
 - Workspace packages are source-only TypeScript (`exports` points at `src/index.ts`). Vite and Wrangler compile them, so they have no build step.
 - Vitest is pinned to v4 because `@cloudflare/vitest-pool-workers` doesn't support v5 yet.
 

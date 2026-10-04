@@ -4,6 +4,7 @@ import type {
   RepositoryHost,
   RepoRef,
 } from "./repository-host"
+import { TechnicianGit, type RepairGitInput } from "./technician-git"
 import { prepareMerge } from "./integration-git"
 import { readRepositoryContext } from "./repository-context"
 import {
@@ -61,6 +62,26 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     this.artifacts = artifacts
     this.workspaces = workspaces
     this.pause = pause
+  }
+
+  async inspectRepair(input: RepairGitInput, candidate: RepoRef) {
+    return this.withWorkspace(
+      [
+        { repoId: candidate.repoId, scope: "read" },
+        { repoId: input.source.trainRepoId, scope: "read" },
+      ],
+      async (workspace, [access, train]) => {
+        if (!access || !train)
+          throw new Error("Missing repair repository access")
+        const repository = new TechnicianGit(workspace, access, train, input)
+        const saved = await repository.prepare()
+        if (saved !== candidate.headCommit)
+          throw new RepositoryMovedError(
+            "Repair repository no longer contains the reviewed candidate"
+          )
+        return repository.snapshot(candidate.headCommit)
+      }
+    )
   }
 
   async head(repoId: string): Promise<string> {

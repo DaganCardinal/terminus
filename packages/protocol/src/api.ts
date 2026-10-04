@@ -105,6 +105,7 @@ export interface NetworkSnapshot {
   cars: Car[]
   holds: Hold[]
   conflicts: Conflict[]
+  repairs?: import("@terminus/domain").TechnicianRepair[]
   plans: DispatchPlan[]
   lastSeq: number
 }
