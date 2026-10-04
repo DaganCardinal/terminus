@@ -16,6 +16,29 @@ export type GateDecision =
   | { kind: "hold"; reasons: HoldReason[] }
   | { kind: "block"; issues: Issue[] }
 
+export const DEFAULT_STATION_MAX_RETRIES = 3
+
+/** Initial work is followed by at most this many automatic revisions. */
+export function evaluateStationRetry(
+  station: Station,
+  maxRetries = DEFAULT_STATION_MAX_RETRIES
+): GateDecision {
+  if (!Number.isSafeInteger(maxRetries) || maxRetries < 0)
+    throw new RangeError("Station max retries must be a nonnegative integer")
+  // Older persisted Stations have only the lifetime revision counter.
+  if ((station.retryCount ?? station.revisionCount) < maxRetries)
+    return { kind: "clear" }
+  return {
+    kind: "block",
+    issues: [
+      {
+        kind: "station_retries_exhausted",
+        detail: `Station ${station.name} exhausted its allowance of ${maxRetries} automatic retries. User intervention is required.`,
+      },
+    ],
+  }
+}
+
 export interface GateContext {
   /** Every active hold in the network. Only those applying to the Train count. */
   holds: Hold[]

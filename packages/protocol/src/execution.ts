@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+export const stationMaxRetriesSchema = z.number().int().nonnegative()
+
 export const commandResultSchema = z.object({
   exitCode: z.number().int(),
   stdout: z.string(),

@@ -1,6 +1,7 @@
 import {
   eventsResponseSchema,
   dispatchPlanSchema,
+  trainPreviewSchema,
   type CreateDispatchPlanRequest,
   type ApiError,
   type EventsResponse,
@@ -51,6 +52,10 @@ export const api = {
     }),
   clearTrain: (trainId: string) =>
     request<void>(`/trains/${trainId}/clear`, { method: "POST" }),
+  previewTrain: async (trainId: string) =>
+    trainPreviewSchema.parse(
+      await request(`/trains/${trainId}/preview`, { method: "POST" })
+    ),
 }
 
 async function request<T>(

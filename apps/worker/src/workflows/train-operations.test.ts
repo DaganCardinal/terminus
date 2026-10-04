@@ -5,6 +5,7 @@ import {
   type StationRunner,
 } from "@terminus/agent-runtime"
 import { describe, expect, it, vi } from "vitest"
+import { domainEventSchema } from "@terminus/protocol"
 import {
   drive,
   manifest,
@@ -29,6 +30,190 @@ async function eventTypes(ports: TestPorts, networkId: string) {
 async function trainState(ports: TestPorts, trainId: string) {
   return (await ports.store.train(trainId))!.value.state
 }
+
+async function retryFixture(returns = 100) {
+  const ports = testPorts({ conductor: new FakeConductor({ returns }) })
+  const network = await seedNetwork(ports)
+  const laid = await seedLine(ports, network.id, {
+    name: "Retry Line",
+    stations: [
+      {
+        key: "a",
+        name: "Retry Station",
+        manifest: manifest({ expectedEvidence: ["test"] }),
+      },
+    ],
+  })
+  return { ports, network, ...laid }
+}
+
+describe("bounded Station revisions and Dispatcher alerts", () => {
+  it("allows success on the third retry without escalating", async () => {
+    const { ports, network, train } = await retryFixture(3)
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_terminus" })
+    expect(ports.runs).toHaveLength(4)
+    const snapshot = (await ports.store.snapshot(network.id))!
+    expect(snapshot.cars).toHaveLength(1)
+    expect(await eventTypes(ports, network.id)).not.toContain(
+      "dispatcher.user_attention_requested"
+    )
+  })
+
+  it("stops after the initial attempt plus three retries, persists the latest review and alerts the user once", async () => {
+    const { ports, network, train, stations } = await retryFixture()
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(ports.runs).toHaveLength(4)
+    let snapshot = (await ports.store.snapshot(network.id))!
+    expect(snapshot.trains[0]).toMatchObject({
+      signal: "red",
+      train: {
+        headCommit: train.headCommit,
+        state: {
+          status: "blocked",
+          issues: [{ kind: "station_retries_exhausted" }],
+        },
+      },
+    })
+    expect(snapshot.cars).toEqual([])
+    expect(snapshot.network.terminusCommit).toBe(network.terminusCommit)
+    const station = snapshot.stations[0]!
+    expect(station).toMatchObject({
+      state: { status: "blocked" },
+      retryCount: 3,
+      revisionCount: 3,
+      lastReview: {
+        feedback: { findings: ["Revision 4 requested"] },
+        proposal: {
+          headCommit: `fake-${stations[0]!.id}-s1-r3`,
+          evidence: {
+            checks: expect.arrayContaining([
+              { name: "test", required: true, status: "passed" },
+            ]),
+          },
+        },
+      },
+    })
+    const types = await eventTypes(ports, network.id)
+    expect(types.slice(-4)).toEqual([
+      "station.blocked",
+      "train.blocked",
+      "train.issue_raised",
+      "dispatcher.user_attention_requested",
+    ])
+    const event = (await ports.store.eventsAfter(network.id, 0)).at(-1)!.event
+    expect(domainEventSchema.parse(event)).toMatchObject({
+      type: "dispatcher.user_attention_requested",
+      trainId: train.id,
+      stationId: station.id,
+    })
+    for (let i = 0; i < 3; i++)
+      expect(await advanceTrain(ports.train, train.id)).toEqual({
+        kind: "await_clear",
+      })
+    snapshot = (await ports.store.snapshot(network.id))!
+    expect(snapshot.lastSeq).toBe(
+      (await ports.store.eventsAfter(network.id, 0)).at(-1)!.seq
+    )
+    expect(
+      (await eventTypes(ports, network.id)).filter(
+        (type) => type === "dispatcher.user_attention_requested"
+      )
+    ).toHaveLength(1)
+    expect(ports.runs).toHaveLength(4)
+  })
+
+  it("bounds repeated required-check failures without calling the Conductor", async () => {
+    const { ports, network, train } = await retryFixture()
+    const run = ports.station.runner.run.bind(ports.station.runner)
+    vi.spyOn(ports.station.runner, "run").mockImplementation(async (input) => {
+      const result = await run(input)
+      if (!result.ok) return result
+      return {
+        ok: true,
+        proposal: {
+          ...result.proposal,
+          evidence: {
+            checks: [{ name: "test", required: true, status: "failed" }],
+          },
+        },
+      }
+    })
+    const review = vi.spyOn(ports.train.conductor, "review")
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(ports.runs).toHaveLength(4)
+    expect(review).not.toHaveBeenCalled()
+    expect(
+      (await ports.store.snapshot(network.id))!.stations[0]!.lastReview
+    ).toMatchObject({
+      feedback: { findings: ["test: failed"] },
+      proposal: { evidence: { checks: [{ status: "failed" }] } },
+    })
+  })
+
+  it.each([0, 1])(
+    "honors a configured allowance of %i retries",
+    async (maxRetries) => {
+      const { ports, train } = await retryFixture()
+      ports.train.stationMaxRetries = maxRetries
+      expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+      expect(ports.runs).toHaveLength(maxRetries + 1)
+    }
+  )
+
+  it("grants another bounded allowance only after explicit clearance, retaining history and feedback", async () => {
+    const { ports, network, train, stations } = await retryFixture()
+    const run = vi.spyOn(ports.station.runner, "run")
+    await drive(ports, train.id)
+    const before = (await ports.store.station(stations[0]!.id))!.value
+    await clearTrain(ports.train, train.id)
+    await clearTrain(ports.train, train.id)
+    const restarted = (await ports.store.station(stations[0]!.id))!.value
+    expect(restarted).toMatchObject({
+      state: { status: "waiting" },
+      retryCount: 0,
+      revisionCount: 3,
+      lastReview: before.lastReview,
+    })
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(ports.runs).toHaveLength(8)
+    expect(ports.runs[4]!.runId).toBe(`${stations[0]!.id}-s2-r3`)
+    expect(run.mock.calls[4]![0].feedback).toEqual(before.lastReview!.feedback)
+    const after = (await ports.store.station(stations[0]!.id))!.value
+    expect(after).toMatchObject({ retryCount: 3, revisionCount: 6 })
+    expect(after.lastReview!.workspace.repoId).not.toBe(
+      before.lastReview!.workspace.repoId
+    )
+    expect(
+      (await eventTypes(ports, network.id)).filter(
+        (type) => type === "dispatcher.user_attention_requested"
+      )
+    ).toHaveLength(2)
+  })
+
+  it("recovers a lost escalation acknowledgement without duplicating alerts or starting another run", async () => {
+    const { ports, network, train } = await retryFixture()
+    const commit = ports.store.commit.bind(ports.store)
+    vi.spyOn(ports.store, "commit").mockImplementation(async (...args) => {
+      await commit(...args)
+      if (
+        args[2].some(
+          (event) => event.type === "dispatcher.user_attention_requested"
+        )
+      )
+        throw new Error("Lost escalation acknowledgement")
+    })
+    await expect(drive(ports, train.id)).rejects.toThrow(
+      "Lost escalation acknowledgement"
+    )
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(ports.runs).toHaveLength(4)
+    expect(
+      (await eventTypes(ports, network.id)).filter(
+        (type) => type === "dispatcher.user_attention_requested"
+      )
+    ).toHaveLength(1)
+  })
+})
 
 describe("a Train on its Line", () => {
   it("runs every Station, with a revision, and returns to Terminus", async () => {

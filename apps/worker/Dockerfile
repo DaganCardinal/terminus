@@ -9,7 +9,6 @@ RUN npm install --global --ignore-scripts opencode-linux-x64-baseline@1.18.32 \
 
 COPY --from=docker.io/cloudflare/sandbox:1.0.0 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 WORKDIR /workspace
-# Wrangler's local container runner requires an exposed port, even for exec-only images.
-# This is metadata only; the Sandbox uses the Container command API, not an HTTP server.
+# Wrangler's local container runner uses this port for Train previews.
 EXPOSE 8080
 CMD ["sleep", "infinity"]

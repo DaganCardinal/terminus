@@ -19,6 +19,7 @@ import { SandboxStationRunner } from "../integrations/station-runner"
 import {
   gatewayConfig,
   gatewayTransport,
+  stationMaxRetries,
 } from "../integrations/execution-config"
 import { TRAIN_EVENTS } from "../workflows/events"
 import {
@@ -42,6 +43,7 @@ export function trainPorts(env: Env): TrainPorts {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
     conductor: conductor(env),
+    stationMaxRetries: stationMaxRetries(env),
     startStationRun: (params) => startStationRun(env, params),
     startIntegration: async (integrationId) => {
       try {

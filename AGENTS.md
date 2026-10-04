@@ -220,6 +220,9 @@ Each kind of state has exactly one owner. Never create a second authoritative co
   - incomplete dependency → the dependent Station cannot be signaled
   - user hold → the Train cannot proceed
   - Conductor rejection → the work returns to the Station
+  - Station revision allowance exhausted → Engineer blocks the Train and Station, flags the Dispatcher, and the Dispatcher flags the user
+
+- Station execution permits one initial attempt plus at most three automatic revisions by default (`STATION_MAX_RETRIES`). Required-check failures and Conductor returns share the allowance. A failed final revision raises `station_retries_exhausted` and a persisted `dispatcher.user_attention_requested` event. Only explicit intervention/Train clearance grants a fresh allowance; retain lifetime revision history, the latest rejected candidate, feedback, and validation evidence. This allowance is separate from infrastructure step retries.
 
 ### Integration, provenance, and security
 

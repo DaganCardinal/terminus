@@ -1,4 +1,5 @@
 import { handleApi } from "./api/router"
+import { routeTrainPreview } from "./integrations/train-preview"
 
 export { StationWorkflow } from "./workflows/station-workflow"
 export { TrainWorkflow } from "./workflows/train-workflow"
@@ -9,6 +10,8 @@ export { SandboxOutbound } from "./integrations/sandbox-outbound"
 
 export default {
   async fetch(request, env) {
+    const preview = await routeTrainPreview(request, env)
+    if (preview) return preview
     if (new URL(request.url).pathname.startsWith("/api/")) {
       return handleApi(request, env)
     }

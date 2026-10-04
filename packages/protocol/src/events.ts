@@ -6,6 +6,7 @@ export const issueSchema = z.object({
     "conflict",
     "dependency_unresolvable",
     "station_failed",
+    "station_retries_exhausted",
     "review_escalated",
     "integration_failed",
     "needs_user",
@@ -47,6 +48,7 @@ const stationEvent = <T extends string>(type: T) =>
 const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
+  trainAtStationEvent("dispatcher.user_attention_requested").extend({ issues }),
   z.object({
     type: z.literal("dispatcher.plan_requested"),
     planId: z.string(),

@@ -11,6 +11,7 @@ import {
   eventTypes,
   expectRejected,
   inTransit,
+  reviewing,
   unwrap,
 } from "./testing"
 
@@ -32,6 +33,23 @@ describe("startStation", () => {
 })
 
 describe("blockStation", () => {
+  it("retains rejected work, evidence and feedback through an explicit restart", () => {
+    const station = { ...reviewing().station, revisionCount: 3, retryCount: 3 }
+    const feedback = {
+      summary: "Still missing a test",
+      findings: ["Add the required assertion"],
+    }
+    const blocked = unwrap(blockStation(station, [issue], feedback))
+    expect(blocked.lastReview).toMatchObject({
+      feedback,
+      proposal: { evidence: { checks: [{ status: "passed" }] } },
+      workspace: { repoId: "s1-repo" },
+    })
+    const reset = unwrap(resetStation(blocked))
+    expect(reset.retryCount).toBe(0)
+    expect(reset.revisionCount).toBe(3)
+    expect(reset.lastReview).toEqual(blocked.lastReview)
+  })
   it("blocks a Station with work in progress", () => {
     const result = blockStation(active().station, [issue])
     expect(unwrap(result).state).toEqual({

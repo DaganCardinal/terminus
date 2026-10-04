@@ -14,6 +14,7 @@ import {
   type StationId,
   type Train,
   type TrainId,
+  type DomainEvent,
 } from "@terminus/domain"
 import type {
   CreateNetworkRequest,
@@ -46,6 +47,29 @@ export class DispatchError extends Error {
     this.name = "DispatchError"
     this.status = status
   }
+}
+
+/** The deterministic Dispatcher forwards exhausted Station retries to the user.
+ * These events join the Train's atomic state batch, even with no UI connected. */
+export function stationRetryUserAlert(
+  train: Train,
+  station: Station
+): DomainEvent[] {
+  if (train.state.status !== "blocked" || station.state.status !== "blocked")
+    return []
+  const issues = train.state.issues.filter(
+    (issue) => issue.kind === "station_retries_exhausted"
+  )
+  return issues.length
+    ? [
+        {
+          type: "dispatcher.user_attention_requested",
+          trainId: train.id,
+          stationId: station.id,
+          issues,
+        },
+      ]
+    : []
 }
 
 /**

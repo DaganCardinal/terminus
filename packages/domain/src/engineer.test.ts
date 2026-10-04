@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import type { Conflict } from "./conflict"
-import { evaluateDeparture, evaluateTerminusEntry, signalFor } from "./engineer"
+import {
+  evaluateDeparture,
+  evaluateTerminusEntry,
+  evaluateStationRetry,
+  signalFor,
+} from "./engineer"
 import type { Hold } from "./hold"
 import { atDepot, clearContext, manifest } from "./testing"
 import type { Train } from "./train"
@@ -21,6 +26,49 @@ const hold = (scope: Hold["scope"], kind: Hold["kind"] = "user"): Hold => ({
   kind,
   scope,
   note: "",
+})
+
+describe("evaluateStationRetry", () => {
+  it.each([0, 1, 2])("permits retry after %i revisions", (retryCount) => {
+    expect(evaluateStationRetry({ ...station, retryCount })).toEqual({
+      kind: "clear",
+    })
+  })
+  it.each([3, 4])(
+    "blocks after %i revisions with the default allowance",
+    (retryCount) => {
+      expect(evaluateStationRetry({ ...station, retryCount })).toMatchObject({
+        kind: "block",
+        issues: [{ kind: "station_retries_exhausted" }],
+      })
+    }
+  )
+  it("honors zero and custom allowances", () => {
+    expect(evaluateStationRetry(station, 0).kind).toBe("block")
+    expect(evaluateStationRetry({ ...station, retryCount: 3 }, 4).kind).toBe(
+      "clear"
+    )
+  })
+  it("counts legacy records and grants a new allowance after explicit reset", () => {
+    expect(
+      evaluateStationRetry({
+        ...station,
+        retryCount: undefined,
+        revisionCount: 3,
+      }).kind
+    ).toBe("block")
+    expect(
+      evaluateStationRetry({ ...station, retryCount: 0, revisionCount: 3 }).kind
+    ).toBe("clear")
+  })
+  it.each([-1, 1.5, NaN, Infinity])(
+    "rejects invalid allowances: %s",
+    (maxRetries) => {
+      expect(() => evaluateStationRetry(station, maxRetries)).toThrow(
+        RangeError
+      )
+    }
+  )
 })
 
 describe("evaluateDeparture", () => {

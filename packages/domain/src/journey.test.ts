@@ -354,10 +354,28 @@ describe("returnToStation", () => {
     })
     expect(station.state).toMatchObject({ status: "revising", feedback })
     expect(station.revisionCount).toBe(1)
+    expect(station.retryCount).toBe(1)
+    expect(station.lastReview?.feedback).toEqual(feedback)
     expect(eventTypes(result)).toEqual(["station.returned"])
   })
 
   it("rejects returning work that is not in review", () => {
     expectRejected(returnToStation({ ...docked(), feedback }), "invalid_state")
+  })
+
+  it("cannot start a fourth automatic revision, but can use a larger configured allowance", () => {
+    const world = reviewing()
+    world.station = { ...world.station, revisionCount: 3, retryCount: 3 }
+    const result = returnToStation({ ...world, feedback })
+    expectRejected(result, "gate_closed")
+    if (!result.ok && result.error.code === "gate_closed")
+      expect(result.error.decision).toMatchObject({
+        kind: "block",
+        issues: [{ kind: "station_retries_exhausted" }],
+      })
+    expect(
+      unwrap(returnToStation({ ...world, feedback, maxRetries: 4 })).station
+        .retryCount
+    ).toBe(4)
   })
 })

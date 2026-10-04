@@ -14,6 +14,7 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc", environment: "fake" },
         miniflare: {
+          durableObjects: { SANDBOX: "ExecutionSandbox" },
           bindings: {
             TEST_MIGRATIONS: migrations,
             FAKE_AGENT_DELAY_MS: "0",

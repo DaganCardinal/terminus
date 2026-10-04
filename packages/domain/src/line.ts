@@ -67,6 +67,7 @@ export function createLine(
     name: plan.name,
     manifest: plan.manifest,
     revisionCount: 0,
+    retryCount: 0,
     state: { status: "waiting" },
   }))
   return accept({ line, stations }, [

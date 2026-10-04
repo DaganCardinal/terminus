@@ -1,5 +1,9 @@
 import type { Car, ConductorReview } from "./car"
-import { evaluateDeparture, type DepartureContext } from "./engineer"
+import {
+  evaluateDeparture,
+  evaluateStationRetry,
+  type DepartureContext,
+} from "./engineer"
 import { unmetRequiredChecks } from "./evidence"
 import type { CarId } from "./ids"
 import { lineStations, nextStation, type Line } from "./line"
@@ -336,7 +340,7 @@ export function attachCar(
  * docked while the Station revises.
  */
 export function returnToStation(
-  input: TrainAndStation & { feedback: ReviewFeedback }
+  input: TrainAndStation & { feedback: ReviewFeedback; maxRetries?: number }
 ): Transition<TrainAndStation> {
   const { train, station, feedback } = input
   if (train.state.status !== "reviewing" || train.state.at !== station.id) {
@@ -349,6 +353,12 @@ export function returnToStation(
   if (state.status !== "in_review") {
     return reject("invalid_state", `Station ${station.id} is not in review`)
   }
+  const decision = evaluateStationRetry(station, input.maxRetries)
+  if (decision.kind !== "clear")
+    return gateClosed(
+      decision,
+      `Station ${station.id} cannot retry: ${decision.kind}`
+    )
   return accept(
     {
       train: {
@@ -358,6 +368,12 @@ export function returnToStation(
       station: {
         ...station,
         revisionCount: station.revisionCount + 1,
+        retryCount: (station.retryCount ?? station.revisionCount) + 1,
+        lastReview: {
+          workspace: state.workspace,
+          proposal: state.proposal,
+          feedback,
+        },
         state: {
           status: "revising",
           trainId: train.id,

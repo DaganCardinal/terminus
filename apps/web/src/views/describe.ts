@@ -54,6 +54,8 @@ export function describeEvent(
   name: (id: string) => string
 ): string {
   switch (event.type) {
+    case "dispatcher.user_attention_requested":
+      return `Dispatcher requests user intervention for ${name(event.stationId)}: ${describeIssues(event.issues)}`
     case "dispatcher.plan_requested":
       return "Dispatcher preparing a plan"
     case "dispatcher.plan_ready":
@@ -149,7 +151,7 @@ function describeHold(reason: HoldReason, name: (id: string) => string) {
     : `${reason.kind.replace("_", " ")}`
 }
 
-function describeIssues(issues: Issue[]): string {
+export function describeIssues(issues: Issue[]): string {
   return issues.map((issue) => issue.detail).join("; ")
 }
 

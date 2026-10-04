@@ -77,7 +77,10 @@ export async function runStationAgent(
     runId: params.runId,
     manifest: station.value.manifest,
     workspace: state.workspace,
-    feedback: state.status === "revising" ? state.feedback : null,
+    feedback:
+      state.status === "revising"
+        ? state.feedback
+        : (station.value.lastReview?.feedback ?? null),
     validation: network.validation,
   })
 }

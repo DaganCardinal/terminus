@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
-import { Moon, Sun, TrainFront } from "lucide-react"
-import { useTheme } from "@/components/theme-provider"
+import { TrainFront } from "lucide-react"
+import { ThemeToggle } from "@/components/theme-toggle"
 import "./network.css"
 import { NetworkList } from "@/views/network-list"
 import { NetworkStatus } from "@/views/network-status"
@@ -11,13 +11,19 @@ function currentNetworkId(): string | null {
 
 export function App() {
   const [networkId, setNetworkId] = useState(currentNetworkId)
-  const { theme, setTheme } = useTheme()
 
   useEffect(() => {
     const onChange = () => setNetworkId(currentNetworkId())
     window.addEventListener("hashchange", onChange)
     return () => window.removeEventListener("hashchange", onChange)
   }, [])
+
+  if (networkId)
+    return (
+      <main className="app-shell">
+        <NetworkStatus key={networkId} networkId={networkId} />
+      </main>
+    )
 
   return (
     <main className="app-shell">
@@ -29,25 +35,15 @@ export function App() {
           terminus<span className="brand-dot">.</span>
         </a>
         <span className="app-nav-label">Agent railway network</span>
-        <button
-          className="theme-button"
-          aria-label="Toggle color theme"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-        >
-          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-        </button>
+        <ThemeToggle className="theme-button" />
       </nav>
-      {networkId ? (
-        <NetworkStatus key={networkId} networkId={networkId} />
-      ) : (
-        <div className="network-list-page">
-          <header>
-            <h1>Networks</h1>
-            <p>Each network coordinates concurrent Lines for one project.</p>
-          </header>
-          <NetworkList />
-        </div>
-      )}
+      <div className="network-list-page">
+        <header>
+          <h1>Networks</h1>
+          <p>Each network coordinates concurrent Lines for one project.</p>
+        </header>
+        <NetworkList />
+      </div>
     </main>
   )
 }

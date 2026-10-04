@@ -39,7 +39,10 @@ import {
   type StationOutcome,
   type IntegrationOutcome,
 } from "@terminus/protocol"
-import { requestTerminusClearance } from "../agents/dispatcher"
+import {
+  requestTerminusClearance,
+  stationRetryUserAlert,
+} from "../agents/dispatcher"
 import type { Loaded, NetworkStore, Write } from "../integrations/network-store"
 import { applied, TransitionRejectedError } from "./transitions"
 
@@ -53,6 +56,7 @@ export interface TrainPorts {
   store: NetworkStore
   repositories: RepositoryHost
   conductor: Conductor
+  stationMaxRetries: number
   /** Starts a Station run. Starting a run that already exists does nothing. */
   startStationRun(params: StationRunParams): Promise<void>
   startIntegration(integrationId: string): Promise<void>
@@ -525,9 +529,28 @@ async function returnWork(
   station: Loaded<Station>,
   feedback: ReviewFeedback
 ): Promise<TrainMove> {
-  const returned = applied(
-    returnToStation({ train: train.value, station: station.value, feedback })
-  )
+  const result = returnToStation({
+    train: train.value,
+    station: station.value,
+    feedback,
+    maxRetries: ports.stationMaxRetries,
+  })
+  if (!result.ok) {
+    if (
+      result.error.code !== "gate_closed" ||
+      result.error.decision.kind !== "block"
+    )
+      throw new TransitionRejectedError(result.error)
+    await blockTrainAndStation(
+      ports,
+      train,
+      station,
+      result.error.decision.issues,
+      feedback
+    )
+    return { kind: "moved" }
+  }
+  const returned = result
   await ports.store.commit(
     train.networkId,
     [
@@ -543,9 +566,10 @@ async function blockTrainAndStation(
   ports: TrainPorts,
   train: Loaded<Train>,
   station: Loaded<Station>,
-  issues: Issue[]
+  issues: Issue[],
+  feedback?: ReviewFeedback
 ): Promise<void> {
-  const blockedStation = applied(blockStation(station.value, issues))
+  const blockedStation = applied(blockStation(station.value, issues, feedback))
   const blockedTrain = applied(blockTrain(train.value, issues))
   await ports.store.commit(
     train.networkId,
@@ -553,7 +577,11 @@ async function blockTrainAndStation(
       trainWrite(train, blockedTrain.value),
       stationWrite(station, blockedStation.value),
     ],
-    [...blockedStation.events, ...blockedTrain.events]
+    [
+      ...blockedStation.events,
+      ...blockedTrain.events,
+      ...stationRetryUserAlert(blockedTrain.value, blockedStation.value),
+    ]
   )
 }
 

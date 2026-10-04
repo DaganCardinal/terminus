@@ -57,6 +57,23 @@ describe("domainEventSchema", () => {
       }).success
     ).toBe(false)
   })
+  it("validates the Dispatcher alert for exhausted Station retries", () => {
+    const event: DomainEvent = {
+      type: "dispatcher.user_attention_requested",
+      trainId: "t",
+      stationId: "s",
+      issues: [
+        {
+          kind: "station_retries_exhausted",
+          detail: "User intervention required",
+        },
+      ],
+    }
+    expect(domainEventSchema.parse(event)).toEqual(event)
+    expect(domainEventSchema.safeParse({ ...event, issues: [] }).success).toBe(
+      false
+    )
+  })
 })
 
 describe("workManifestSchema", () => {

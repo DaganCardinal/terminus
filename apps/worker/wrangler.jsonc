@@ -56,10 +56,14 @@
   "secrets": { "required": ["AI_GATEWAY_TOKEN"] },
   "vars": {
     "REPOSITORY_MODE": "artifacts",
+    // Local previews use *.localhost:8787. Deployment requires a separate
+    // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
+    "PREVIEW_BASE_URL": "",
     // Both roles use the inexpensive testing model. No automatic fallback.
     "STATION_AGENT_MODEL": "@cf/zai-org/glm-5.3-flash",
     "CONDUCTOR_MODEL": "@cf/zai-org/glm-5.3-flash",
     "DISPATCHER_MODEL": "@cf/zai-org/glm-5.3-flash",
+    "STATION_MAX_RETRIES": "3",
     "AI_GATEWAY_ACCOUNT_ID": "",
     "AI_GATEWAY_ID": "default",
     // How long a fake Station Agent takes, so Trains visibly travel.
@@ -106,9 +110,11 @@
       ],
       "vars": {
         "REPOSITORY_MODE": "fake",
+        "PREVIEW_BASE_URL": "",
         "STATION_AGENT_MODEL": "fake",
         "CONDUCTOR_MODEL": "fake",
         "DISPATCHER_MODEL": "fake",
+        "STATION_MAX_RETRIES": "3",
         "FAKE_AGENT_DELAY_MS": "4000",
         "FAKE_CONDUCTOR_RETURNS": "1",
         "AI_GATEWAY_ACCOUNT_ID": "",

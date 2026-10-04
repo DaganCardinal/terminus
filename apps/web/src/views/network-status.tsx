@@ -1,27 +1,55 @@
-import type { EventEnvelope, NetworkSnapshot } from "@terminus/protocol"
-import { useState } from "react"
-import {
-  ArrowLeft,
-  ArrowUpRight,
-  CirclePause,
-  Radio,
-  TrainFront,
-  X,
-} from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import type { NetworkSnapshot } from "@terminus/protocol"
+import { ArrowLeft, CirclePause, Radio } from "lucide-react"
 import { Button } from "@terminus/ui/components/button"
-import { StatusBadge, SignalLamp } from "@/components/status-badge"
-import { NetworkMap, type MapSelection } from "@/map/network-map"
-import { lineColor } from "@/map/layout"
+import { Drawer } from "@/components/drawer"
+import { ThemeToggle } from "@/components/theme-toggle"
+import { MOBILE_QUERY, useMediaQuery } from "@/components/use-media-query"
+import {
+  NetworkMap,
+  type MapInsets,
+  type MapSelection,
+} from "@/map/network-map"
 import { api } from "@/state/api"
 import { useNetwork } from "@/state/use-network"
-import { describeEvent, describeLocation, namesFor } from "./describe"
-import { DispatcherPanel } from "./dispatcher-panel"
+import {
+  ActivityFeed,
+  LineHeading,
+  StationDetails,
+  TrainDetails,
+} from "./details"
+import { DispatcherButton, DispatcherModal } from "./dispatcher"
 
+type Panel =
+  | { kind: "station"; lineId: string; stationId: string }
+  | { kind: "train"; lineId: string }
+  | { kind: "activity" }
+
+const DRAWER_WIDTH = 480
+const GUTTER = 24
+
+/** The network map is the whole page; everything else floats over it. */
 export function NetworkStatus({ networkId }: { networkId: string }) {
   const { snapshot, events, error } = useNetwork(networkId)
-  const [selection, setSelection] = useState<MapSelection | null>(null)
+  const mobile = useMediaQuery(MOBILE_QUERY)
+  const [panel, setPanel] = useState<Panel | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  // Until the user chooses, the Dispatcher opens for an empty network.
+  const [dispatcherChoice, setDispatcherOpen] = useState<boolean | null>(null)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [headerHeight, setHeaderHeight] = useState(0)
+  const header = useCallback((element: HTMLElement | null) => {
+    if (!element) return
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setHeaderHeight(entry.borderBoxSize[0]?.blockSize ?? 0)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  const closePanel = useCallback(() => setPanel(null), [])
+
   async function run(command: () => Promise<unknown>) {
     setPending(true)
     setCommandError(null)
@@ -33,6 +61,7 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
       setPending(false)
     }
   }
+
   if (!snapshot)
     return (
       <div className="network-loading" role="status">
@@ -41,9 +70,35 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           : "Loading your network…"}
       </div>
     )
+
+  const select = (selection: MapSelection) =>
+    setPanel(
+      selection.stationId
+        ? {
+            kind: "station",
+            lineId: selection.lineId,
+            stationId: selection.stationId,
+          }
+        : { kind: "train", lineId: selection.lineId }
+    )
+  const selection: MapSelection | null =
+    panel?.kind === "station"
+      ? { lineId: panel.lineId, stationId: panel.stationId }
+      : panel?.kind === "train"
+        ? { lineId: panel.lineId }
+        : null
+  const dispatcherOpen = dispatcherChoice ?? snapshot.lines.length === 0
+  const drawerBesideMap = panel !== null && !mobile && !expanded
+  const insets: MapInsets = {
+    top: GUTTER + headerHeight + (mobile ? 8 : 16),
+    right: GUTTER + (drawerBesideMap ? DRAWER_WIDTH : 0),
+    bottom: mobile ? 84 : 96,
+    left: GUTTER,
+  }
+
   const running = snapshot.trains.filter(
     ({ train }) => !["unloaded", "siding"].includes(train.state.status)
-  )
+  ).length
   const held = snapshot.trains.filter(
     ({ train }) => train.state.status === "held"
   ).length
@@ -56,26 +111,46 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
   const openConflicts = snapshot.conflicts.filter(
     (c) => c.status === "open"
   ).length
+
+  const line =
+    panel && panel.kind !== "activity"
+      ? snapshot.lines.find((l) => l.id === panel.lineId)
+      : undefined
+  const station =
+    panel?.kind === "station"
+      ? snapshot.stations.find((s) => s.id === panel.stationId)
+      : undefined
+
   return (
-    <div className="network-workspace">
-      <header className="network-header">
-        <div>
-          <a className="back-link" href="#/">
-            <ArrowLeft size={14} /> All networks
-          </a>
-          <div className="network-title">
-            <h1>{snapshot.network.name}</h1>
-            <span className="sync-state" role="status">
-              <i className={error ? "sync-error" : ""} />
-              {error ? "Reconnecting" : "Live"} · event {snapshot.lastSeq}
-            </span>
-            <span className="terminus-commit">
-              Terminus{" "}
-              <code title={snapshot.network.terminusCommit}>
-                {snapshot.network.terminusCommit.slice(0, 12)}
-              </code>
-            </span>
-          </div>
+    <div
+      className={`network-workspace ${drawerBesideMap ? "drawer-open" : ""}`}
+    >
+      <NetworkMap
+        snapshot={snapshot}
+        selection={selection}
+        onSelect={select}
+        onClear={closePanel}
+        insets={insets}
+        compactKey={mobile}
+      />
+      <div className="map-topfade" aria-hidden="true" />
+
+      <header ref={header} className="network-header">
+        <a className="back-link glass" href="#/">
+          <ArrowLeft size={14} /> All networks
+        </a>
+        <div className="network-title">
+          <h1>{snapshot.network.name}</h1>
+          <span className="sync-state" role="status">
+            <i className={error ? "sync-error" : ""} />
+            {error ? "Reconnecting" : "Live"} · event {snapshot.lastSeq}
+          </span>
+          <span className="terminus-commit">
+            Terminus{" "}
+            <code title={snapshot.network.terminusCommit}>
+              {snapshot.network.terminusCommit.slice(0, 12)}
+            </code>
+          </span>
         </div>
         <dl className="network-stats">
           <div>
@@ -84,13 +159,13 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           </div>
           <div>
             <dt>Trains running</dt>
-            <dd>{running.length}</dd>
+            <dd>{running}</dd>
           </div>
           <div>
             <dt>Stations accepted</dt>
             <dd>
               {stationsComplete}
-              <span> / {snapshot.stations.length}</span>
+              <span>/{snapshot.stations.length}</span>
             </dd>
           </div>
           <div>
@@ -117,397 +192,165 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           )}
         </dl>
       </header>
+
+      <div className="map-overlay map-overlay-top-right">
+        {snapshot.holds.length > 0 && (
+          <HoldsMenu
+            holds={snapshot.holds}
+            pending={pending}
+            release={(holdId) => run(() => api.releaseHold(networkId, holdId))}
+          />
+        )}
+        <button
+          className="overlay-button glass"
+          aria-pressed={panel?.kind === "activity"}
+          onClick={() =>
+            setPanel(panel?.kind === "activity" ? null : { kind: "activity" })
+          }
+        >
+          <Radio size={16} />
+          <span className="overlay-button-label">Activity</span>
+        </button>
+        <ThemeToggle className="overlay-button glass" />
+      </div>
+
       {(error || commandError) && (
-        <div className="network-alert" role="alert">
+        <div className="network-alert glass" role="alert">
           {commandError ??
             `${error} · Showing the last received state; reconnecting automatically.`}
         </div>
       )}
-      <DispatcherPanel snapshot={snapshot} />
-      {snapshot.lines.length === 0 ? (
-        <section className="network-empty panel">
-          <EmptyNetworkArt />
-          <h2>No Lines on this network yet</h2>
-          <p>
-            Describe a goal to the Dispatcher above and review its plan, or lay
-            the fixed demo Lines to explore the railway.
-          </p>
-          <Button
-            disabled={pending}
-            onClick={() => run(() => api.layDemoLines(networkId))}
-          >
-            {pending ? "Laying Lines…" : "Lay demo Lines"}
-            <ArrowUpRight size={16} />
-          </Button>
-        </section>
-      ) : (
-        <div
-          className={`network-grid panel ${selection ? "has-inspector" : ""}`}
-        >
-          <aside className="line-directory" aria-label="Lines">
-            <div className="panel-heading">
-              <h2>Lines</h2>
-              <span>
-                {snapshot.lines.length}
-                <span className="mobile-lines-hint"> · swipe to browse</span>
-              </span>
-            </div>
-            <div className="line-list">
-              {snapshot.lines.map((line, index) => {
-                const train = snapshot.trains.find(
-                  (v) => v.train.lineId === line.id
-                )?.train
-                const complete = line.stationIds.filter(
-                  (id) =>
-                    snapshot.stations.find((s) => s.id === id)?.state.status ===
-                    "complete"
-                ).length
-                return (
-                  <button
-                    key={line.id}
-                    className={`line-link ${selection?.lineId === line.id ? "selected" : ""}`}
-                    aria-pressed={selection?.lineId === line.id}
-                    onClick={() =>
-                      setSelection(
-                        selection?.lineId === line.id && !selection.stationId
-                          ? null
-                          : { lineId: line.id }
-                      )
-                    }
-                  >
-                    <span
-                      className="line-bullet"
-                      style={{ background: lineColor(line, index) }}
-                    >
-                      {(index + 1).toString().padStart(2, "0")}
-                    </span>
-                    <span className="line-link-copy">
-                      <strong>{line.name}</strong>
-                      <span>
-                        {complete} of {line.stationIds.length} Stations accepted
-                      </span>
-                      {train && <StatusBadge status={train.state.status} />}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          </aside>
-          <NetworkMap
-            snapshot={snapshot}
-            selection={selection}
-            onSelect={setSelection}
-          />
-          {selection && (
-            <aside className="network-inspector" aria-label="Details">
-              <Inspector
+
+      {panel && (
+        <Drawer
+          label={
+            panel.kind === "activity"
+              ? "Network activity"
+              : panel.kind === "station"
+                ? `Station ${panel.stationId}`
+                : `Train on ${panel.lineId}`
+          }
+          heading={
+            panel.kind === "activity" ? (
+              <>
+                <span className="drawer-eyebrow">Newest first</span>
+                <h2>Activity</h2>
+              </>
+            ) : line ? (
+              <LineHeading
                 snapshot={snapshot}
-                selection={selection}
-                onSelect={setSelection}
-                onClose={() => setSelection(null)}
-                pending={pending}
-                run={run}
+                line={line}
+                title={station?.name ?? "Train"}
               />
-            </aside>
+            ) : (
+              <h2>Unavailable</h2>
+            )
+          }
+          expanded={expanded}
+          onExpandedChange={setExpanded}
+          onClose={closePanel}
+        >
+          {panel.kind === "activity" ? (
+            <ActivityFeed events={events} snapshot={snapshot} />
+          ) : !line || (panel.kind === "station" && !station) ? (
+            <p className="detail-lead">This item is no longer on the map.</p>
+          ) : station ? (
+            <StationDetails
+              snapshot={snapshot}
+              station={station}
+              onSelect={select}
+            />
+          ) : (
+            <TrainDetails
+              snapshot={snapshot}
+              line={line}
+              onSelect={select}
+              pending={pending}
+              run={run}
+            />
           )}
-        </div>
+        </Drawer>
       )}
-      {snapshot.holds.length > 0 && (
-        <section className="hold-strip" aria-label="Active holds">
-          <CirclePause size={18} />
-          <strong>Active holds</strong>
-          {snapshot.holds.map((hold) => (
-            <div key={hold.id}>
-              <span>{hold.note || hold.kind}</span>
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={pending}
-                onClick={() => run(() => api.releaseHold(networkId, hold.id))}
-              >
-                Release hold
-              </Button>
-            </div>
-          ))}
-        </section>
-      )}
-      <EventFeed events={events} snapshot={snapshot} />
+
+      <DispatcherButton
+        snapshot={snapshot}
+        onOpen={() => setDispatcherOpen(true)}
+      />
+      <DispatcherModal
+        snapshot={snapshot}
+        open={dispatcherOpen}
+        onClose={() => setDispatcherOpen(false)}
+        pending={pending}
+        error={commandError}
+        retry={(trainId) => run(() => api.clearTrain(trainId))}
+        openTrain={(lineId) => {
+          setDispatcherOpen(false)
+          setPanel({ kind: "train", lineId })
+        }}
+        layDemoLines={() => run(() => api.layDemoLines(networkId))}
+      />
     </div>
   )
 }
 
-function Inspector({
-  snapshot,
-  selection,
-  onSelect,
-  onClose,
+function HoldsMenu({
+  holds,
   pending,
-  run,
+  release,
 }: {
-  snapshot: NetworkSnapshot
-  selection: MapSelection
-  onSelect: (s: MapSelection) => void
-  onClose: () => void
+  holds: NetworkSnapshot["holds"]
   pending: boolean
-  run: (command: () => Promise<unknown>) => Promise<void>
+  release: (holdId: string) => Promise<void>
 }) {
-  const line = snapshot.lines.find((l) => l.id === selection.lineId)
-  if (!line)
-    return <p className="overview-body">This Line is no longer available.</p>
-  const station = snapshot.stations.find((s) => s.id === selection.stationId)
-  const views = snapshot.trains.filter((v) => v.train.lineId === line.id)
-  const name = namesFor(snapshot)
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointer = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("pointerdown", onPointer)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("pointerdown", onPointer)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [open])
+
   return (
-    <>
-      <div className="panel-heading">
-        <h2>{station ? "Station" : "Line"}</h2>
-        <button onClick={onClose} aria-label="Close details">
-          <X size={17} />
-        </button>
-      </div>
-      <div className="inspector-body">
-        <span className="eyebrow">{line.name}</span>
-        <h3>{station?.name ?? "Journey to Terminus"}</h3>
-        {station && (
-          <>
-            <StatusBadge status={station.state.status} />
-            <h4>Work manifest</h4>
-            <p>{station.manifest.goal}</p>
-            {station.manifest.acceptanceCriteria.length > 0 && (
-              <>
-                <h4>Acceptance criteria</h4>
-                <ul>
-                  {station.manifest.acceptanceCriteria.map((c) => (
-                    <li key={c}>{c}</li>
-                  ))}
-                </ul>
-              </>
-            )}
-            {station.manifest.dependencies.length > 0 && (
-              <>
-                <h4>Dependencies</h4>
-                <p>{station.manifest.dependencies.map(name).join(", ")}</p>
-              </>
-            )}
-            <p className="revision-note">
-              {station.revisionCount === 0
-                ? "No revisions requested"
-                : `${station.revisionCount} ${station.revisionCount === 1 ? "revision" : "revisions"} requested`}
-            </p>
-          </>
-        )}
-        {views.map(({ train, signal }) => (
-          <section key={train.id} className="inspector-train">
-            <h4>
-              <TrainFront size={15} /> Train <SignalLamp signal={signal} />
-            </h4>
-            <StatusBadge status={train.state.status} />
-            <p>{describeLocation(train.state, name)}</p>
-            <p>
-              {signal ? (
-                <>
-                  Engineer signal is <strong>{signal}</strong>
-                </>
-              ) : (
-                "No current Engineer decision"
-              )}
-            </p>
-            {train.state.status === "blocked" && (
-              <>
-                <ul className="issue-list">
-                  {train.state.issues.map((issue, i) => (
-                    <li key={i}>{issue.detail}</li>
-                  ))}
-                </ul>
+    <div ref={ref} className="holds">
+      <button
+        className="overlay-button glass holds-chip"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <CirclePause size={16} />
+        {holds.length} {holds.length === 1 ? "hold" : "holds"}
+      </button>
+      {open && (
+        <div className="holds-popover glass" aria-label="Active holds">
+          <h2>Active holds</h2>
+          <ul>
+            {holds.map((hold) => (
+              <li key={hold.id}>
+                <span>{hold.note || hold.kind}</span>
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
                   disabled={pending}
-                  onClick={() => run(() => api.clearTrain(train.id))}
+                  onClick={() => void release(hold.id)}
                 >
-                  Clear block
+                  Release
                 </Button>
-              </>
-            )}
-            {train.state.status === "held" && (
-              <ul className="issue-list">
-                {train.state.reasons.map((r, i) => (
-                  <li key={i}>
-                    {r.kind === "dependency"
-                      ? `Waiting for ${name(r.stationId)}`
-                      : snapshot.holds.find((h) => h.id === r.holdId)?.note ||
-                        r.kind.replaceAll("_", " ")}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {train.state.status === "siding" && <p>{train.state.reason}</p>}
-            <h4>Accepted Cars · {train.carIds.length}</h4>
-            {snapshot.cars
-              .filter((c) => c.trainId === train.id)
-              .map((car) => (
-                <details key={car.id}>
-                  <summary>{name(car.stationId)}</summary>
-                  <p>{car.review.summary}</p>
-                  <code>{car.acceptedCommit}</code>
-                </details>
-              ))}
-          </section>
-        ))}
-        <h4>Station order</h4>
-        <ol className="station-order">
-          {line.stationIds.map((id, i) => {
-            const s = snapshot.stations.find((s) => s.id === id)
-            return (
-              s && (
-                <li key={id}>
-                  <button
-                    onClick={() => onSelect({ lineId: line.id, stationId: id })}
-                  >
-                    <span>{i + 1}</span>
-                    {s.name}
-                  </button>
-                </li>
-              )
-            )
-          })}
-          <li className="destination-row">
-            T <span>Terminus</span>
-          </li>
-        </ol>
-        <Button
-          className="hold-line-button"
-          variant="outline"
-          size="sm"
-          disabled={
-            pending ||
-            snapshot.holds.some(
-              (h) => h.scope.kind === "line" && h.scope.lineId === line.id
-            )
-          }
-          onClick={() =>
-            run(() =>
-              api.placeHold(snapshot.network.id, {
-                kind: "user",
-                scope: { kind: "line", lineId: line.id },
-                note: `Hold on ${line.name}`,
-              })
-            )
-          }
-        >
-          <CirclePause size={15} /> Hold Line
-        </Button>
-        <p className="revision-note">Holds take effect at the next gate.</p>
-      </div>
-    </>
-  )
-}
-
-function EventFeed({
-  events,
-  snapshot,
-}: {
-  events: EventEnvelope[]
-  snapshot: NetworkSnapshot
-}) {
-  const name = namesFor(snapshot)
-  return (
-    <section className="event-feed panel" aria-label="Network activity">
-      <div className="panel-heading">
-        <h2>
-          <Radio size={15} /> Activity
-        </h2>
-        <span>Newest first</span>
-      </div>
-      {events.length === 0 ? (
-        <p className="activity-empty">
-          No events yet. Activity appears here as the network changes.
-        </p>
-      ) : (
-        <ol>
-          {[...events]
-            .reverse()
-            .slice(0, 60)
-            .map((envelope) => (
-              <li key={envelope.seq}>
-                <time dateTime={envelope.occurredAt}>
-                  {new Date(envelope.occurredAt).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                  })}
-                </time>
-                <span>{describeEvent(envelope.event, name)}</span>
-                <code>#{envelope.seq}</code>
               </li>
             ))}
-        </ol>
+          </ul>
+        </div>
       )}
-    </section>
-  )
-}
-
-/** Decorative first-run illustration: two Lines curving into Terminus. */
-function EmptyNetworkArt() {
-  return (
-    <svg
-      className="network-empty-art"
-      viewBox="0 0 220 96"
-      aria-hidden="true"
-      fill="none"
-      strokeLinecap="round"
-    >
-      <path
-        d="M12 26 H70 A24 24 0 0 1 87 33 L104 50 A10 10 0 0 0 111 53 H110"
-        stroke="#ce3548"
-        strokeWidth="6"
-      />
-      <path
-        d="M12 80 H70 A24 24 0 0 0 87 73 L104 56 A10 10 0 0 1 111 53"
-        stroke="#176ab5"
-        strokeWidth="6"
-      />
-      <path
-        d="M208 53 H110"
-        stroke="#008477"
-        strokeWidth="6"
-        strokeDasharray="1 12"
-      />
-      <circle
-        cx="40"
-        cy="26"
-        r="5"
-        fill="var(--map-paper)"
-        stroke="#ce3548"
-        strokeWidth="3"
-      />
-      <circle
-        cx="40"
-        cy="80"
-        r="5"
-        fill="var(--map-paper)"
-        stroke="#176ab5"
-        strokeWidth="3"
-      />
-      <circle
-        cx="122"
-        cy="53"
-        r="22"
-        fill="var(--map-paper)"
-        stroke="var(--map-ink)"
-        strokeWidth="3"
-      />
-      <circle cx="122" cy="53" r="15" fill="var(--map-ink)" />
-      <text
-        x="122"
-        y="59"
-        textAnchor="middle"
-        fontSize="16"
-        fontWeight="700"
-        fill="var(--map-paper)"
-      >
-        T
-      </text>
-    </svg>
+    </div>
   )
 }

@@ -221,6 +221,7 @@ describe("API validation", () => {
   })
 
   it("returns 404 for unknown networks and routes", async () => {
+    expect((await post("/trains/missing/preview")).status).toBe(404)
     expect((await api("/networks/missing")).status).toBe(404)
     expect((await api("/networks/missing/integrations")).status).toBe(404)
     expect((await post("/integrations/missing/retry")).status).toBe(404)
@@ -237,5 +238,16 @@ describe("API validation", () => {
     const { trains } = await snapshot(network.id)
     const response = await post(`/trains/${trains[0]!.train.id}/clear`)
     expect(response.status).toBe(409)
+  })
+
+  it("reports that fake Trains have no real app to preview", async () => {
+    const network = await createNetwork()
+    await post(`/networks/${network.id}/demo`)
+    const { trains } = await snapshot(network.id)
+    const response = await post(`/trains/${trains[0]!.train.id}/preview`)
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({
+      error: expect.stringContaining("fake mode"),
+    })
   })
 })

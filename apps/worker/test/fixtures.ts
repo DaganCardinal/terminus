@@ -57,6 +57,7 @@ export function testPorts(
       store,
       repositories,
       conductor: roles.conductor ?? new FakeConductor(),
+      stationMaxRetries: 3,
       startStationRun: async (params) => {
         if (!runs.some((run) => run.runId === params.runId)) runs.push(params)
       },

@@ -7,6 +7,7 @@ import {
   type EventsResponse,
 } from "@terminus/protocol"
 import type { z } from "zod"
+import { launchTrainPreview, PreviewError } from "../integrations/train-preview"
 import { layDemoLines } from "../agents/demo-network"
 import {
   clearTrain,
@@ -32,6 +33,16 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/trains/:trainId/preview" }),
+    async (request, env, { trainId }) => {
+      const preview = await launchTrainPreview(request, env, trainId!)
+      return Response.json(preview, {
+        headers: { "cache-control": "no-store" },
+      })
+    },
+  ],
   [
     "POST",
     new URLPattern({ pathname: "/api/networks/:networkId/plans" }),
@@ -190,6 +201,8 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
       if (caught instanceof RequestError)
         return error(400, caught.message, caught.details)
       if (caught instanceof DispatchError)
+        return error(caught.status, caught.message)
+      if (caught instanceof PreviewError)
         return error(caught.status, caught.message)
       throw caught
     }

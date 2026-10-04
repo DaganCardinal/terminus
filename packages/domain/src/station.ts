@@ -29,6 +29,13 @@ export interface ReviewFeedback {
   findings: string[]
 }
 
+/** Latest rejected candidate, retained when blocked or explicitly restarted. */
+export interface StationReview {
+  workspace: StationWorkspace
+  proposal: Proposal
+  feedback: ReviewFeedback
+}
+
 export type StationState =
   | { status: "waiting" }
   | {
@@ -68,6 +75,9 @@ export interface Station {
   manifest: WorkManifest
   /** How many times the Conductor has returned this Station's work. */
   revisionCount: number
+  /** Automatic revisions since the last explicit restart. Optional for older records. */
+  retryCount?: number
+  lastReview?: StationReview
   state: StationState
 }
 
@@ -100,7 +110,8 @@ export function startStation(station: Station): Transition<Station> {
 
 export function blockStation(
   station: Station,
-  issues: Issue[]
+  issues: Issue[],
+  feedback?: ReviewFeedback
 ): Transition<Station> {
   const { state } = station
   if (issues.length === 0) {
@@ -115,6 +126,15 @@ export function blockStation(
       return accept(
         {
           ...station,
+          ...(feedback && state.status === "in_review"
+            ? {
+                lastReview: {
+                  workspace: state.workspace,
+                  proposal: state.proposal,
+                  feedback,
+                },
+              }
+            : {}),
           state: { status: "blocked", trainId: state.trainId, issues },
         },
         [{ type: "station.blocked", stationId: station.id, issues }]
@@ -138,7 +158,7 @@ export function resetStation(station: Station): Transition<Station> {
       `Station ${station.id} can only be reset while blocked`
     )
   }
-  return accept({ ...station, state: { status: "waiting" } }, [
+  return accept({ ...station, retryCount: 0, state: { status: "waiting" } }, [
     { type: "station.reset", stationId: station.id },
   ])
 }

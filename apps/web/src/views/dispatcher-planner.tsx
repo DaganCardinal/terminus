@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent } from "react"
-import { ChevronDown, Route, Send, TrainFront } from "lucide-react"
+import { Route, Send, TrainFront } from "lucide-react"
 import type { DispatchPlan, NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { api } from "@/state/api"
@@ -13,7 +13,8 @@ const statusLabels: Record<DispatchPlan["state"]["status"], string> = {
   failed: "Stopped",
 }
 
-export function DispatcherPanel({ snapshot }: { snapshot: NetworkSnapshot }) {
+/** Goal → persisted proposal → explicit launch. */
+export function DispatcherPlanner({ snapshot }: { snapshot: NetworkSnapshot }) {
   const [goal, setGoal] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -49,96 +50,81 @@ export function DispatcherPanel({ snapshot }: { snapshot: NetworkSnapshot }) {
   }
 
   return (
-    <details
-      className="dispatcher-panel panel"
-      aria-label="Dispatcher planning"
-      open={snapshot.lines.length === 0}
-    >
-      <summary className="panel-heading">
-        <h2>
-          <Route size={16} /> Dispatcher
-        </h2>
-        <span>
-          {plan ? statusLabels[plan.state.status] : "Plan work, then launch"}{" "}
-          <ChevronDown className="dispatcher-disclosure" size={15} />
-        </span>
-      </summary>
-      <div className="dispatcher-layout">
-        <form onSubmit={propose} className="dispatcher-form">
-          <label htmlFor="dispatch-goal">What should we build?</label>
-          <p>
-            Describe a goal for this project. The Dispatcher will propose Lines
-            and Station manifests for you to review.
+    <div className="dispatcher-layout">
+      <form onSubmit={propose} className="dispatcher-form">
+        <label htmlFor="dispatch-goal">What should we build?</label>
+        <p>
+          Describe a goal for this project. The Dispatcher will propose Lines
+          and Station manifests for you to review.
+        </p>
+        <textarea
+          id="dispatch-goal"
+          value={goal}
+          onChange={(event) => setGoal(event.target.value)}
+          maxLength={4000}
+          required
+          rows={4}
+          placeholder="Add an accessible footer and a light/dark theme toggle, with tests."
+          disabled={pending}
+        />
+        <Button type="submit" disabled={pending || !goal.trim()}>
+          <Send size={15} />
+          {pending ? "Submitting…" : "Propose a plan"}
+        </Button>
+        {error && (
+          <p className="dispatch-error" role="alert">
+            {error}
           </p>
-          <textarea
-            id="dispatch-goal"
-            value={goal}
-            onChange={(event) => setGoal(event.target.value)}
-            maxLength={4000}
-            required
-            rows={4}
-            placeholder="Add an accessible footer and a light/dark theme toggle, with tests."
-            disabled={pending}
+        )}
+      </form>
+      <div className="dispatch-proposal">
+        {plans.length > 1 && (
+          <label className="dispatch-history">
+            Proposal history
+            <select
+              value={plan?.id ?? ""}
+              onChange={(event) => {
+                setSelectedId(event.target.value)
+                setError(null)
+              }}
+            >
+              {plans.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.goal.slice(0, 65)} · {statusLabels[item.state.status]}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {plan ? (
+          <PlanPreview
+            plan={plan}
+            currentCommit={snapshot.network.terminusCommit}
+            pending={pending}
+            launch={() =>
+              command(() => api.launchPlan(snapshot.network.id, plan.id))
+            }
+            retry={() =>
+              command(() => api.retryPlan(snapshot.network.id, plan.id))
+            }
           />
-          <Button type="submit" disabled={pending || !goal.trim()}>
-            <Send size={15} />
-            {pending ? "Submitting…" : "Propose a plan"}
-          </Button>
-          {error && (
-            <p className="dispatch-error" role="alert">
-              {error}
+        ) : (
+          <div className="dispatch-placeholder">
+            <Route size={28} />
+            <h3>
+              {selectedId
+                ? "Waiting for the saved proposal…"
+                : "A goal becomes a railway plan"}
+            </h3>
+            <p>
+              Independent work can travel on concurrent Lines. Related steps
+              stay together so each Station receives the code accepted before
+              it.
             </p>
-          )}
-        </form>
-        <div className="dispatch-proposal">
-          {plans.length > 1 && (
-            <label className="dispatch-history">
-              Proposal history
-              <select
-                value={plan?.id ?? ""}
-                onChange={(event) => {
-                  setSelectedId(event.target.value)
-                  setError(null)
-                }}
-              >
-                {plans.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.goal.slice(0, 65)} · {statusLabels[item.state.status]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {plan ? (
-            <PlanPreview
-              plan={plan}
-              currentCommit={snapshot.network.terminusCommit}
-              pending={pending}
-              launch={() =>
-                command(() => api.launchPlan(snapshot.network.id, plan.id))
-              }
-              retry={() =>
-                command(() => api.retryPlan(snapshot.network.id, plan.id))
-              }
-            />
-          ) : (
-            <div className="dispatch-placeholder">
-              <Route size={28} />
-              <h3>
-                {selectedId
-                  ? "Waiting for the saved proposal…"
-                  : "A goal becomes a railway plan"}
-              </h3>
-              <p>
-                Independent work can travel on concurrent Lines. Related steps
-                stay together so each Station receives the code accepted before
-                it.
-              </p>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
-    </details>
+    </div>
   )
 }
 
