@@ -4,10 +4,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   CirclePause,
-  GitCommitHorizontal,
-  Map,
   Radio,
-  Route,
   TrainFront,
   X,
 } from "lucide-react"
@@ -18,6 +15,7 @@ import { lineColor } from "@/map/layout"
 import { api } from "@/state/api"
 import { useNetwork } from "@/state/use-network"
 import { describeEvent, describeLocation, namesFor } from "./describe"
+import { DispatcherPanel } from "./dispatcher-panel"
 
 export function NetworkStatus({ networkId }: { networkId: string }) {
   const { snapshot, events, error } = useNetwork(networkId)
@@ -52,6 +50,12 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
   const blocked = snapshot.trains.filter(
     ({ train }) => train.state.status === "blocked"
   ).length
+  const stationsComplete = snapshot.stations.filter(
+    (s) => s.state.status === "complete"
+  ).length
+  const openConflicts = snapshot.conflicts.filter(
+    (c) => c.status === "open"
+  ).length
   return (
     <div className="network-workspace">
       <header className="network-header">
@@ -59,14 +63,59 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           <a className="back-link" href="#/">
             <ArrowLeft size={14} /> All networks
           </a>
-          <h1>{snapshot.network.name}</h1>
-          <p>Follow the work. See what’s moving.</p>
+          <div className="network-title">
+            <h1>{snapshot.network.name}</h1>
+            <span className="sync-state" role="status">
+              <i className={error ? "sync-error" : ""} />
+              {error ? "Reconnecting" : "Live"} · event {snapshot.lastSeq}
+            </span>
+            <span className="terminus-commit">
+              Terminus{" "}
+              <code title={snapshot.network.terminusCommit}>
+                {snapshot.network.terminusCommit.slice(0, 12)}
+              </code>
+            </span>
+          </div>
         </div>
-        <div className="sync-state">
-          <i className={error ? "sync-error" : ""} />
-          {error ? "Connection interrupted" : "Polling network"}
-          <span>#{snapshot.lastSeq}</span>
-        </div>
+        <dl className="network-stats">
+          <div>
+            <dt>Lines</dt>
+            <dd>{snapshot.lines.length}</dd>
+          </div>
+          <div>
+            <dt>Trains running</dt>
+            <dd>{running.length}</dd>
+          </div>
+          <div>
+            <dt>Stations accepted</dt>
+            <dd>
+              {stationsComplete}
+              <span> / {snapshot.stations.length}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Cars accepted</dt>
+            <dd>{snapshot.cars.length}</dd>
+          </div>
+          {held > 0 && (
+            <div className="stat-held">
+              <dt>Held</dt>
+              <dd>{held}</dd>
+            </div>
+          )}
+          {blocked > 0 && (
+            <div className="stat-blocked">
+              <dt>Blocked</dt>
+              <dd>{blocked}</dd>
+            </div>
+          )}
+          {openConflicts > 0 && (
+            <div className="stat-blocked">
+              <dt>Open conflicts</dt>
+              <dd>{openConflicts}</dd>
+            </div>
+          )}
+        </dl>
       </header>
       {(error || commandError) && (
         <div className="network-alert" role="alert">
@@ -74,39 +123,14 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
             `${error} · Showing the last received state; reconnecting automatically.`}
         </div>
       )}
-      <div className="network-toolbar">
-        <div className="active-map-tab">
-          <Map size={16} /> Network map
-        </div>
-        <div className="network-counts">
-          <span>
-            <b>{snapshot.lines.length}</b> Lines
-          </span>
-          <span>
-            <b>{running.length}</b> Trains on network
-          </span>
-          <span>
-            <b>{snapshot.cars.length}</b> Cars accepted
-          </span>
-          {held > 0 && (
-            <span className="attention-count">
-              <b>{held}</b> held
-            </span>
-          )}
-          {blocked > 0 && (
-            <span className="blocked-count">
-              <b>{blocked}</b> blocked
-            </span>
-          )}
-        </div>
-      </div>
+      <DispatcherPanel snapshot={snapshot} />
       {snapshot.lines.length === 0 ? (
-        <section className="network-empty">
-          <Route size={44} />
-          <h2>Your network starts here</h2>
+        <section className="network-empty panel">
+          <EmptyNetworkArt />
+          <h2>No Lines on this network yet</h2>
           <p>
-            Lay the demo Lines to send two Trains from their depots toward
-            Terminus.
+            Describe a goal to the Dispatcher above and review its plan, or lay
+            the fixed demo Lines to explore the railway.
           </p>
           <Button
             disabled={pending}
@@ -117,18 +141,17 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           </Button>
         </section>
       ) : (
-        <div className="network-grid">
-          <aside className="line-directory">
+        <div
+          className={`network-grid panel ${selection ? "has-inspector" : ""}`}
+        >
+          <aside className="line-directory" aria-label="Lines">
             <div className="panel-heading">
               <h2>Lines</h2>
               <span>
-                {snapshot.lines.length.toString().padStart(2, "0")}
-                <span className="mobile-lines-hint"> · Swipe to browse →</span>
+                {snapshot.lines.length}
+                <span className="mobile-lines-hint"> · swipe to browse</span>
               </span>
             </div>
-            <p className="directory-hint">
-              Select a Line to inspect its journey.
-            </p>
             <div className="line-list">
               {snapshot.lines.map((line, index) => {
                 const train = snapshot.trains.find(
@@ -144,7 +167,13 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
                     key={line.id}
                     className={`line-link ${selection?.lineId === line.id ? "selected" : ""}`}
                     aria-pressed={selection?.lineId === line.id}
-                    onClick={() => setSelection({ lineId: line.id })}
+                    onClick={() =>
+                      setSelection(
+                        selection?.lineId === line.id && !selection.stationId
+                          ? null
+                          : { lineId: line.id }
+                      )
+                    }
                   >
                     <span
                       className="line-bullet"
@@ -155,7 +184,7 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
                     <span className="line-link-copy">
                       <strong>{line.name}</strong>
                       <span>
-                        {complete} / {line.stationIds.length} Stations complete
+                        {complete} of {line.stationIds.length} Stations accepted
                       </span>
                       {train && <StatusBadge status={train.state.status} />}
                     </span>
@@ -163,22 +192,14 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
                 )
               })}
             </div>
-            <div className="directory-footer">
-              <Route size={17} />
-              <p>
-                All Lines lead to Terminus.
-                <br />
-                Only accepted work travels onward.
-              </p>
-            </div>
           </aside>
           <NetworkMap
             snapshot={snapshot}
             selection={selection}
             onSelect={setSelection}
           />
-          <aside className="network-inspector">
-            {selection ? (
+          {selection && (
+            <aside className="network-inspector" aria-label="Details">
               <Inspector
                 snapshot={snapshot}
                 selection={selection}
@@ -187,58 +208,8 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
                 pending={pending}
                 run={run}
               />
-            ) : (
-              <>
-                <div className="panel-heading">
-                  <h2>Network overview</h2>
-                  <Radio size={16} />
-                </div>
-                <div className="overview-body">
-                  <div className="overview-terminus">T</div>
-                  <h3>
-                    One destination.
-                    <br />
-                    Many workstreams.
-                  </h3>
-                  <p>
-                    Select a Station or Line on the map to see its manifest,
-                    Train, and accepted work.
-                  </p>
-                  <div className="overview-stat">
-                    <span>Stations complete</span>
-                    <strong>
-                      {
-                        snapshot.stations.filter(
-                          (s) => s.state.status === "complete"
-                        ).length
-                      }{" "}
-                      / {snapshot.stations.length}
-                    </strong>
-                  </div>
-                  <div className="overview-stat">
-                    <span>Active holds</span>
-                    <strong>{snapshot.holds.length}</strong>
-                  </div>
-                  <div className="overview-stat">
-                    <span>Unresolved conflicts</span>
-                    <strong>
-                      {
-                        snapshot.conflicts.filter((c) => c.status === "open")
-                          .length
-                      }
-                    </strong>
-                  </div>
-                  <div className="commit-note">
-                    <GitCommitHorizontal size={16} />
-                    <span>
-                      Terminus commit
-                      <code>{snapshot.network.terminusCommit}</code>
-                    </span>
-                  </div>
-                </div>
-              </>
-            )}
-          </aside>
+            </aside>
+          )}
         </div>
       )}
       {snapshot.holds.length > 0 && (
@@ -289,7 +260,7 @@ function Inspector({
   return (
     <>
       <div className="panel-heading">
-        <h2>{station ? "Station details" : "Line details"}</h2>
+        <h2>{station ? "Station" : "Line"}</h2>
         <button onClick={onClose} aria-label="Close details">
           <X size={17} />
         </button>
@@ -318,7 +289,11 @@ function Inspector({
                 <p>{station.manifest.dependencies.map(name).join(", ")}</p>
               </>
             )}
-            <p className="revision-note">{station.revisionCount} revisions</p>
+            <p className="revision-note">
+              {station.revisionCount === 0
+                ? "No revisions requested"
+                : `${station.revisionCount} ${station.revisionCount === 1 ? "revision" : "revisions"} requested`}
+            </p>
           </>
         )}
         {views.map(({ train, signal }) => (
@@ -329,8 +304,13 @@ function Inspector({
             <StatusBadge status={train.state.status} />
             <p>{describeLocation(train.state, name)}</p>
             <p>
-              Engineer signal:{" "}
-              <strong>{signal ?? "No current decision"}</strong>
+              {signal ? (
+                <>
+                  Engineer signal is <strong>{signal}</strong>
+                </>
+              ) : (
+                "No current Engineer decision"
+              )}
             </p>
             {train.state.status === "blocked" && (
               <>
@@ -432,16 +412,16 @@ function EventFeed({
 }) {
   const name = namesFor(snapshot)
   return (
-    <section className="event-feed">
+    <section className="event-feed panel" aria-label="Network activity">
       <div className="panel-heading">
         <h2>
-          <Radio size={15} /> Network activity
+          <Radio size={15} /> Activity
         </h2>
-        <span>Domain event history</span>
+        <span>Newest first</span>
       </div>
       {events.length === 0 ? (
         <p className="activity-empty">
-          No events yet. Activity will appear as the network changes.
+          No events yet. Activity appears here as the network changes.
         </p>
       ) : (
         <ol>
@@ -457,7 +437,6 @@ function EventFeed({
                     second: "2-digit",
                   })}
                 </time>
-                <span className="event-dot" />
                 <span>{describeEvent(envelope.event, name)}</span>
                 <code>#{envelope.seq}</code>
               </li>
@@ -465,5 +444,70 @@ function EventFeed({
         </ol>
       )}
     </section>
+  )
+}
+
+/** Decorative first-run illustration: two Lines curving into Terminus. */
+function EmptyNetworkArt() {
+  return (
+    <svg
+      className="network-empty-art"
+      viewBox="0 0 220 96"
+      aria-hidden="true"
+      fill="none"
+      strokeLinecap="round"
+    >
+      <path
+        d="M12 26 H70 A24 24 0 0 1 87 33 L104 50 A10 10 0 0 0 111 53 H110"
+        stroke="#ce3548"
+        strokeWidth="6"
+      />
+      <path
+        d="M12 80 H70 A24 24 0 0 0 87 73 L104 56 A10 10 0 0 1 111 53"
+        stroke="#176ab5"
+        strokeWidth="6"
+      />
+      <path
+        d="M208 53 H110"
+        stroke="#008477"
+        strokeWidth="6"
+        strokeDasharray="1 12"
+      />
+      <circle
+        cx="40"
+        cy="26"
+        r="5"
+        fill="var(--map-paper)"
+        stroke="#ce3548"
+        strokeWidth="3"
+      />
+      <circle
+        cx="40"
+        cy="80"
+        r="5"
+        fill="var(--map-paper)"
+        stroke="#176ab5"
+        strokeWidth="3"
+      />
+      <circle
+        cx="122"
+        cy="53"
+        r="22"
+        fill="var(--map-paper)"
+        stroke="var(--map-ink)"
+        strokeWidth="3"
+      />
+      <circle cx="122" cy="53" r="15" fill="var(--map-ink)" />
+      <text
+        x="122"
+        y="59"
+        textAnchor="middle"
+        fontSize="16"
+        fontWeight="700"
+        fill="var(--map-paper)"
+      >
+        T
+      </text>
+    </svg>
   )
 }

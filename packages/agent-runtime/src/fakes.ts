@@ -33,10 +33,16 @@ export class FakeStationRunner implements StationRunner {
         headCommit: `fake-${input.runId}`,
         changedPaths: input.manifest.expectedAreas,
         evidence: {
-          checks: [
-            { name: "typecheck", required: true, status: "passed" },
-            { name: "test", required: true, status: "passed" },
-          ],
+          checks: (
+            input.validation?.map((check) => check.name) ?? [
+              "typecheck",
+              "test",
+            ]
+          ).map((name) => ({
+            name,
+            required: true,
+            status: "passed" as const,
+          })),
         },
         agent: this.config,
         agentSummary: input.feedback

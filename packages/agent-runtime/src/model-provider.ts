@@ -1,7 +1,7 @@
 import { chatCompletionSchema } from "@terminus/protocol"
 
 export interface ModelRequest {
-  role: "conductor"
+  role: "conductor" | "dispatcher"
   system: string
   input: unknown
 }
@@ -66,12 +66,15 @@ export class GatewayModelProvider implements ModelProvider {
       }
     )
     if (!response.ok)
-      throw new Error(`Conductor model request failed (${response.status})`)
+      throw new Error(
+        `${request.role} model request failed (${response.status})`
+      )
     const parsed = chatCompletionSchema.parse(await response.json())
     const choice = parsed.choices[0]!
     if (choice.finish_reason === "length")
-      throw new Error("Conductor response was truncated")
-    if (!choice.message.content) throw new Error("Conductor returned no review")
+      throw new Error(`${request.role} response was truncated`)
+    if (!choice.message.content)
+      throw new Error(`${request.role} returned no structured output`)
     return JSON.parse(choice.message.content) as unknown
   }
 }

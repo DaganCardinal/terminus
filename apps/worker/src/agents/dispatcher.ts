@@ -51,7 +51,7 @@ export class DispatchError extends Error {
 /**
  * The deterministic half of the Dispatcher: it applies network commands as
  * domain transitions and persists them. Planning and judgement belong to the
- * model-driven half, which does not exist yet.
+ * model-driven half, whose proposals are applied by the Dispatch Workflow.
  */
 export async function createNetwork(
   ports: DispatcherPorts,

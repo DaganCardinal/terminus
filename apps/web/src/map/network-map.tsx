@@ -1,7 +1,13 @@
 import { useRef, useState, type KeyboardEvent } from "react"
 import { Minus, Plus, Scan } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
-import { layoutNetwork, trainPoint } from "./layout"
+import {
+  BULLET_OFFSET,
+  HUB_RADIUS,
+  TRACK_WIDTH,
+  layoutNetwork,
+  trainPoint,
+} from "./layout"
 
 export type MapSelection = { lineId: string; stationId?: string }
 const words = (text: string) => text.replaceAll("_", " ")
@@ -11,18 +17,24 @@ function keyboard(event: KeyboardEvent<SVGGElement>, action: () => void) {
     action()
   }
 }
-function labelLines(value: string): string[] {
-  const words = value.split(/\s+/)
+function wrap(value: string, width: number, max: number): string[] {
   const lines = [""]
-  for (const word of words) {
-    if (lines.at(-1)!.length + word.length > 17 && lines.length < 3)
+  for (const word of value.split(/\s+/)) {
+    if (lines.at(-1)!.length + word.length > width && lines.at(-1))
       lines.push(word)
     else lines[lines.length - 1] += `${lines.at(-1) ? " " : ""}${word}`
   }
-  return lines.map((line) =>
-    line.length > 19 ? `${line.slice(0, 17)}…` : line
+  const kept = lines.slice(0, max)
+  if (lines.length > max)
+    kept[max - 1] = `${kept[max - 1]!.slice(0, width - 1)}…`
+  return kept.map((line) =>
+    line.length > width + 2 ? `${line.slice(0, width)}…` : line
   )
 }
+
+const LABEL_GAP = 21
+const LABEL_LEADING = 19
+const STATUS_LEADING = 17
 
 export function NetworkMap({
   snapshot,
@@ -36,16 +48,15 @@ export function NetworkMap({
   const [zoom, setZoom] = useState(1)
   const [fitted, setFitted] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const { width, height, hub, routes } = layoutNetwork(snapshot.lines)
+  const { width, height, hub, hubHalfHeight, routes } = layoutNetwork(
+    snapshot.lines
+  )
   const sided = snapshot.trains.filter(
     ({ train }) => train.state.status === "siding"
   )
+  const capsule = hubHalfHeight > HUB_RADIUS
   return (
     <section className="map-panel" aria-label="Network map">
-      <div className="map-caption">
-        <span>NETWORK DIAGRAM</span>
-        <span>Depot → Stations → Terminus</span>
-      </div>
       <div
         ref={scrollRef}
         className="map-scroll"
@@ -57,29 +68,36 @@ export function NetworkMap({
           style={{
             width: fitted ? "100%" : `${zoom * 100}%`,
             minWidth: fitted ? undefined : `${720 * zoom}px`,
-            maxHeight: fitted ? 660 : undefined,
+            maxHeight: fitted ? 640 : undefined,
           }}
-          viewBox={`0 -50 ${width} ${height + 50}`}
+          viewBox={`0 0 ${width} ${height}`}
           aria-label="Lines run from their depots toward Terminus"
         >
-          <title>{snapshot.network.name} railway network</title>
+          <title>{`${snapshot.network.name} railway network`}</title>
           {routes.map((route) => {
-            const { line, color, points, depot } = route
-            const selected = selection?.lineId === line.id
+            const { line, color, track, depot, side } = route
             const views = snapshot.trains.filter(
               ({ train }) => train.lineId === line.id
             )
-            const path = points
-              .map((p, i) => `${i ? "L" : "M"}${p.x},${p.y}`)
-              .join(" ")
+            const dimmed = selection !== null && selection.lineId !== line.id
+            const outward = side === "left" ? -1 : 1
+            const bullet = { x: depot.x + outward * BULLET_OFFSET, y: depot.y }
+            const name = wrap(line.name, 13, 2)
             return (
-              <g key={line.id}>
-                <path d={path} className="track-underlay" />
+              <g
+                key={line.id}
+                className={dimmed ? "route route-dimmed" : "route"}
+              >
                 <path
-                  d={path}
+                  d={track.d}
+                  className="track-casing"
+                  strokeWidth={TRACK_WIDTH + 6}
+                />
+                <path
+                  d={track.d}
                   fill="none"
                   stroke={color}
-                  strokeWidth={selected ? 9 : 7}
+                  strokeWidth={TRACK_WIDTH}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                 />
@@ -87,42 +105,43 @@ export function NetworkMap({
                   role="button"
                   tabIndex={0}
                   aria-label={`Select ${line.name}`}
+                  aria-pressed={selection?.lineId === line.id}
                   onClick={() => onSelect({ lineId: line.id })}
                   onKeyDown={(e) =>
                     keyboard(e, () => onSelect({ lineId: line.id }))
                   }
                   className="map-target"
                 >
+                  <title>{line.name}</title>
                   <rect
-                    x={depot.x - 90}
-                    y={depot.y - 110}
-                    width="180"
-                    height="150"
+                    x={bullet.x - 70}
+                    y={depot.y - 70}
+                    width="140"
+                    height="90"
                     fill="transparent"
                   />
-                  <title>
-                    {line.name} · {route.shape} route
-                  </title>
-                  <rect
-                    x={depot.x - 22}
-                    y={depot.y - 76}
-                    width="44"
-                    height="32"
-                    rx="16"
-                    fill={color}
-                  />
-                  <text x={depot.x} y={depot.y - 54} className="route-number">
-                    {route.number.toString().padStart(2, "0")}
-                  </text>
                   <text
-                    x={depot.x}
-                    y={depot.y - 90}
+                    x={bullet.x}
+                    y={depot.y - 26 - (name.length - 1) * 18}
                     textAnchor="middle"
                     className="route-name"
                   >
-                    {line.name.length > 24
-                      ? `${line.name.slice(0, 22)}…`
-                      : line.name}
+                    {name.map((text, j) => (
+                      <tspan key={j} x={bullet.x} dy={j === 0 ? 0 : 18}>
+                        {text}
+                      </tspan>
+                    ))}
+                  </text>
+                  <rect
+                    x={bullet.x - 21}
+                    y={depot.y - 14}
+                    width="42"
+                    height="28"
+                    rx="14"
+                    fill={color}
+                  />
+                  <text x={bullet.x} y={depot.y + 5.5} className="route-number">
+                    {route.number.toString().padStart(2, "0")}
                   </text>
                   <rect
                     x={depot.x - 7}
@@ -134,14 +153,6 @@ export function NetworkMap({
                     stroke={color}
                     strokeWidth="3"
                   />
-                  <text
-                    x={depot.x}
-                    y={depot.y + 31}
-                    textAnchor="middle"
-                    className="map-secondary"
-                  >
-                    DEPOT
-                  </text>
                 </g>
                 {line.stationIds.map((id, i) => {
                   const station = snapshot.stations.find((s) => s.id === id)
@@ -152,15 +163,16 @@ export function NetworkMap({
                     status
                   )
                   const chosen = selection?.stationId === id
-                  const label = labelLines(station.name)
-                  const labelOffset =
-                    route.shape === "sweep" && i === 0 ? 97 : i % 2 ? 85 : 57
+                  const showStatus = status !== "waiting"
+                  const label = wrap(station.name, 16, 3)
+                  const nameBaseline =
+                    p.y - LABEL_GAP - (showStatus ? STATUS_LEADING : 0)
                   return (
                     <g
                       key={id}
                       role="button"
                       tabIndex={0}
-                      className="map-target"
+                      className="map-target station"
                       aria-label={`${station.name}, ${words(status)}`}
                       aria-pressed={chosen}
                       onClick={() =>
@@ -173,21 +185,18 @@ export function NetworkMap({
                       }
                     >
                       <rect
-                        x={p.x - 65}
-                        y={p.y - 125}
-                        width="130"
-                        height="175"
+                        x={p.x - 74}
+                        y={p.y - 104}
+                        width="148"
+                        height="122"
                         fill="transparent"
                       />
-                      <title>
-                        {station.name} · {words(status)}
-                      </title>
-                      <circle cx={p.x} cy={p.y} r="22" fill="transparent" />
+                      <title>{`${station.name} · ${words(status)}`}</title>
                       {(active || chosen) && (
                         <circle
                           cx={p.x}
                           cy={p.y}
-                          r="15"
+                          r="13"
                           fill="var(--map-paper)"
                           stroke={chosen ? "var(--map-ink)" : color}
                           strokeWidth="2"
@@ -201,7 +210,9 @@ export function NetworkMap({
                         fill={
                           status === "complete" ? color : "var(--map-paper)"
                         }
-                        stroke={status === "blocked" ? "#bc3042" : color}
+                        stroke={
+                          status === "blocked" ? "var(--map-danger)" : color
+                        }
                         strokeWidth="3"
                       />
                       {status === "complete" && (
@@ -214,38 +225,47 @@ export function NetworkMap({
                       )}
                       <text
                         x={p.x}
-                        y={p.y - labelOffset - (label.length - 1) * 20}
+                        y={nameBaseline - (label.length - 1) * LABEL_LEADING}
                         textAnchor="middle"
                         className="station-label"
                       >
                         {label.map((text, j) => (
-                          <tspan key={j} x={p.x} dy={j === 0 ? 0 : 20}>
+                          <tspan
+                            key={j}
+                            x={p.x}
+                            dy={j === 0 ? 0 : LABEL_LEADING}
+                          >
                             {text}
                           </tspan>
                         ))}
                       </text>
-                      <text
-                        x={p.x}
-                        y={p.y + 34}
-                        textAnchor="middle"
-                        className={`station-state ${status === "blocked" ? "state-blocked" : ""}`}
-                      >
-                        {words(status)}
-                      </text>
+                      {showStatus && (
+                        <text
+                          x={p.x}
+                          y={p.y - LABEL_GAP}
+                          textAnchor="middle"
+                          className={`station-state ${status === "blocked" ? "state-blocked" : ""}`}
+                        >
+                          {words(status)}
+                        </text>
+                      )}
                     </g>
                   )
                 })}
                 {views.map((view) => {
-                  const p = trainPoint(view.train.state, route, hub)
+                  const p = trainPoint(view.train.state, route)
                   if (!p) return null
                   const status = view.train.state.status
+                  const label = words(status)
+                  // Icon, label and signal lamp sized to the label's length.
+                  const half = 30 + label.length * 3.4
                   return (
                     <g
                       key={view.train.id}
                       className={`map-target train-marker train-${status}`}
                       role="button"
                       tabIndex={0}
-                      aria-label={`${line.name} Train, ${words(status)}, signal ${view.signal ?? "not available"}`}
+                      aria-label={`${line.name} Train, ${label}, signal ${view.signal ?? "not available"}`}
                       onClick={() => onSelect({ lineId: line.id })}
                       onKeyDown={(e) =>
                         keyboard(e, () => onSelect({ lineId: line.id }))
@@ -253,53 +273,51 @@ export function NetworkMap({
                     >
                       <rect
                         className="train-hitbox"
-                        x={p.x - 61}
-                        y={p.y + 6}
-                        width="122"
-                        height="75"
+                        x={p.x - half - 4}
+                        y={p.y + 8}
+                        width={half * 2 + 8}
+                        height="56"
                         fill="transparent"
                       />
                       <title>
-                        Train · {words(status)} · {view.train.carIds.length}{" "}
-                        Cars
+                        {`Train · ${label} · ${view.train.carIds.length} Cars`}
                       </title>
                       <path
-                        d={`M${p.x},${p.y + 7} v42`}
+                        d={`M${p.x},${p.y + 15} V${p.y + 36}`}
                         className="train-leader"
                       />
                       <rect
-                        x={p.x - 59}
-                        y={p.y + 48}
-                        width="118"
-                        height="30"
-                        rx="5"
-                        fill={
-                          status === "blocked"
-                            ? "#a82538"
-                            : status === "held"
-                              ? "#805510"
-                              : "var(--map-ink)"
-                        }
+                        className="train-body"
+                        x={p.x - half}
+                        y={p.y + 36}
+                        width={half * 2}
+                        height="26"
+                        rx="13"
                       />
                       <g
-                        transform={`translate(${p.x - 49},${p.y + 55})`}
+                        transform={`translate(${p.x - half + 11},${p.y + 42})`}
                         fill="none"
-                        stroke="white"
+                        stroke="currentColor"
                         strokeWidth="1.5"
+                        className="train-icon"
                         aria-hidden="true"
                       >
-                        <rect width="12" height="12" rx="2" />
-                        <path d="M2 3h8v4H2z M2 15l2-3 M8 12l2 3" />
+                        <rect width="11" height="11" rx="2" />
+                        <path d="M2 3h7v3.5H2z M2.5 14l1.5-2.5 M8.5 14L7 11.5" />
                       </g>
-                      <text x={p.x + 3} y={p.y + 66} className="train-label">
-                        {words(status)}
+                      <text
+                        x={p.x + (view.signal ? 0 : 6)}
+                        y={p.y + 53.5}
+                        className="train-label"
+                      >
+                        {label}
                       </text>
                       {view.signal && (
                         <circle
-                          cx={p.x + 49}
-                          cy={p.y + 63}
+                          cx={p.x + half - 13}
+                          cy={p.y + 49}
                           r="4"
-                          fill={view.signal === "green" ? "#7ce0ae" : "#ff8c93"}
+                          className={`train-signal signal-${view.signal}`}
                         />
                       )}
                     </g>
@@ -309,21 +327,51 @@ export function NetworkMap({
             )
           })}
           <g className="terminus-hub">
-            <circle
-              cx={hub.x}
-              cy={hub.y}
-              r="43"
-              fill="var(--map-paper)"
-              stroke="var(--map-ink)"
-              strokeWidth="4"
-            />
-            <circle cx={hub.x} cy={hub.y} r="33" fill="var(--map-ink)" />
+            {capsule ? (
+              <>
+                <rect
+                  x={hub.x - HUB_RADIUS}
+                  y={hub.y - hubHalfHeight}
+                  width={HUB_RADIUS * 2}
+                  height={hubHalfHeight * 2}
+                  rx={HUB_RADIUS}
+                  fill="var(--map-paper)"
+                  stroke="var(--map-ink)"
+                  strokeWidth="4"
+                />
+                <rect
+                  x={hub.x - HUB_RADIUS + 9}
+                  y={hub.y - hubHalfHeight + 9}
+                  width={HUB_RADIUS * 2 - 18}
+                  height={hubHalfHeight * 2 - 18}
+                  rx={HUB_RADIUS - 9}
+                  fill="var(--map-ink)"
+                />
+              </>
+            ) : (
+              <>
+                <circle
+                  cx={hub.x}
+                  cy={hub.y}
+                  r={HUB_RADIUS}
+                  fill="var(--map-paper)"
+                  stroke="var(--map-ink)"
+                  strokeWidth="4"
+                />
+                <circle
+                  cx={hub.x}
+                  cy={hub.y}
+                  r={HUB_RADIUS - 9}
+                  fill="var(--map-ink)"
+                />
+              </>
+            )}
             <text x={hub.x} y={hub.y + 10} className="hub-letter">
               T
             </text>
             <text
               x={hub.x}
-              y={hub.y + 75}
+              y={hub.y + hubHalfHeight + 32}
               textAnchor="middle"
               className="hub-title"
             >
@@ -331,7 +379,7 @@ export function NetworkMap({
             </text>
             <text
               x={hub.x}
-              y={hub.y + 97}
+              y={hub.y + hubHalfHeight + 52}
               textAnchor="middle"
               className="map-secondary"
             >
@@ -340,18 +388,16 @@ export function NetworkMap({
           </g>
         </svg>
       </div>
-      <p className="map-navigation-hint">
-        {fitted
-          ? "Whole network · zoom in to read Stations"
-          : "Scroll or swipe to explore · Fit network to see all Lines"}
-      </p>
       <div className="map-bottom">
-        <div className="map-key">
+        <div className="map-key" aria-label="Map key">
           <span>
             <i className="key-depot" /> Depot
           </span>
           <span>
             <i className="key-station" /> Station
+          </span>
+          <span>
+            <i className="key-active" /> In progress
           </span>
           <span>
             <i className="key-complete" /> Accepted
@@ -360,7 +406,7 @@ export function NetworkMap({
             <i className="key-train" /> Train
           </span>
           <span>
-            <i className="key-signal" /> Red signal: stop
+            <i className="key-signal" /> Red signal
           </span>
         </div>
         <div className="zoom-controls">
@@ -381,9 +427,10 @@ export function NetworkMap({
               scrollRef.current?.scrollTo(0, 0)
             }}
             aria-label="Fit network"
+            aria-pressed={fitted}
           >
             <Scan size={15} />
-            <span>Fit network</span>
+            <span>Fit</span>
           </button>
           <button
             aria-label="Zoom in"

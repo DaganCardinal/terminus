@@ -12,6 +12,7 @@ import type {
   StationStatus,
   Train,
   TrainId,
+  DispatchPlan,
 } from "@terminus/domain"
 import { signalFor } from "@terminus/domain"
 import {
@@ -24,6 +25,7 @@ import {
   integrationCandidateSchema,
   integrationResultSchema,
   evidenceSchema,
+  dispatchPlanSchema,
   type IntegrationAttempt,
   type IntegrationInput,
   type IntegrationCandidate,
@@ -50,6 +52,7 @@ export interface Loaded<T> {
 
 /** A row write. `version` is the version read, or null to insert. */
 export type Write =
+  | { kind: "dispatch_plan"; plan: DispatchPlan; version: number | null }
   | { kind: "network"; network: NetworkSummary }
   | { kind: "line"; line: Line }
   | { kind: "station"; station: Station; version: number | null }
@@ -98,6 +101,21 @@ export class NetworkStore {
 
   constructor(db: D1Database) {
     this.#db = db
+  }
+
+  async dispatchPlan(id: string): Promise<Loaded<DispatchPlan> | null> {
+    const row = await this.#db
+      .prepare(
+        "SELECT record, version, network_id FROM dispatch_plans WHERE id = ?"
+      )
+      .bind(id)
+      .first<VersionedRow>()
+    return row
+      ? {
+          ...loaded<DispatchPlan>(row),
+          value: dispatchPlanSchema.parse(JSON.parse(row.record)),
+        }
+      : null
   }
 
   async integration(id: string): Promise<IntegrationAttempt | null> {
@@ -601,19 +619,29 @@ export class NetworkStore {
       this.#db
         .prepare(`SELECT record FROM ${table} WHERE network_id = ?`)
         .bind(networkId)
-    const [networks, lines, stations, trains, cars, holds, conflicts, seq] =
-      await this.#db.batch([
-        this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
-        select("lines"),
-        select("stations"),
-        select("trains"),
-        select("cars"),
-        select("holds"),
-        select("conflicts"),
-        this.#db
-          .prepare("SELECT max(seq) AS seq FROM events WHERE network_id = ?")
-          .bind(networkId),
-      ])
+    const [
+      networks,
+      lines,
+      stations,
+      trains,
+      cars,
+      holds,
+      conflicts,
+      seq,
+      plans,
+    ] = await this.#db.batch([
+      this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
+      select("lines"),
+      select("stations"),
+      select("trains"),
+      select("cars"),
+      select("holds"),
+      select("conflicts"),
+      this.#db
+        .prepare("SELECT max(seq) AS seq FROM events WHERE network_id = ?")
+        .bind(networkId),
+      select("dispatch_plans"),
+    ])
     const network = networks!.results[0] as NetworkRow | undefined
     if (!network) return null
     const records = <T>(result: D1Result | undefined) =>
@@ -631,6 +659,9 @@ export class NetworkStore {
       ),
       holds: records<Hold>(holds),
       conflicts: records<Conflict>(conflicts),
+      plans: records<DispatchPlan>(plans).map((plan) =>
+        dispatchPlanSchema.parse(plan)
+      ),
       lastSeq: (seq!.results[0] as { seq: number | null }).seq ?? 0,
     }
   }
@@ -646,6 +677,21 @@ export class NetworkStore {
   #statement(networkId: NetworkId, write: Write): D1PreparedStatement {
     const db = this.#db
     switch (write.kind) {
+      case "dispatch_plan": {
+        const { plan, version } = write
+        const record = JSON.stringify(dispatchPlanSchema.parse(plan))
+        return version === null
+          ? db
+              .prepare(
+                "INSERT INTO dispatch_plans (id, network_id, status, record, version) VALUES (?, ?, ?, ?, 0)"
+              )
+              .bind(plan.id, networkId, plan.state.status, record)
+          : db
+              .prepare(
+                "UPDATE dispatch_plans SET status = ?, record = ?, version = ? WHERE id = ?"
+              )
+              .bind(plan.state.status, record, version + 1, plan.id)
+      }
       case "network": {
         const { network } = write
         return db

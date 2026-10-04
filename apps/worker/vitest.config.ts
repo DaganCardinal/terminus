@@ -14,7 +14,11 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc", environment: "fake" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations, FAKE_AGENT_DELAY_MS: "0" },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            FAKE_AGENT_DELAY_MS: "0",
+            DISPATCHER_MODEL: "fake",
+          },
         },
       }),
     ],

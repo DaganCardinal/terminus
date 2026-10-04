@@ -13,25 +13,15 @@ Official maps researched and visually inspected on October 3, 2026:
 
 The map uses this visual grammar with original geometry and no copied map assets. Unlike a city's topology, Terminus Lines do not branch or merge before Terminus. Independent approach lanes enter the central interchange; a crossing without a station marker is not a connection.
 
-## Route shapes
+## Route geometry
 
-Six profiles are available: direct, elbow, dogleg, staircase, sweep, and offset. The Dispatcher already assigns random UUID-based Line IDs. The renderer uses that entropy to choose a profile without replacement within each group of six Lines in snapshot order. This provides random variety while keeping geometry stable across polling and reloads; appending Lines preserves existing choices. No random draws happen during rendering, and no second copy of topology is stored in local storage.
+Lines follow the curve discipline of the Montréal and London maps. Control points stay on horizontal, vertical and 45-degree segments, and every change of direction is drawn as a circular curve, never a hard corner (`apps/web/src/map/track.ts`). The base radius is about three and a half line widths; a curve shrinks only where neighbouring straights are too short to fit it.
 
-Shape choice and coordinates belong to presentation, so no domain field, migration, or new infrastructure is needed. Route colors and numbered identifiers are shared between the diagram and directory. Extra Stations grow the canvas; zoom and scrolling provide inspection at larger network sizes.
+- **Stations sit only on straight horizontal track**, at least a curve clearance away from any bend, with even spacing along the straight runs. Labels sit directly above their Station; the Station's status appears beneath the name only when it is not `waiting`, which keeps space below the track for Train markers.
+- **Route bullets mark the depot end** of each Line, with the Line name above the bullet, as Montréal does at its termini.
+- **Approach lanes form a parallel bundle.** On each side of Terminus, upper Lines curve down and lower Lines curve up into evenly spaced entry ports, on concentric curves. Rows are placed from Terminus outward so that no Line crosses another and none needs a short jog; an odd middle row runs straight in. With many Lines, Terminus becomes a capsule interchange so every port reaches it.
+- **Selecting a Line dims the others** so its route reads at a glance.
 
-## Interaction and state
+Six station-track profiles are available: direct, elbow, dogleg, staircase, sweep, and offset. The Dispatcher already assigns random UUID-based Line IDs. The renderer uses that entropy to choose a profile without replacement within each group of six Lines in snapshot order. This provides random variety while keeping geometry stable across polling and reloads; appending Lines preserves existing choices. No random draws happen during rendering, and no second copy of topology is stored in local storage.
 
-- Select a Line, Train or Station by pointer or keyboard. The inspector shows the manifest goal, acceptance criteria, dependencies, Station order, current Train state, gate signal, reasons/issues, and accepted Cars with review and commit provenance.
-- Ready Trains use their backend `at` location. Moving and approaching Trains use fixed, distinct positions on the approach to their backend target Station. These positions describe phases, not elapsed time or completion percentages.
-- Held and blocked Trains remain on the map at their resume location. They use distinct labeled markers and separate summary counts. Signals come directly from `TrainView.signal`.
-- Returning Trains appear on the Terminus approach. Unloaded Trains leave the track but remain inspectable in the directory/history. Sided Trains appear in a separate, selectable siding strip.
-- Fit network shows the whole diagram, including on mobile. Zoom provides larger labels, with explicit scroll/swipe guidance. The mobile Line directory can be swiped independently.
-- Polling failures preserve the last snapshot and display a connection warning. Initial failures retry even when no events exist. Requests are serialized; an event cursor advances only after its snapshot reload succeeds.
-
-## Local verification
-
-Run `npm run dev:fake` and `npm run dev:web`; never use the real execution environment for UI checks. Local browser verification covered a six-Line/18-Station network, manifest selection, keyboard selection, hold/release commands, stable geometry after reload, zoom/fit, dark mode and a 390px viewport. Browser-only response fixtures exercised blocked, held, reviewing, moving, siding and unloaded displays, plus recovery from an initial failed snapshot with an empty event stream.
-
-Two GPT-6 Luna reviewers with high reasoning independently reviewed rendered screenshots, not source code. Their feedback led to whole-network mobile fit, explicit navigation cues, larger/staggered labels, more route variety, Train icons, a red-signal key, and separate held/blocked counts. The central radial topology remains intentional: every workstream ends at Terminus.
-
-A real local fake-backend demo completed with both Trains `unloaded` and three accepted Cars; polling displayed the integration events and removed the Train markers. Build, workspace type checks, lint, changed-file formatting, and 146 web/pure-package tests passed. The existing Workers test suite stalled in both the default and single-worker configurations. The latter reported a pool termination timeout for `integration-operations.test.ts` and hung-runtime errors, so that suite remains unverified. No deployment or live execution was performed.
+Shape choice and coordinates belong to presentation, so no domain field, migration, or new infrastructure is needed. Route colors and numbered identifiers are shared between the diagram and directory. Extra Stations widen the canvas and extra Lines make it taller; the canvas is trimmed to what is drawn, and zoom and scrolling provide inspection at larger network sizes.

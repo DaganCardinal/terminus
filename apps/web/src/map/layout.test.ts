@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest"
 import type { Line, TrainState } from "@terminus/protocol"
-import { layoutNetwork, routeShapes, shapeForLine, trainPoint } from "./layout"
+import {
+  TRACK_WIDTH,
+  layoutNetwork,
+  routeShapes,
+  shapeForLine,
+  trainPoint,
+} from "./layout"
+import { pointOnTrack, type Point } from "./track"
 
 const line = (id: string, count = 3): Line => ({
   id,
@@ -69,7 +76,7 @@ describe("network map projection", () => {
     ).toBe(6)
   })
   it("uses backend locations for ready, held, blocked, docked and reviewing Trains", () => {
-    const { routes, hub } = layoutNetwork([line("a")])
+    const { routes } = layoutNetwork([line("a")])
     const route = routes[0]!
     const ready: TrainState = {
       status: "ready",
@@ -90,38 +97,136 @@ describe("network map projection", () => {
       { status: "docked", at: "a-s1", from: { kind: "depot" } },
       { status: "reviewing", at: "a-s1", from: { kind: "depot" } },
     ] satisfies TrainState[])
-      expect(trainPoint(state, route, hub)).toEqual(route.stations[1])
+      expect(trainPoint(state, route)).toEqual(route.stations[1])
     expect(
-      trainPoint({ status: "ready", at: { kind: "depot" } }, route, hub)
+      trainPoint({ status: "ready", at: { kind: "depot" } }, route)
     ).toEqual(route.depot)
   })
   it("shows lifecycle phases without simulating progress and removes terminal Trains from track", () => {
-    const { routes, hub } = layoutNetwork([line("a")])
+    const { routes } = layoutNetwork([line("a")])
     const route = routes[0]!
     const moving: TrainState = {
       status: "in_transit",
       from: { kind: "depot" },
       toward: "a-s0",
     }
-    expect(trainPoint(moving, route, hub)).not.toEqual(route.stations[0])
-    expect(trainPoint(moving, route, hub)).toEqual(
-      trainPoint(structuredClone(moving), route, hub)
+    expect(trainPoint(moving, route)).not.toEqual(route.stations[0])
+    expect(trainPoint(moving, route)).toEqual(
+      trainPoint(structuredClone(moving), route)
+    )
+    expect(trainPoint({ ...moving, status: "approaching" }, route)).not.toEqual(
+      trainPoint(moving, route)
     )
     expect(
-      trainPoint({ ...moving, status: "approaching" }, route, hub)
-    ).not.toEqual(trainPoint(moving, route, hub))
-    expect(
-      trainPoint({ status: "unloaded", mergeCommit: "abc" }, route, hub)
+      trainPoint({ status: "unloaded", mergeCommit: "abc" }, route)
     ).toBeNull()
     expect(
-      trainPoint({ status: "siding", reason: "Abandoned" }, route, hub)
+      trainPoint({ status: "siding", reason: "Abandoned" }, route)
     ).toBeNull()
     expect(
-      trainPoint(
-        { status: "returning", phase: "awaiting_clearance" },
-        route,
-        hub
+      trainPoint({ status: "returning", phase: "awaiting_clearance" }, route)
+    ).not.toEqual(route.stations.at(-1))
+  })
+
+  it("joins every change of direction with a curve, never a hard corner", () => {
+    for (const count of [1, 3, 6, 8, 13, 24]) {
+      const { routes } = layoutNetwork(
+        Array.from({ length: count }, (_, i) => line(`line-${i}`, (i % 6) + 1))
       )
-    ).not.toEqual(hub)
+      for (const { track } of routes) {
+        for (let i = 1; i < track.pieces.length; i++) {
+          const piece = track.pieces[i]!
+          const previous = track.pieces[i - 1]!
+          if (piece.kind === "arc") {
+            expect(piece.radius).toBeGreaterThanOrEqual(20)
+            continue
+          }
+          if (previous.kind !== "line") continue
+          const heading = (p: { from: Point; to: Point }) =>
+            Math.atan2(p.to.y - p.from.y, p.to.x - p.from.x)
+          expect(heading(piece)).toBeCloseTo(heading(previous), 6)
+        }
+      }
+    }
+  })
+  it("places Stations only on straight horizontal track, clear of curves", () => {
+    for (const count of [1, 4, 6, 12]) {
+      const { routes } = layoutNetwork(
+        Array.from({ length: count }, (_, i) => line(`line-${i}`, (i % 7) + 1))
+      )
+      for (const route of routes) {
+        route.stationDistances.forEach((distance, i) => {
+          const index = route.track.pieces.findIndex(
+            (p) => distance >= p.start && distance <= p.start + p.length
+          )
+          const piece = route.track.pieces[index]!
+          expect(piece.kind).toBe("line")
+          if (piece.kind !== "line") return
+          expect(piece.from.y).toBeCloseTo(piece.to.y, 6)
+          expect(route.stations[i]!.y).toBeCloseTo(piece.from.y, 6)
+          const before = route.track.pieces[index - 1]
+          const after = route.track.pieces[index + 1]
+          if (before?.kind === "arc")
+            expect(distance - piece.start).toBeGreaterThanOrEqual(20)
+          if (after?.kind === "arc")
+            expect(
+              piece.start + piece.length - distance
+            ).toBeGreaterThanOrEqual(20)
+        })
+        const gaps = route.stations
+          .slice(1)
+          .map((p, i) => Math.abs(p.x - route.stations[i]!.x))
+        for (const gap of gaps) expect(gap).toBeGreaterThanOrEqual(150)
+      }
+    }
+  })
+  it("never crosses Lines or makes short jogs before Terminus", () => {
+    const crosses = (a: Point, b: Point, c: Point, d: Point) => {
+      const side = (p: Point, q: Point, r: Point) =>
+        Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x))
+      return (
+        side(a, b, c) * side(a, b, d) < 0 && side(c, d, a) * side(c, d, b) < 0
+      )
+    }
+    for (const count of [2, 3, 6, 8, 12, 24]) {
+      const { routes } = layoutNetwork(
+        Array.from({ length: count }, (_, i) => line(`line-${i}`, (i % 5) + 1))
+      )
+      for (const route of routes)
+        for (let i = 1; i < route.points.length; i++) {
+          const a = route.points[i - 1]!,
+            b = route.points[i]!
+          if (Math.abs(a.y - b.y) > 0.01)
+            expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeGreaterThan(40)
+        }
+      let crossings = 0
+      for (let r = 0; r < routes.length; r++)
+        for (let s = r + 1; s < routes.length; s++) {
+          // The last segment of each route runs beneath the Terminus marker.
+          const a = routes[r]!.points.slice(0, -1)
+          const b = routes[s]!.points.slice(0, -1)
+          for (let i = 1; i < a.length; i++)
+            for (let j = 1; j < b.length; j++)
+              if (crosses(a[i - 1]!, a[i]!, b[j - 1]!, b[j]!)) crossings++
+        }
+      expect(crossings).toBe(0)
+      // Parallel approach lanes keep a clear gap between their strokes.
+      const samples = routes.map((route) =>
+        Array.from({ length: 80 }, (_, i) =>
+          pointOnTrack(
+            route.track,
+            route.trackEnd +
+              ((route.track.length - route.trackEnd - 60) * i) / 79
+          )
+        )
+      )
+      let closest = Infinity
+      for (let r = 0; r < samples.length; r++)
+        for (let s = r + 1; s < samples.length; s++)
+          for (const p of samples[r]!)
+            for (const q of samples[s]!)
+              closest = Math.min(closest, Math.hypot(p.x - q.x, p.y - q.y))
+      expect(closest).toBeGreaterThan(TRACK_WIDTH)
+    }
   })
 })

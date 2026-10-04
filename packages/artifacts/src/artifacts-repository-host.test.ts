@@ -200,6 +200,37 @@ async function fixture(options: { remoteErrors?: boolean } = {}) {
 }
 
 describe("Artifacts repository transport with real Git", () => {
+  it("reads bounded context from the exact canonical commit using only read grants, without changing its history", async () => {
+    const f = await fixture()
+    await f.host.createTerminus({ name: "context" })
+    const saved = await f.change("context", "README.md", "x".repeat(6000))
+    await f.change("context", ".env", "SECRET=fixture-secret")
+    await f.change("context", "README.md", "newer content")
+    const current = await f.head("context")
+    const context = await f.host.readContext("context", saved.commit)
+    expect(context.commit).toBe(saved.commit)
+    expect(context.files.find((file) => file.path === "README.md")).toEqual({
+      path: "README.md",
+      content: "x".repeat(4000),
+      truncated: true,
+    })
+    expect(await f.head("context")).toBe(current)
+    const latest = await f.host.readContext("context", current)
+    expect(latest.paths).not.toContain(".env")
+    expect(
+      latest.files.some((file) => file.content.includes("fixture-secret"))
+    ).toBe(false)
+    expect(
+      f.grants
+        .slice(-2)
+        .every((grants) => grants.length === 1 && grants[0]!.scope === "read")
+    ).toBe(true)
+    expect(f.tokens.size).toBe(0)
+    await expect(f.host.readContext("context", "not-a-commit")).rejects.toThrow(
+      "full Git commit"
+    )
+    expect(f.tokens.size).toBe(0)
+  })
   it("creates Train and Station repos when remote RPC drops the missing-target error code", async () => {
     const f = await fixture({ remoteErrors: true })
     const terminus = await f.host.createTerminus({ name: "terminus" })

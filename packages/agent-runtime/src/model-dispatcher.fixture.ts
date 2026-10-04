@@ -1,0 +1,62 @@
+// Test fixture copied from the maintainer-provided live Dispatcher response.
+export const liveDispatcherProposal = {
+  summary:
+    "Single line with one focused station updating the shadcn theme tokens in src/index.css so the primary accent colour becomes #32a852 in both light and dark themes, leaving all other tokens and component code untouched.",
+  lines: [
+    {
+      key: "accent-primary",
+      name: "Primary accent colour change",
+      stations: [
+        {
+          key: "primary-token-swap",
+          name: "Update --primary theme tokens to #32a852",
+          manifest: {
+            goal: "Change the primary accent colour to #32a852 by updating the --primary custom property in the shadcn theme definitions inside src/index.css, keeping the token-based theming system intact.",
+            scope: ["src/index.css"],
+            expectedAreas: [
+              "src/index.css",
+              "src/components/ui/button.tsx (no changes expected; consumes --primary via bg-primary/text-primary)",
+            ],
+            avoidAreas: [
+              "src/App.tsx",
+              "src/main.tsx",
+              "src/components/theme-provider.tsx",
+              "vite.config.ts",
+              "package.json",
+              "index.html",
+              "all other colour tokens such as --accent, --ring, --chart-*",
+            ],
+            contracts: [
+              {
+                name: "--primary theme token in src/index.css",
+                kind: "config",
+                change: "changes",
+              },
+              {
+                name: "--primary-foreground theme token in src/index.css",
+                kind: "config",
+                change: "depends_on",
+              },
+            ],
+            invariants: [
+              "The --primary token remains defined as a CSS custom property consumed via @theme inline; no renaming of tokens.",
+              "The --primary-foreground value must retain sufficient contrast against the new green #32a852 background (near-white foreground is acceptable).",
+              "Dark mode (.dark selector) also uses the updated primary accent so the colour change applies in both themes.",
+              "Only colour values change; no structural CSS, class naming, or component logic changes.",
+              "Existing oklch formatting style is followed where practical; a plain hex or equivalent oklch value for #32a852 is acceptable.",
+            ],
+            dependencies: [],
+            acceptanceCriteria: [
+              "--primary in the :root block resolves to #32a852 (e.g. hex or its oklch equivalent oklch(0.66 0.15 149)).",
+              "--primary in the .dark block resolves to the same #32a852 accent (or a contrast-adjusted equivalent that still reads as the green accent).",
+              "Default Button variant (bg-primary text-primary-foreground) and link variant (text-primary) visually use the new accent.",
+              "No other theme tokens are modified and CSS remains syntactically valid.",
+              "npm run build and npm run test succeed with the change in place.",
+            ],
+            expectedEvidence: ["build", "test"],
+          },
+        },
+      ],
+    },
+  ],
+}

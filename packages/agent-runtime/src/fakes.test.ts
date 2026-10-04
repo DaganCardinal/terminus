@@ -23,6 +23,24 @@ const proposal = {
 }
 
 describe("FakeStationRunner", () => {
+  it("simulates the configured project checks, including evidence requested by Dispatcher plans", async () => {
+    const result = await new FakeStationRunner().run({
+      stationId: "station",
+      runId: "run",
+      manifest: { ...manifest, expectedEvidence: ["build"] },
+      workspace: { repoId: "repo", baseCommit: "base" },
+      feedback: null,
+      validation: [{ name: "build", command: ["npm", "run", "build"] }],
+    })
+    expect(result).toMatchObject({
+      ok: true,
+      proposal: {
+        evidence: {
+          checks: [{ name: "build", required: true, status: "passed" }],
+        },
+      },
+    })
+  })
   it("proposes passing work derived from the run", async () => {
     const result = await new FakeStationRunner().run({
       stationId: "s1",

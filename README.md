@@ -2,7 +2,7 @@
 
 Terminus coordinates coding agents on concurrent Lines of work. Each Train accumulates accepted Station work; D1 owns the railway state, Artifacts owns repositories, and Workflows coordinate execution. The browser polls snapshots and the domain event log.
 
-The domain, persistence, API and Train/Station/Terminus integration Workflows are implemented. Real Artifacts and Sandbox/OpenCode adapters and a model Conductor are available alongside fakes. The maintainer has verified live Station execution and review; the new Terminus integration path still needs live verification. Returning Trains receive Dispatcher clearance, merge and validate against current Terminus, and unload after promotion. Model-driven planning and the railway map are future work.
+The domain, persistence, API, Train/Station/Terminus integration Workflows, and React/SVG railway map are implemented. Real Artifacts and Sandbox/OpenCode adapters and a model Conductor are available alongside fakes. The maintainer verified both concurrent Trains reaching and integrating into Terminus in a live test. Returning Trains receive Dispatcher clearance, merge and validate against current Terminus, and unload after promotion. Focused model-driven Dispatcher planning is implemented: a goal becomes a persisted proposal that the user reviews and explicitly launches. This new planning path still needs live verification. Model-assisted Engineer decisions and Technician execution remain future work.
 
 ## Local development with fakes
 
@@ -56,7 +56,7 @@ AI_GATEWAY_ID=default
 AI_GATEWAY_TOKEN=YOUR_ACCOUNT_SCOPED_WORKERS_AI_TOKEN
 ```
 
-Both `STATION_AGENT_MODEL` and `CONDUCTOR_MODEL` are configured as **`@cf/zai-org/glm-5.3-flash`** for testing. OpenCode's primary and small-model settings use that same configured identity. The calls use low reasoning effort for testing. There is no automatic fallback to the expensive production models mentioned in the design documents.
+`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, and `DISPATCHER_MODEL` are configured as **`@cf/zai-org/glm-5.3-flash`** for testing. OpenCode's primary and small-model settings use that same configured identity. The calls use low reasoning effort for testing. There is no automatic fallback to the expensive production models mentioned in the design documents.
 
 The Sandbox image pins OpenCode 1.18.32 and Node 24. OpenCode's internal snapshots are disabled: their Git subprocesses reproduced a harness hang in local Sandboxes. Terminus captures candidate commits, diffs, and validation evidence independently after the harness exits. The required Sandbox Durable Object is only a container adapter; it stores no orchestration state. Outbound access is limited to its explicitly granted repository, the configured model endpoint, and the npm registry. Repository tokens are short-lived and repo-scoped, and the Worker injects them into Git requests. The Station process receives neither repository tokens nor model secrets. Orchestration uses separate workspaces for writes to a Train.
 
@@ -71,6 +71,40 @@ npm run deploy
 ```
 
 Deployment is a maintainer action. The frontend currently runs separately through Vite; this Worker deployment does not publish the React app. The API currently has no authentication, so use a controlled development environment.
+
+## Planning work with the Dispatcher
+
+On a network page, expand **Dispatcher**, describe a project goal, and choose **Propose a plan**. Planning reads the exact saved Terminus commit with repository-scoped read access. It supplies a bounded file inventory (500 paths) and up to twelve source/documentation excerpts (4,000 characters each), with explicit truncation flags, plus active Line manifests and trusted validation names. It never installs or executes project code while gathering context. Source contents are transient model context, not project files stored in D1.
+
+The configured Dispatcher model returns structured Lines and full Work Manifests. The backend validates the output and saves the proposal and assessment in D1. Review each Station's scope, expected/avoided areas, contracts, invariants, dependencies, acceptance criteria, and evidence. **Launch Lines** is a separate command; preparing or reopening a proposal does not start Station work. Plans contain at most four Lines, six Stations per Line, and twelve Stations total. Model attempts are bounded and never switch models automatically.
+
+If output fails schema validation, the Dispatcher supplies the previous proposal and safe field locations/error codes to the same model for up to two corrective attempts. Exhausted output validation stops Workflow retries and saves these diagnostics on the failed plan, without raw response values. Transient transport or persistence failures still use Workflow retries. `expectedAreas` and `avoidAreas` contain only plain paths; put explanations, CSS token restrictions, and other prose in scope or invariants instead. Path patterns and this guidance are included in the model's JSON schema.
+
+Code-dependent work must stay on one Line. Dependencies can name only earlier Station keys on that Line; keys are unique across the proposal. Another Line completing a Station does not copy its code into this Train. Contract-based dependencies across planned or active Lines are rejected too. Expected areas use plain repository-relative paths/directories, without globs. Overlaps in declared files/directories or changing contracts are shown as collision forecasts, not stored as Git conflicts. Unknown evidence names or overlaps with avoided areas prevent launch. Forecasting is conservative declared intent; actual diffs, review, and integration checks remain authoritative.
+
+Launch requires the reviewed Terminus baseline still to be current. New collision forecasts also require a fresh proposal. Launch forks stable Train repository identities, then records all Lines, Stations, Trains, the plan, and events in one D1 batch guarded against stale canonical state. Only then does it start the individual Train Workflows. Retries reuse saved proposals and identities. Partial repository preparation can leave unused forks in Artifacts, but never a partially laid network. Closing or refreshing the browser does not stop planning or launch.
+
+The offline environment clearly labels its planner as a simulation: it produces one generic Goal Line, uses fake repositories and checks, and makes no model calls. It exercises the same persisted proposal and launch path. The fixed two-Line demo remains available separately.
+
+For live development, restart the updated Worker so it loads `DISPATCHER_MODEL` and the `DISPATCH_WORKFLOW` binding. Local dev applies `0004_dispatch.sql` automatically. For deployment, apply this migration remotely and deploy the updated Worker through the maintainer workflow. The Dispatcher reuses the existing Gateway credentials and testing model; no additional secret is needed.
+
+API clients submit a UUID `requestId` with each new goal. Reuse it when retrying an uncertain submission; reuse with a different goal/network returns 409. The 202 response includes the saved plan; plans and their states also appear in the network snapshot and their changes in the existing event log.
+
+```sh
+curl -X POST http://localhost:8787/api/networks/NETWORK_ID/plans \
+  -H 'Content-Type: application/json' \
+  -d '{"requestId":"64d6315b-7d66-4e50-94aa-4de0b71029ef","goal":"Add an accessible footer and an independent theme toggle, with tests."}'
+
+curl -X POST http://localhost:8787/api/networks/NETWORK_ID/plans/PLAN_ID/launch
+```
+
+If a Dispatcher Workflow is `errored` while a plan remains `planning`, `ready`, `launching`, or `starting`, use **Recover interrupted planning/launch** or the retry endpoint. Recovery restarts the same Workflow and reuses any saved proposal/topology. Finished or failed plans need a new request; a stale proposal cannot be launched against newer canonical code.
+
+```sh
+curl -X POST http://localhost:8787/api/networks/NETWORK_ID/plans/PLAN_ID/retry
+```
+
+The first live check for this feature is a fresh goal on the demo baseline: inspect the generated manifests and forecasts, confirm no Trains exist before launch, refresh the page, then launch two independent Lines and verify both integrate with retained Car provenance. Test an invalid/stale proposal is refused as well. The earlier maintainer live test verified integration of the fixed demo, not this new Dispatcher model path.
 
 ## Execution and evidence
 

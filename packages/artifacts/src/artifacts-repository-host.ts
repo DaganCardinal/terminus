@@ -5,6 +5,7 @@ import type {
   RepoRef,
 } from "./repository-host"
 import { prepareMerge } from "./integration-git"
+import { readRepositoryContext } from "./repository-context"
 import {
   git,
   remoteHead,
@@ -70,6 +71,16 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         const head = await remoteHead(workspace, access)
         if (!head) throw new Error("Repository has no default-branch commit")
         return head
+      }
+    )
+  }
+
+  async readContext(repoId: string, commit: string) {
+    return this.withWorkspace(
+      [{ repoId, scope: "read" }],
+      async (workspace, [access]) => {
+        if (!access) throw new Error("Missing repository access")
+        return readRepositoryContext(workspace, access, commit)
       }
     )
   }

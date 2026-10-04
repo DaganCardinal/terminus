@@ -48,6 +48,28 @@ const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
   z.object({
+    type: z.literal("dispatcher.plan_requested"),
+    planId: z.string(),
+  }),
+  z.object({ type: z.literal("dispatcher.plan_ready"), planId: z.string() }),
+  z.object({
+    type: z.literal("dispatcher.launch_requested"),
+    planId: z.string(),
+  }),
+  z.object({ type: z.literal("dispatcher.plan_failed"), planId: z.string() }),
+  z.object({
+    type: z.literal("dispatcher.lines_laid"),
+    planId: z.string(),
+    lineIds: z.array(z.string()),
+    trainIds: z.array(z.string()),
+  }),
+  z.object({
+    type: z.literal("dispatcher.plan_launched"),
+    planId: z.string(),
+    lineIds: z.array(z.string()),
+    trainIds: z.array(z.string()),
+  }),
+  z.object({
     type: z.literal("line.created"),
     lineId: z.string(),
     stationIds: z.array(z.string()),

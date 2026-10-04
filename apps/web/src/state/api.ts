@@ -1,5 +1,7 @@
 import {
   eventsResponseSchema,
+  dispatchPlanSchema,
+  type CreateDispatchPlanRequest,
   type ApiError,
   type EventsResponse,
   type Hold,
@@ -24,6 +26,20 @@ export const api = {
     ),
   layDemoLines: (networkId: string) =>
     request<void>(`/networks/${networkId}/demo`, { method: "POST" }),
+  proposePlan: async (networkId: string, body: CreateDispatchPlanRequest) =>
+    dispatchPlanSchema.parse(
+      await request(`/networks/${networkId}/plans`, { method: "POST", body })
+    ),
+  launchPlan: async (networkId: string, planId: string) =>
+    dispatchPlanSchema.parse(
+      await request(`/networks/${networkId}/plans/${planId}/launch`, {
+        method: "POST",
+      })
+    ),
+  retryPlan: (networkId: string, planId: string) =>
+    request<void>(`/networks/${networkId}/plans/${planId}/retry`, {
+      method: "POST",
+    }),
   placeHold: (networkId: string, hold: PlaceHoldRequest) =>
     request<Hold>(`/networks/${networkId}/holds`, {
       method: "POST",
@@ -53,8 +69,12 @@ async function request<T>(
     const body = (await response.json().catch(() => null)) as ApiError | null
     throw new Error(body?.error ?? `Request failed (${response.status})`)
   }
-  if (response.status === 202 || response.status === 204) {
+  if (response.status === 204) {
     return undefined as T
+  }
+  if (response.status === 202) {
+    const body = await response.text()
+    return body ? (JSON.parse(body) as T) : (undefined as T)
   }
   return (await response.json()) as T
 }

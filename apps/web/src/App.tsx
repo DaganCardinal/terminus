@@ -24,7 +24,7 @@ export function App() {
       <nav className="app-nav" aria-label="Main navigation">
         <a href="#/" className="app-brand">
           <span>
-            <TrainFront size={20} />
+            <TrainFront size={17} />
           </span>
           terminus<span className="brand-dot">.</span>
         </a>
@@ -41,8 +41,10 @@ export function App() {
         <NetworkStatus key={networkId} networkId={networkId} />
       ) : (
         <div className="network-list-page">
-          <h1>Your networks</h1>
-          <p>Coordinate independent workstreams, from depot to Terminus.</p>
+          <header>
+            <h1>Networks</h1>
+            <p>Each network coordinates concurrent Lines for one project.</p>
+          </header>
           <NetworkList />
         </div>
       )}

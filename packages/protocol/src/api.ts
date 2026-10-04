@@ -6,6 +6,7 @@ import type {
   SignalAspect,
   Station,
   Train,
+  DispatchPlan,
 } from "@terminus/domain"
 import { z } from "zod"
 import { domainEventSchema, holdSchema } from "./events"
@@ -88,6 +89,7 @@ export interface NetworkSnapshot {
   cars: Car[]
   holds: Hold[]
   conflicts: Conflict[]
+  plans: DispatchPlan[]
   lastSeq: number
 }
 

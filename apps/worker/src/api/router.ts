@@ -2,6 +2,7 @@ import {
   createNetworkRequestSchema,
   layLineRequestSchema,
   placeHoldRequestSchema,
+  createDispatchPlanRequestSchema,
   type ApiError,
   type EventsResponse,
 } from "@terminus/protocol"
@@ -17,7 +18,12 @@ import {
   resolveConflict,
   retryIntegration,
 } from "../agents/dispatcher"
-import { dispatcherPorts } from "../agents/ports"
+import { dispatcherPorts, dispatchPlanningPorts } from "../agents/ports"
+import {
+  proposeDispatchPlan,
+  launchPlannedLines,
+  retryDispatchPlan,
+} from "../agents/dispatch-planning"
 
 type Handler = (
   request: Request,
@@ -26,6 +32,42 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/plans" }),
+    async (request, env, { networkId }) => {
+      const body = await parse(request, createDispatchPlanRequestSchema)
+      return json(
+        await proposeDispatchPlan(dispatchPlanningPorts(env), networkId!, body),
+        202
+      )
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/plans/:planId/launch",
+    }),
+    async (_, env, { networkId, planId }) =>
+      json(
+        await launchPlannedLines(
+          dispatchPlanningPorts(env),
+          networkId!,
+          planId!
+        ),
+        202
+      ),
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/plans/:planId/retry",
+    }),
+    async (_, env, { networkId, planId }) => {
+      await retryDispatchPlan(dispatchPlanningPorts(env), networkId!, planId!)
+      return new Response(null, { status: 202 })
+    },
+  ],
   [
     "GET",
     new URLPattern({ pathname: "/api/networks/:networkId/integrations" }),

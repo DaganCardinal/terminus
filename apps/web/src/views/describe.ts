@@ -54,6 +54,18 @@ export function describeEvent(
   name: (id: string) => string
 ): string {
   switch (event.type) {
+    case "dispatcher.plan_requested":
+      return "Dispatcher preparing a plan"
+    case "dispatcher.plan_ready":
+      return "Dispatcher proposal ready to review"
+    case "dispatcher.launch_requested":
+      return "Planned Lines requested for launch"
+    case "dispatcher.lines_laid":
+      return `Dispatcher laid ${plural(event.lineIds.length, "Line")}`
+    case "dispatcher.plan_launched":
+      return `Dispatcher launched ${plural(event.trainIds.length, "Train")}`
+    case "dispatcher.plan_failed":
+      return "Dispatcher plan stopped; inspect its details"
     case "line.created":
       return `${name(event.lineId)} laid with ${plural(event.stationIds.length, "Station")}`
     case "train.created":

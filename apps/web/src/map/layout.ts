@@ -1,6 +1,13 @@
 import type { Line, TrainState } from "@terminus/protocol"
+import {
+  pointOnTrack,
+  roundTrack,
+  straightRuns,
+  type Point,
+  type Track,
+} from "./track"
 
-export type Point = { x: number; y: number }
+export type { Point }
 export const routeShapes = [
   "direct",
   "elbow",
@@ -47,152 +54,319 @@ export function lineColor(line: Line, index: number): string {
   )
 }
 
+// Diagram units. Curves follow transit-map practice: a radius of roughly
+// three to four line widths, concentric where lines run in parallel.
+export const TRACK_WIDTH = 8
+export const HUB_RADIUS = 40
+const CORNER_RADIUS = 28
+const LANE_GAP = 16
+const MARGIN_X = 132
+const DEPOT_GAP = 104
+const STATION_SPACING = 168
+const STATION_CLEARANCE = 22
+const TRACK_TAIL = 76
+const ROW_CLEARANCE = 210
+const LABEL_ROOM = 112
+const TRAIN_ROOM = 84
+const HUB_ENTRY = 24
+const HUB_LABEL_HALF_WIDTH = 100
+/** Route bullet offset from the depot, and half the width of its name. */
+export const BULLET_OFFSET = 46
+const BULLET_LABEL_HALF_WIDTH = 64
+const PADDING = 24
+const TAN_EIGHTH = Math.tan(Math.PI / 8)
+
+/** Station track profiles: horizontal runs joined by 45° or 90° bends. */
+function profile(shape: RouteShape, span: number): Point[] {
+  const p = (x: number, y: number) => ({ x, y })
+  switch (shape) {
+    case "direct":
+      return [p(0, 0), p(span, 0)]
+    case "elbow": {
+      const a = span * 0.3
+      return [p(0, 0), p(a, 0), p(a + 56, 56), p(span, 56)]
+    }
+    case "dogleg": {
+      const a = span * 0.24,
+        b = span * 0.66
+      return [
+        p(0, 0),
+        p(a, 0),
+        p(a + 56, -56),
+        p(b, -56),
+        p(b + 56, 0),
+        p(span, 0),
+      ]
+    }
+    case "staircase": {
+      const a = span * 0.22,
+        b = span * 0.6
+      return [
+        p(0, 0),
+        p(a, 0),
+        p(a + 44, 44),
+        p(b, 44),
+        p(b + 44, 88),
+        p(span, 88),
+      ]
+    }
+    case "sweep": {
+      const a = span * 0.2
+      return [p(0, 0), p(a, 0), p(a + 72, -72), p(span, -72)]
+    }
+    case "offset": {
+      const a = span * 0.42
+      return [p(0, 0), p(a, 0), p(a, 72), p(span, 72)]
+    }
+  }
+}
+
+/** Every profile ends on its lowest point, so a row's extent is
+ * [end - height, end]. */
+function profileExtent(shape: RouteShape) {
+  const ys = profile(shape, 1000).map((p) => p.y)
+  const end = ys.at(-1)!
+  return { end, height: end - Math.min(...ys) }
+}
+
+function stationDistances(
+  track: Track,
+  trackEnd: number,
+  count: number
+): number[] {
+  if (count === 0) return []
+  let runs = straightRuns(
+    track,
+    DEPOT_GAP,
+    trackEnd - TRACK_TAIL,
+    STATION_CLEARANCE
+  )
+  if (runs.length === 0) runs = [[0, trackEnd]]
+  const total = runs.reduce((sum, [a, b]) => sum + b - a, 0)
+  const at = (offset: number) => {
+    for (const [a, b] of runs) {
+      if (offset <= b - a + 1e-6) return a + offset
+      offset -= b - a
+    }
+    return runs.at(-1)![1]
+  }
+  if (count === 1) return [at(total / 2)]
+  return Array.from({ length: count }, (_, i) => at((total * i) / (count - 1)))
+}
+
+/** The shortest span whose straight track fits `count` evenly spaced
+ * Stations, so labels never collide. */
+function spanFor(shape: RouteShape, count: number): number {
+  const needed = Math.max(1, (count - 1) * STATION_SPACING)
+  for (let span = 260; ; span += 10) {
+    const points = profile(shape, span)
+    const end = points.at(-1)!
+    const track = roundTrack(
+      [...points, { x: end.x + 200, y: end.y }],
+      () => CORNER_RADIUS
+    )
+    const runs = straightRuns(
+      track,
+      DEPOT_GAP,
+      track.vertexDistance[points.length - 1]! - TRACK_TAIL,
+      STATION_CLEARANCE
+    )
+    if (runs.reduce((sum, [a, b]) => sum + b - a, 0) >= needed) return span
+  }
+}
+
 export interface RouteLayout {
   line: Line
   number: number
   color: string
   shape: RouteShape
+  /** Left or right of Terminus; labels and bullets sit on the outer side. */
+  side: "left" | "right"
+  /** Control polyline: horizontal, vertical and 45° segments only. */
   points: Point[]
   stationTrack: Point[]
+  track: Track
+  trackEnd: number
   stations: Point[]
+  stationDistances: number[]
   depot: Point
 }
 
-export function pointAlong(points: Point[], fraction: number): Point {
-  const lengths = points
-    .slice(1)
-    .map((p, i) => Math.hypot(p.x - points[i]!.x, p.y - points[i]!.y))
-  let distance =
-    Math.max(0, Math.min(1, fraction)) * lengths.reduce((a, b) => a + b, 0)
-  for (let i = 0; i < lengths.length; i++) {
-    const length = lengths[i]!
-    if (distance <= length && length > 0) {
-      const a = points[i]!,
-        b = points[i + 1]!
-      return {
-        x: a.x + ((b.x - a.x) * distance) / length,
-        y: a.y + ((b.y - a.y) * distance) / length,
-      }
-    }
-    distance -= length
-  }
-  return points.at(-1) ?? { x: 0, y: 0 }
-}
-
-/** All bends are horizontal, vertical or 45 degrees. Routes occupy separate
- * corridors and meet only at Terminus. Extra stations grow the canvas. */
+/** Lines enter Terminus as a parallel bundle: each side's upper Lines curve
+ * down into it and lower Lines curve up, on concentric curves, so no Line
+ * crosses another and none needs a short jog. A middle row runs straight in.
+ * Extra Stations widen the canvas; extra Lines make it taller. */
 export function layoutNetwork(lines: Line[]) {
-  const rows = Math.max(2, Math.ceil(lines.length / 2))
-  const halfWidth = Math.max(
-    620,
-    240 + Math.max(0, ...lines.map((l) => l.stationIds.length)) * 170
-  )
-  const width = halfWidth * 2
-  const height = rows * 280 + 160
-  const hub = { x: halfWidth, y: height / 2 }
   let availableShapes: RouteShape[] = [...routeShapes]
-  const routes: RouteLayout[] = lines.map((line, index) => {
-    const side = index % 2 === 0 ? 1 : -1
-    const row = Math.floor(index / 2)
-    const y = 160 + row * 280
+  const shapes = lines.map((line) => {
     if (availableShapes.length === 0) availableShapes = [...routeShapes]
     const shape = shapeForLine(line.id, availableShapes)
     availableShapes = availableShapes.filter((candidate) => candidate !== shape)
-    const bend = {
-      direct: 0,
-      elbow: 52,
-      dogleg: -52,
-      staircase: 40,
-      sweep: -70,
-      offset: 64,
-    }[shape]
-    const span = halfWidth - 280
-    const raw: Point[] = [{ x: 0, y: 0 }]
-    if (shape === "direct") raw.push({ x: span, y: 0 })
-    if (shape === "elbow")
-      raw.push(
-        { x: span * 0.3, y: 0 },
-        { x: span * 0.3 + 52, y: bend },
-        { x: span, y: bend }
-      )
-    if (shape === "dogleg")
-      raw.push(
-        { x: span * 0.25, y: 0 },
-        { x: span * 0.25 + 52, y: bend },
-        { x: span * 0.7, y: bend },
-        { x: span * 0.7 + 52, y: 0 },
-        { x: span, y: 0 }
-      )
-    if (shape === "staircase")
-      raw.push(
-        { x: span * 0.2, y: 0 },
-        { x: span * 0.2 + 40, y: 40 },
-        { x: span * 0.6, y: 40 },
-        { x: span * 0.6 + 40, y: 80 },
-        { x: span, y: 80 }
-      )
-    if (shape === "sweep")
-      raw.push(
-        { x: span * 0.2, y: 0 },
-        { x: span * 0.2 + 70, y: bend },
-        { x: span, y: bend }
-      )
-    if (shape === "offset")
-      raw.push(
-        { x: span * 0.4, y: 0 },
-        { x: span * 0.4, y: bend },
-        { x: span, y: bend }
-      )
-    const map = (p: Point) => ({
-      x: side === 1 ? 100 + p.x : width - 100 - p.x,
-      y: y + p.y,
-    })
-    const track = raw.map(map)
-    const end = track.at(-1)!
-    // Separate approach lanes reach distinct ports on the Terminus ring.
-    // Crossings have no Station marker and never imply a domain connection.
-    const portY = hub.y + (rows === 1 ? 0 : (row / (rows - 1) - 0.5) * 56)
-    const spineX = end.x + side * (row % 6) * 18
-    const diagonal = Math.min(90, Math.abs(end.y - portY))
-    const approachY = portY + Math.sign(end.y - portY) * diagonal
-    const points = [
-      ...track,
-      { x: spineX, y: end.y },
-      { x: spineX, y: approachY },
-      { x: spineX + side * diagonal, y: portY },
-      { x: hub.x, y: portY },
-    ]
-    return {
-      line,
-      number: index + 1,
-      color: lineColor(line, index),
-      shape,
-      points,
-      stationTrack: track,
-      depot: track[0]!,
-      stations: line.stationIds.map((_, i) =>
-        pointAlong(track, (i + 0.65) / (line.stationIds.length + 0.25))
-      ),
-    }
+    return shape
   })
-  return { width, height, hub, routes }
+  const span = Math.max(
+    260,
+    ...lines.map((line, i) => spanFor(shapes[i]!, line.stationIds.length))
+  )
+  const sides = [0, 1].map((side) =>
+    lines.map((_, i) => i).filter((i) => i % 2 === side)
+  )
+  const perSide = Math.max(1, ...sides.map((s) => s.length))
+  const lanes = Math.max(1, Math.floor(perSide / 2))
+  const outerRadius = CORNER_RADIUS + (lanes - 1) * LANE_GAP
+  const diagonal = Math.max(
+    56,
+    (2 * TAN_EIGHTH * outerRadius + 16) / Math.SQRT2
+  )
+  const trackEndX = MARGIN_X + span
+  const innerSpine = trackEndX + CORNER_RADIUS + (lanes - 1) * LANE_GAP
+  const hubX = innerSpine + diagonal + HUB_RADIUS + HUB_ENTRY
+  const hubHalfHeight = Math.max(
+    HUB_RADIUS,
+    ((perSide - 1) / 2) * LANE_GAP + 24
+  )
+
+  /** Approach lane `k` (0 = innermost) for an upper Line entering at `port`,
+   * relative to a Terminus centred at y = 0. */
+  const lane = (k: number, port: number) => {
+    const spine = innerSpine - k * LANE_GAP
+    const offset =
+      port - k * LANE_GAP - (innerSpine + diagonal) + k * LANE_GAP * Math.SQRT2
+    const radius = CORNER_RADIUS + k * LANE_GAP
+    return {
+      spine,
+      turn: offset + spine,
+      join: port - offset,
+      radius,
+      drop: CORNER_RADIUS + TAN_EIGHTH * radius + 10,
+    }
+  }
+
+  type Draft = { index: number; points: Point[]; radii: number[] }
+  const drafts: Draft[] = []
+  for (const [sideIndex, members] of sides.entries()) {
+    const n = members.length
+    const mid = (n - 1) / 2
+    const port = (j: number) => (j - mid) * LANE_GAP
+    const extent = members.map((i) => profileExtent(shapes[i]!))
+    const ends: number[] = []
+    if (n % 2 === 1) ends[mid] = 0
+    for (let j = Math.ceil(mid) - 1; j >= 0; j--) {
+      const geometry = lane(j, port(j))
+      let end = geometry.turn - geometry.drop
+      if (ends[j + 1] !== undefined)
+        end = Math.min(
+          end,
+          ends[j + 1]! - extent[j + 1]!.height - ROW_CLEARANCE
+        )
+      ends[j] = end
+    }
+    for (let j = Math.floor(mid) + 1; j < n; j++) {
+      const geometry = lane(n - 1 - j, port(n - 1 - j))
+      let end = -geometry.turn + geometry.drop
+      if (ends[j - 1] !== undefined)
+        end = Math.max(end, ends[j - 1]! + extent[j]!.height + ROW_CLEARANCE)
+      ends[j] = end
+    }
+    members.forEach((index, j) => {
+      const shape = shapes[index]!
+      const base = ends[j]! - extent[j]!.end
+      const track = profile(shape, span).map((p) => ({
+        x: MARGIN_X + p.x,
+        y: base + p.y,
+      }))
+      const end = track.at(-1)!
+      const radii = track.map(() => CORNER_RADIUS)
+      let points: Point[]
+      if (j === mid) {
+        points = [...track, { x: hubX, y: 0 }]
+        radii.push(0)
+      } else {
+        const upper = j < mid
+        const k = upper ? j : n - 1 - j
+        const geometry = lane(k, port(k))
+        const flip = upper ? 1 : -1
+        points = [
+          ...track,
+          { x: geometry.spine, y: end.y },
+          { x: geometry.spine, y: geometry.turn * flip },
+          { x: geometry.join, y: port(j) },
+          { x: hubX, y: port(j) },
+        ]
+        radii.push(CORNER_RADIUS, geometry.radius, geometry.radius, 0)
+      }
+      if (sideIndex === 1)
+        points = points.map((p) => ({ x: 2 * hubX - p.x, y: p.y }))
+      drafts.push({ index, points, radii })
+    })
+  }
+
+  // Fit the canvas to what is drawn, so a one-sided network has no empty half.
+  let top = -hubHalfHeight,
+    bottom = hubHalfHeight + 64,
+    left = hubX - HUB_LABEL_HALF_WIDTH,
+    right = hubX + HUB_LABEL_HALF_WIDTH
+  for (const { index, points } of drafts) {
+    const trackYs = points
+      .slice(0, profile(shapes[index]!, span).length)
+      .map((p) => p.y)
+    top = Math.min(top, Math.min(...trackYs) - LABEL_ROOM)
+    bottom = Math.max(bottom, Math.max(...trackYs) + TRAIN_ROOM)
+    const reach = BULLET_OFFSET + BULLET_LABEL_HALF_WIDTH
+    left = Math.min(left, points[0]!.x - reach)
+    right = Math.max(right, points[0]!.x + reach)
+  }
+  const shiftX = PADDING - left
+  const shiftY = PADDING - top
+  const width = right - left + 2 * PADDING
+  const height = bottom - top + 2 * PADDING
+  const hub = { x: hubX + shiftX, y: shiftY }
+
+  const routes: RouteLayout[] = drafts
+    .sort((a, b) => a.index - b.index)
+    .map(({ index, points: local, radii }) => {
+      const line = lines[index]!
+      const points = local.map((p) => ({ x: p.x + shiftX, y: p.y + shiftY }))
+      const trackLength = profile(shapes[index]!, span).length
+      const track = roundTrack(points, (i) => radii[i] ?? CORNER_RADIUS)
+      const trackEnd = track.vertexDistance[trackLength - 1]!
+      const distances = stationDistances(
+        track,
+        trackEnd,
+        line.stationIds.length
+      )
+      return {
+        line,
+        number: index + 1,
+        color: lineColor(line, index),
+        shape: shapes[index]!,
+        side: index % 2 === 0 ? "left" : "right",
+        points,
+        stationTrack: points.slice(0, trackLength),
+        track,
+        trackEnd,
+        stationDistances: distances,
+        stations: distances.map((d) => pointOnTrack(track, d)),
+        depot: points[0]!,
+      }
+    })
+  return { width, height, hub, hubHalfHeight, routes }
 }
 
 /** Positions represent lifecycle phases, never time elapsed or % complete. */
 export function trainPoint(
   state: TrainState,
-  route: RouteLayout,
-  hub: Point
+  route: RouteLayout
 ): Point | null {
-  const station = (id: string) =>
-    route.stations[route.line.stationIds.indexOf(id)] ?? route.depot
+  const ids = route.line.stationIds
+  const station = (id: string) => route.stations[ids.indexOf(id)] ?? route.depot
   switch (state.status) {
     case "unloaded":
     case "siding":
       return null
     case "held":
     case "blocked":
-      return trainPoint(state.resume, route, hub)
+      return trainPoint(state.resume, route)
     case "ready":
       return state.at.kind === "depot"
         ? route.depot
@@ -202,14 +376,14 @@ export function trainPoint(
       return station(state.at)
     case "in_transit":
     case "approaching": {
-      const index = route.line.stationIds.indexOf(state.toward)
-      const offset = state.status === "approaching" ? 0.5 : 0.2
-      return pointAlong(
-        route.stationTrack,
-        (index + offset) / (route.line.stationIds.length + 0.25)
-      )
+      const index = ids.indexOf(state.toward)
+      const to = route.stationDistances[index] ?? 0
+      const from = index > 0 ? route.stationDistances[index - 1]! : 0
+      const phase = state.status === "approaching" ? 0.72 : 0.32
+      return pointOnTrack(route.track, from + (to - from) * phase)
     }
     case "returning":
-      return pointAlong(route.points.slice(-3), 0.65)
+      // Past the last Station, on straight track short of the approach lanes.
+      return pointOnTrack(route.track, route.trackEnd - TRACK_TAIL * 0.45)
   }
 }

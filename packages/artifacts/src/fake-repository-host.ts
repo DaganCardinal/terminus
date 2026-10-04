@@ -10,6 +10,18 @@ import type {
  * for running the network without touching real repositories.
  */
 export class FakeRepositoryHost implements RepositoryHost {
+  async readContext(_repoId: string, commit: string) {
+    return {
+      commit,
+      paths: [
+        "src/App.tsx",
+        "src/components/theme-provider.tsx",
+        "package.json",
+      ],
+      pathsTruncated: false,
+      files: [],
+    }
+  }
   async head(): Promise<string> {
     return "fake-root"
   }

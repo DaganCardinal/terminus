@@ -1,4 +1,5 @@
 import type { CommitId, RepoId } from "@terminus/domain"
+import type { RepositoryContext } from "@terminus/protocol"
 
 export interface RepoRef {
   repoId: RepoId
@@ -23,6 +24,7 @@ export type IntegrationMerge =
  * detail of Artifacts and Git; nothing outside this package sees them.
  */
 export interface RepositoryHost {
+  readContext(repoId: RepoId, commit: CommitId): Promise<RepositoryContext>
   head(repoId: RepoId): Promise<CommitId>
   /** Persists a merge candidate separately from both Terminus and the Train. */
   prepareIntegration(input: IntegrationMergeInput): Promise<IntegrationMerge>

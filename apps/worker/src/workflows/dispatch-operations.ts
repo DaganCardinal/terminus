@@ -1,0 +1,218 @@
+import {
+  assessDispatchProposal,
+  hasNewCollisionForecasts,
+  createLine,
+  createTrain,
+  failDispatchPlan,
+  finishPlanLaunch,
+  launchDispatchPlan,
+  readyDispatchPlan,
+  type DomainEvent,
+  type DispatchPlan,
+  type DispatchProposal,
+} from "@terminus/domain"
+import {
+  dispatchProposalSchema,
+  repositoryContextSchema,
+} from "@terminus/protocol"
+import { DispatchProposalError } from "@terminus/agent-runtime"
+import { NonRetryableError } from "cloudflare:workflows"
+import {
+  planningContext,
+  type DispatchPlanningPorts,
+} from "../agents/dispatch-planning"
+import type { Write } from "../integrations/network-store"
+import { applied } from "./transitions"
+
+export async function prepareDispatchPlan(
+  ports: DispatchPlanningPorts,
+  planId: string
+): Promise<void> {
+  const loaded = await load(ports, planId)
+  if (loaded.value.state.status !== "planning") return
+  const plan = loaded.value
+  if (plan.model !== ports.planner.model)
+    throw new Error("Dispatcher configuration changed; request a new plan")
+  const snapshot = await ports.store.snapshot(plan.networkId)
+  if (!snapshot) throw new Error("Unknown network")
+  const repository = repositoryContextSchema.parse(
+    await ports.repositories.readContext(
+      snapshot.network.terminusRepoId,
+      plan.terminusCommit
+    )
+  )
+  if (repository.commit !== plan.terminusCommit)
+    throw new Error("Planning context describes a different commit")
+  let proposal: DispatchProposal
+  try {
+    proposal = dispatchProposalSchema.parse(
+      await ports.planner.plan({
+        goal: plan.goal,
+        repository,
+        network: planningContext(snapshot),
+      })
+    )
+  } catch (error) {
+    if (error instanceof DispatchProposalError) {
+      // ModelDispatcher already used its bounded, corrective attempts. Do not repeat them blindly.
+      await recordDispatchFailure(ports, planId, "planning", error)
+      throw new NonRetryableError(error.message)
+    }
+    throw error
+  }
+  const ready = applied(
+    readyDispatchPlan(plan, proposal, planningContext(snapshot))
+  )
+  await ports.store.commit(
+    plan.networkId,
+    [{ kind: "dispatch_plan", plan: ready.value, version: loaded.version }],
+    ready.events
+  )
+}
+
+/** Forks stable identities, then atomically records every Line and its Train. No Train runs before this batch. */
+export async function layDispatchLines(
+  ports: DispatchPlanningPorts,
+  planId: string
+): Promise<void> {
+  const loaded = await load(ports, planId)
+  const plan = loaded.value
+  if (plan.state.status !== "launching") return
+  const snapshot = await ports.store.snapshot(plan.networkId)
+  if (!snapshot) throw new Error("Unknown network")
+  if (snapshot.network.terminusCommit !== plan.terminusCommit)
+    throw new Error("Terminus changed before launch")
+  const assessment = assessDispatchProposal(
+    plan.state.proposal,
+    planningContext(snapshot)
+  )
+  if (assessment.errors.length)
+    throw new Error("Network changes made the plan invalid")
+  if (hasNewCollisionForecasts(plan.state.assessment, assessment))
+    throw new Error("New collision forecasts appeared before launch")
+  const writes: Write[] = []
+  const events: DomainEvent[] = []
+  const lineIds: string[] = []
+  const trainIds: string[] = []
+  for (const [index, planned] of plan.state.proposal.lines.entries()) {
+    const lineId = `${plan.id}-l${index}`
+    const trainId = `${plan.id}-t${index}`
+    const ids = new Map(
+      planned.stations.map((s, i) => [s.key, `${plan.id}-l${index}-s${i}`])
+    )
+    const created = applied(
+      createLine({
+        id: lineId,
+        networkId: plan.networkId,
+        name: planned.name,
+        stations: planned.stations.map((station) => ({
+          id: ids.get(station.key)!,
+          name: station.name,
+          manifest: {
+            ...station.manifest,
+            dependencies: station.manifest.dependencies.map((key) =>
+              ids.get(key)!
+            ),
+          },
+        })),
+      })
+    )
+    const repo = await ports.repositories.fork({
+      sourceRepoId: snapshot.network.terminusRepoId,
+      commit: plan.terminusCommit,
+      name: trainId,
+    })
+    const train = applied(
+      createTrain({
+        id: trainId,
+        line: created.value.line,
+        repoId: repo.repoId,
+        terminusCommit: plan.terminusCommit,
+      })
+    )
+    writes.push(
+      { kind: "line", line: created.value.line },
+      ...created.value.stations.map((station): Write => ({
+        kind: "station",
+        station,
+        version: null,
+      })),
+      { kind: "train", train: train.value, version: null }
+    )
+    events.push(...created.events, ...train.events)
+    lineIds.push(lineId)
+    trainIds.push(trainId)
+  }
+  const started = applied(
+    launchDispatchPlan(
+      { ...plan, state: { ...plan.state, assessment } },
+      lineIds,
+      trainIds
+    )
+  )
+  // Version and canonical-baseline triggers abort the WHOLE batch on a stale launch.
+  writes.unshift({
+    kind: "dispatch_plan",
+    plan: started.value,
+    version: loaded.version,
+  })
+  await ports.store.commit(plan.networkId, writes, [
+    ...events,
+    ...started.events,
+  ])
+}
+
+export async function startDispatchTrains(
+  ports: DispatchPlanningPorts,
+  planId: string
+): Promise<void> {
+  const loaded = await load(ports, planId)
+  const plan = loaded.value
+  if (plan.state.status !== "starting") return
+  await Promise.all(plan.state.trainIds.map((id) => ports.startTrain(id)))
+  const finished = applied(finishPlanLaunch(plan))
+  await ports.store.commit(
+    plan.networkId,
+    [{ kind: "dispatch_plan", plan: finished.value, version: loaded.version }],
+    finished.events
+  )
+}
+
+export async function recordDispatchFailure(
+  ports: DispatchPlanningPorts,
+  planId: string,
+  phase: "planning" | "launching",
+  validationError?: DispatchProposalError
+): Promise<void> {
+  const loaded = await load(ports, planId)
+  if (loaded.value.state.status !== phase) return
+  // Never expose repository blobs, model output, or transport errors in persisted diagnostics.
+  const failed = applied(
+    failDispatchPlan(
+      loaded.value,
+      phase === "planning"
+        ? validationError
+          ? `${validationError.message}. Request a new plan.`
+          : "Dispatcher could not prepare a valid proposal. Check Worker configuration and diagnostics, then request a new plan."
+        : "Lines could not be laid against the saved Terminus baseline. Request a fresh plan against the current network."
+    )
+  )
+  await ports.store.commit(
+    loaded.networkId,
+    [{ kind: "dispatch_plan", plan: failed.value, version: loaded.version }],
+    failed.events
+  )
+}
+
+async function load(ports: DispatchPlanningPorts, planId: string) {
+  const plan = await ports.store.dispatchPlan(planId)
+  if (!plan) throw new Error("Unknown plan")
+  return plan
+}
+
+export async function dispatchPlanState(
+  ports: DispatchPlanningPorts,
+  planId: string
+): Promise<DispatchPlan["state"]["status"]> {
+  return (await load(ports, planId)).value.state.status
+}

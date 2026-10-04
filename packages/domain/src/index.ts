@@ -1,5 +1,6 @@
 export * from "./car"
 export * from "./conflict"
+export * from "./dispatch-plan"
 export * from "./engineer"
 export * from "./events"
 export * from "./evidence"

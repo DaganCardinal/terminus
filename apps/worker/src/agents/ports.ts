@@ -3,6 +3,8 @@ import {
   FakeStationRunner,
   GatewayModelProvider,
   ModelConductor,
+  ModelDispatcher,
+  FakeDispatchPlanner,
   type Conductor,
   type StationRunner,
 } from "@terminus/agent-runtime"
@@ -30,6 +32,7 @@ import type {
   TrainPorts,
 } from "../workflows/train-operations"
 import { DispatchError, type DispatcherPorts } from "./dispatcher"
+import type { DispatchPlanningPorts } from "./dispatch-planning"
 
 /** A role configured as `fake` runs without a model. */
 const FAKE = "fake"
@@ -83,7 +86,13 @@ export function dispatcherPorts(env: Env): DispatcherPorts {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
     startTrain: async (trainId) => {
-      await env.TRAIN_WORKFLOW.create({ id: trainId, params: { trainId } })
+      try {
+        await env.TRAIN_WORKFLOW.create({ id: trainId, params: { trainId } })
+      } catch (error) {
+        await env.TRAIN_WORKFLOW.get(trainId).catch(() => {
+          throw error
+        })
+      }
     },
     wakeTrain: (trainId) => wakeTrain(env, trainId),
     clearTrain: async (trainId) => {
@@ -111,6 +120,50 @@ export function dispatcherPorts(env: Env): DispatcherPorts {
     },
     newId,
     now: () => new Date().toISOString(),
+  }
+}
+
+export function dispatchPlanningPorts(env: Env): DispatchPlanningPorts {
+  return {
+    ...dispatcherPorts(env),
+    planner:
+      env.DISPATCHER_MODEL === FAKE
+        ? new FakeDispatchPlanner()
+        : new ModelDispatcher(env.DISPATCHER_MODEL, {
+            generateStructured: (request) =>
+              new GatewayModelProvider(
+                gatewayConfig(env, env.DISPATCHER_MODEL),
+                gatewayTransport
+              ).generateStructured(request),
+          }),
+    startPlanning: async (planId) => {
+      try {
+        await env.DISPATCH_WORKFLOW.create({ id: planId, params: { planId } })
+      } catch (error) {
+        await env.DISPATCH_WORKFLOW.get(planId).catch(() => {
+          throw error
+        })
+      }
+    },
+    wakePlan: async (planId) => {
+      const instance = await env.DISPATCH_WORKFLOW.get(planId)
+      if ((await instance.status()).status === "errored")
+        await instance.restart()
+      try {
+        await instance.sendEvent({ type: "dispatcher.launch", payload: {} })
+      } catch {
+        // A periodic gate read observes the already persisted launch command.
+      }
+    },
+    retryPlan: async (planId) => {
+      const instance = await env.DISPATCH_WORKFLOW.get(planId)
+      if ((await instance.status()).status !== "errored")
+        throw new DispatchError(
+          409,
+          "Only an errored Dispatcher run can be retried"
+        )
+      await instance.restart()
+    },
   }
 }
 

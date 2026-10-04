@@ -1,6 +1,7 @@
 import type { NetworkSummary } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { useEffect, useState, type FormEvent } from "react"
+import { Plus } from "lucide-react"
 import { api } from "@/state/api"
 
 export function NetworkList() {
@@ -34,48 +35,68 @@ export function NetworkList() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <form onSubmit={create} className="flex flex-col gap-2">
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="Network name"
-          aria-label="Network name"
-          className="h-9 flex-1 rounded-md border border-border bg-background px-3 text-sm"
-        />
-        <input
-          type="url"
-          value={sourceUrl}
-          onChange={(event) => setSourceUrl(event.target.value)}
-          placeholder="Public HTTPS Git URL (optional)"
-          aria-label="Public HTTPS Git URL"
-          className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-        />
+    <>
+      <form onSubmit={create} className="create-network panel">
+        <h2>New network</h2>
+        <label className="field">
+          <span>Name</span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Demo network"
+          />
+        </label>
+        <label className="field">
+          <span>Public Git URL (optional)</span>
+          <input
+            type="url"
+            value={sourceUrl}
+            onChange={(event) => setSourceUrl(event.target.value)}
+            placeholder="https://github.com/owner/repo.git"
+          />
+        </label>
         <Button type="submit" disabled={creating}>
+          <Plus size={16} />
           {creating ? "Creating…" : "Create network"}
         </Button>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
       </form>
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {networks?.length === 0 && (
-        <p className="text-sm text-muted-foreground">No networks yet.</p>
-      )}
-      {networks && networks.length > 0 && (
-        <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
-          {networks.map((network) => (
-            <li key={network.id}>
-              <a
-                href={`#/networks/${network.id}`}
-                className="flex justify-between px-4 py-3 text-sm hover:bg-muted"
-              >
-                <span className="font-medium">{network.name}</span>
-                <span className="text-muted-foreground">
-                  {new Date(network.createdAt).toLocaleString()}
-                </span>
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+      <section className="network-index panel" aria-label="Networks">
+        <div className="panel-heading">
+          <h2>Networks</h2>
+          {networks && networks.length > 0 && <span>{networks.length}</span>}
+        </div>
+        {networks === null && !error && (
+          <p className="network-index-empty">Loading networks…</p>
+        )}
+        {networks?.length === 0 && (
+          <p className="network-index-empty">
+            <strong>No networks yet</strong>
+            Create one above to start planning Lines toward Terminus.
+          </p>
+        )}
+        {networks && networks.length > 0 && (
+          <ul>
+            {networks.map((network) => (
+              <li key={network.id}>
+                <a href={`#/networks/${network.id}`}>
+                  <span>{network.name}</span>
+                  <time dateTime={network.createdAt}>
+                    {new Date(network.createdAt).toLocaleString([], {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </time>
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </>
   )
 }

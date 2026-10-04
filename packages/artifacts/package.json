@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@terminus/domain": "^0.0.0"
+    "@terminus/domain": "^0.0.0",
+    "@terminus/protocol": "^0.0.0"
   }
 }

@@ -1,6 +1,7 @@
 import {
   eventsResponseSchema,
   integrationAttemptSchema,
+  dispatchPlanSchema,
   type NetworkSnapshot,
   type NetworkSummary,
 } from "@terminus/protocol"
@@ -20,6 +21,7 @@ beforeEach(async () => {
     introspectWorkflow(env.TRAIN_WORKFLOW),
     introspectWorkflow(env.STATION_WORKFLOW),
     introspectWorkflow(env.INTEGRATION_WORKFLOW),
+    introspectWorkflow(env.DISPATCH_WORKFLOW),
   ])
 })
 afterEach(async () => {
@@ -61,8 +63,89 @@ async function waitUntil(
 }
 
 describe("the API with real Workflows", () => {
+  it("persists a proposal, waits for explicit launch, and runs the planned Train to Terminus", async () => {
+    const network = await createNetwork()
+    const request = {
+      requestId: crypto.randomUUID(),
+      goal: "Add an accessible footer with tests",
+    }
+    const response = await post(`/networks/${network.id}/plans`, request)
+    expect(response.status).toBe(202)
+    const plan = dispatchPlanSchema.parse(await response.json())
+    expect(plan.model).toBe("fake")
+    expect((await post(`/networks/${network.id}/plans`, request)).status).toBe(
+      202
+    )
+    await waitUntil(
+      async () =>
+        (await snapshot(network.id)).plans[0]?.state.status === "ready"
+    )
+    const proposed = await snapshot(network.id)
+    expect(proposed.plans).toHaveLength(1)
+    expect(proposed.lines).toHaveLength(0)
+    expect(proposed.trains).toHaveLength(0)
+    const wrongNetwork = await createNetwork()
+    expect(
+      (await post(`/networks/${wrongNetwork.id}/plans/${plan.id}/launch`))
+        .status
+    ).toBe(404)
+    const launched = await post(
+      `/networks/${network.id}/plans/${plan.id}/launch`
+    )
+    expect(launched.status).toBe(202)
+    dispatchPlanSchema.parse(await launched.json())
+    expect(
+      (await post(`/networks/${network.id}/plans/${plan.id}/launch`)).status
+    ).toBe(202)
+    await waitUntil(async () => {
+      const current = await snapshot(network.id)
+      return (
+        current.plans[0]?.state.status === "launched" &&
+        current.trains.length === 1 &&
+        current.trains[0]!.train.state.status === "unloaded"
+      )
+    })
+    const final = await snapshot(network.id)
+    expect(final.lines).toHaveLength(1)
+    expect(final.cars).toHaveLength(1)
+    expect(final.stations[0]!.manifest.goal).toBe(request.goal)
+    expect(
+      (await post(`/networks/${network.id}/plans/${plan.id}/retry`)).status
+    ).toBe(409)
+    const { events } = eventsResponseSchema.parse(
+      await (await api(`/networks/${network.id}/events?after=0`)).json()
+    )
+    expect(
+      events.filter((e) => e.event.type === "dispatcher.plan_requested")
+    ).toHaveLength(1)
+    expect(
+      events.filter((e) => e.event.type === "dispatcher.plan_launched")
+    ).toHaveLength(1)
+  }, 20_000)
   it("runs the demo network until both Trains unload", async () => {
     const network = await createNetwork()
+    expect(
+      (await post(`/networks/${network.id}/plans`, { goal: "Goal" })).status
+    ).toBe(400)
+    expect(
+      (
+        await post(`/networks/${network.id}/plans`, {
+          requestId: crypto.randomUUID(),
+          goal: " ",
+        })
+      ).status
+    ).toBe(400)
+    expect(
+      (
+        await post(`/networks/missing/plans`, {
+          requestId: crypto.randomUUID(),
+          goal: "Goal",
+        })
+      ).status
+    ).toBe(404)
+    expect(
+      (await post(`/networks/${network.id}/plans/missing/retry`)).status
+    ).toBe(404)
     expect((await post(`/networks/${network.id}/demo`)).status).toBe(204)
 
     await waitUntil(async () => {

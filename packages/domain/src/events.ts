@@ -17,6 +17,22 @@ import type { ReviewFeedback } from "./station"
  * feed and the audit trail are both built from these.
  */
 export type DomainEvent =
+  | { type: "dispatcher.plan_requested"; planId: string }
+  | { type: "dispatcher.plan_ready"; planId: string }
+  | { type: "dispatcher.launch_requested"; planId: string }
+  | { type: "dispatcher.plan_failed"; planId: string }
+  | {
+      type: "dispatcher.lines_laid"
+      planId: string
+      lineIds: LineId[]
+      trainIds: TrainId[]
+    }
+  | {
+      type: "dispatcher.plan_launched"
+      planId: string
+      lineIds: LineId[]
+      trainIds: TrainId[]
+    }
   | { type: "line.created"; lineId: LineId; stationIds: StationId[] }
   | {
       type: "train.created"

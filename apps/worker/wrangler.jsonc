@@ -16,6 +16,11 @@
   ],
   "workflows": [
     {
+      "name": "terminus-dispatch",
+      "binding": "DISPATCH_WORKFLOW",
+      "class_name": "DispatchWorkflow",
+    },
+    {
       "name": "terminus-train",
       "binding": "TRAIN_WORKFLOW",
       "class_name": "TrainWorkflow",
@@ -54,6 +59,7 @@
     // Both roles use the inexpensive testing model. No automatic fallback.
     "STATION_AGENT_MODEL": "@cf/zai-org/glm-5.3-flash",
     "CONDUCTOR_MODEL": "@cf/zai-org/glm-5.3-flash",
+    "DISPATCHER_MODEL": "@cf/zai-org/glm-5.3-flash",
     "AI_GATEWAY_ACCOUNT_ID": "",
     "AI_GATEWAY_ID": "default",
     // How long a fake Station Agent takes, so Trains visibly travel.
@@ -78,6 +84,11 @@
       ],
       "workflows": [
         {
+          "name": "terminus-dispatch-fake",
+          "binding": "DISPATCH_WORKFLOW",
+          "class_name": "DispatchWorkflow",
+        },
+        {
           "name": "terminus-train-fake",
           "binding": "TRAIN_WORKFLOW",
           "class_name": "TrainWorkflow",
@@ -97,6 +108,7 @@
         "REPOSITORY_MODE": "fake",
         "STATION_AGENT_MODEL": "fake",
         "CONDUCTOR_MODEL": "fake",
+        "DISPATCHER_MODEL": "fake",
         "FAKE_AGENT_DELAY_MS": "4000",
         "FAKE_CONDUCTOR_RETURNS": "1",
         "AI_GATEWAY_ACCOUNT_ID": "",
