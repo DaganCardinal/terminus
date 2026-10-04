@@ -40,6 +40,14 @@ Prerequisites: Docker, Cloudflare access to Artifacts and Sandboxes/Containers, 
 3. For local development, put that secret and any local account/gateway overrides in the ignored `apps/worker/.dev.vars` file. Do not commit it. Start Docker, then run `npm run dev:worker` and `npm run dev:web`.
 4. Create a network using the public Git URL field. This imports the project into Artifacts. Choose **Lay demo Lines** to run the demo manifests against that baseline.
 
+If local Wrangler 4.147.0 prints repeated `internal error; reference = ...` messages, enable `WRANGLER_LOG=debug` and check the stack. A known local failure points to Miniflare's `observability/collector.worker.js` with `Cannot perform I/O on behalf of a different request` and `I/O type: OutgoingFactory`. Restart with the local collector disabled:
+
+```sh
+X_LOCAL_OBSERVABILITY=false WRANGLER_LOG=debug npm run dev:worker
+```
+
+This workaround uses Wrangler's local development switch; terminal command/model diagnostics and deployed Worker observability remain available. An HTTP 200 from the model only confirms response headers arrived. Station completion still requires OpenCode to exit, independent validation, publication, and Conductor review.
+
 Local `.dev.vars` entries have this shape:
 
 ```dotenv
@@ -50,7 +58,7 @@ AI_GATEWAY_TOKEN=YOUR_ACCOUNT_SCOPED_WORKERS_AI_TOKEN
 
 Both `STATION_AGENT_MODEL` and `CONDUCTOR_MODEL` are configured as **`@cf/zai-org/glm-5.3-flash`** for testing. OpenCode's primary and small-model settings use that same configured identity. The calls use low reasoning effort for testing. There is no automatic fallback to the expensive production models mentioned in the design documents.
 
-The Sandbox image pins OpenCode 1.18.32 and Node 24. The required Sandbox Durable Object is only a container adapter; it stores no orchestration state. Outbound access is limited to its explicitly granted repository, the configured model endpoint, and the npm registry. Repository tokens are short-lived and repo-scoped, and the Worker injects them into Git requests. The Station process receives neither repository tokens nor model secrets. Orchestration uses separate workspaces for writes to a Train.
+The Sandbox image pins OpenCode 1.18.32 and Node 24. OpenCode's internal snapshots are disabled: their Git subprocesses reproduced a harness hang in local Sandboxes. Terminus captures candidate commits, diffs, and validation evidence independently after the harness exits. The required Sandbox Durable Object is only a container adapter; it stores no orchestration state. Outbound access is limited to its explicitly granted repository, the configured model endpoint, and the npm registry. Repository tokens are short-lived and repo-scoped, and the Worker injects them into Git requests. The Station process receives neither repository tokens nor model secrets. Orchestration uses separate workspaces for writes to a Train.
 
 For a deployed Worker, create/bind the D1 database, configure its `database_id`, apply migrations remotely, set the secret, and deploy from `apps/worker`:
 

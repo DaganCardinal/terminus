@@ -78,9 +78,44 @@ export class SandboxStationRunner implements StationRunner {
       "write"
     )
     const sandbox = this.#sandbox(input.runId)
+    let phase = "checkout"
     const workspace: GitWorkspace = {
-      run: async (args, cwd, env) =>
-        commandResultSchema.parse(await sandbox.run(args, cwd, env)),
+      run: async (args, cwd, env) => {
+        const started = Date.now()
+        const context = {
+          runId: input.runId,
+          stationId: input.stationId,
+          phase,
+          command: args[0],
+        }
+        // Arguments, environment, and process output can contain credentials
+        // or agent context. Log only the operation and independently observed status.
+        console.info("Station command started", context)
+        try {
+          const result = commandResultSchema.parse(
+            await sandbox.run(args, cwd, env)
+          )
+          console.info("Station command completed", {
+            ...context,
+            durationMs: Date.now() - started,
+            exitCode: result.exitCode,
+            outputTruncated: !!result.outputTruncated,
+          })
+          return result
+        } catch (error) {
+          console.error("Station command failed", {
+            ...context,
+            durationMs: Date.now() - started,
+            reference:
+              error instanceof Error
+                ? error.message.match(
+                    /internal error; reference = ([a-z0-9]+)/
+                  )?.[1]
+                : undefined,
+          })
+          throw error
+        }
+      },
       close: () => sandbox.close(),
     }
     let saved = false
@@ -98,6 +133,7 @@ export class SandboxStationRunner implements StationRunner {
         input.workspace.baseCommit
       )
       if (checkpoint) {
+        phase = "recovery"
         if (!checkpoint.result.ok)
           throw new Error("Station checkpoint does not contain a candidate")
         const proposal = checkpoint.result.proposal
@@ -125,6 +161,7 @@ export class SandboxStationRunner implements StationRunner {
         "/workspace/opencode.json",
         opencodeConfig(config.accountId, config.gatewayId, config.model)
       )
+      phase = "dependencies"
       const installed = commandResultSchema.parse(
         await workspace.run(
           ["npm", "ci", "--no-audit", "--no-fund"],
@@ -133,6 +170,7 @@ export class SandboxStationRunner implements StationRunner {
       )
       if (installed.exitCode !== 0)
         throw new Error("Project dependency installation failed")
+      phase = "harness"
       const harness = commandResultSchema.parse(
         await workspace.run(
           opencodeCommand(config.model, input),
@@ -150,11 +188,13 @@ export class SandboxStationRunner implements StationRunner {
       const outcome = harnessOutcome(harness)
       if (outcome.error) throw new Error(outcome.error)
 
+      phase = "candidate"
       const headCommit = await repository.candidate(
         `Station ${input.stationId}: ${input.manifest.goal}`
       )
       const checks: CheckResult[] = []
       for (const check of validation) {
+        phase = `validation:${check.name}`
         const result = commandResultSchema.parse(
           await workspace.run(check.command, repoDirectory)
         )
@@ -172,6 +212,7 @@ export class SandboxStationRunner implements StationRunner {
             result.stderr.length > 8000,
         })
       }
+      phase = "evidence"
       const { changedPaths, diff } = await repository.snapshot(headCommit)
       const result: StationRunResult = {
         ok: true,
@@ -191,6 +232,7 @@ export class SandboxStationRunner implements StationRunner {
         this.config.model,
         result
       )
+      phase = "publish"
       await repository.publish(headCommit)
       await this.#store.publishAgentRun(input, this.config.model)
       saved = true

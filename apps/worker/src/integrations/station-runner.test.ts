@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { StationRunInput } from "@terminus/agent-runtime"
 import type { RepositoryAccess } from "@terminus/artifacts"
 import { seedLine, seedNetwork, testPorts } from "../../test/fixtures"
@@ -8,6 +8,8 @@ import { SandboxStationRunner, type StationSandbox } from "./station-runner"
 const model = "@cf/zai-org/glm-5.3-flash"
 const base = "a".repeat(40)
 const candidate = "b".repeat(40)
+
+afterEach(() => vi.restoreAllMocks())
 
 async function fixture(failedTests = false) {
   const ports = testPorts()
@@ -76,6 +78,38 @@ async function fixture(failedTests = false) {
 }
 
 describe("Station execution boundary", () => {
+  it("identifies the failed phase without logging agent arguments or credentials", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {})
+    const failed = vi.spyOn(console, "error").mockImplementation(() => {})
+    const f = await fixture()
+    const error = new Error(
+      "internal error; reference = abc123 test-worker-token"
+    )
+    const run = vi.mocked(f.sandbox.run).getMockImplementation()!
+    vi.mocked(f.sandbox.run).mockImplementation(async (...args) => {
+      if (args[0][0] === "opencode") throw error
+      return run(...args)
+    })
+    await expect(f.runner.run(f.input)).rejects.toBe(error)
+    expect(failed).toHaveBeenCalledWith(
+      "Station command failed",
+      expect.objectContaining({
+        runId: f.input.runId,
+        phase: "harness",
+        command: "opencode",
+        reference: "abc123",
+      })
+    )
+    const logs = JSON.stringify([info.mock.calls, failed.mock.calls])
+    for (const secret of [
+      "test-worker-token",
+      "test-station-token",
+      f.input.manifest.goal,
+    ])
+      expect(logs).not.toContain(secret)
+    expect(f.repositories.revoke).toHaveBeenCalledTimes(1)
+    expect(f.sandbox.close).not.toHaveBeenCalled()
+  })
   it("collects independent validation, persists evidence before stopping, and reuses a durable result", async () => {
     const f = await fixture(true)
     const result = await f.runner.run(f.input)

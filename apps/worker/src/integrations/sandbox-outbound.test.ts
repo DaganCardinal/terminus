@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { outboundRequest } from "./sandbox-outbound"
 
 const env = {
@@ -14,7 +14,46 @@ const network = {
   allowModel: true,
 }
 
+afterEach(() => vi.restoreAllMocks())
+
 describe("Sandbox outbound capabilities", () => {
+  it("correlates model transport failures without leaking request contents or credentials", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {})
+    const failed = vi.spyOn(console, "error").mockImplementation(() => {})
+    const error = new Error(
+      "internal error; reference = abc123 worker-secret private-prompt"
+    )
+    const send = vi.fn<typeof fetch>(async () => {
+      throw error
+    })
+    await expect(
+      outboundRequest(
+        new Request(
+          "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              model: env.STATION_AGENT_MODEL,
+              messages: [{ role: "user", content: "private-prompt" }],
+            }),
+          }
+        ),
+        env,
+        network,
+        send
+      )
+    ).rejects.toBe(error)
+    expect(failed).toHaveBeenCalledWith(
+      "Station model request failed",
+      expect.objectContaining({
+        requestId: info.mock.calls[0]![1].requestId,
+        reference: "abc123",
+      })
+    )
+    const logs = JSON.stringify([info.mock.calls, failed.mock.calls])
+    for (const secret of ["worker-secret", "station-token", "private-prompt"])
+      expect(logs).not.toContain(secret)
+  })
   it("injects the model credential only for the configured account, route, and model", async () => {
     const send = vi.fn<typeof fetch>(async () => new Response("ok"))
     const request = new Request(

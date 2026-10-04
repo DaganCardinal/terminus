@@ -77,13 +77,38 @@ export async function outboundRequest(
     headers.delete("cf-aig-authorization")
     headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID)
     headers.delete("content-length")
-    return send(
-      new Request(request, {
-        headers,
-        body: JSON.stringify({ ...payload.data, reasoning_effort: "low" }),
-        redirect: "manual",
+    const started = Date.now()
+    // Correlate upstream errors without logging credentials, prompts, or bodies.
+    const requestId = crypto.randomUUID()
+    console.info("Station model request started", { requestId })
+    try {
+      const response = await send(
+        new Request(request, {
+          headers,
+          body: JSON.stringify({ ...payload.data, reasoning_effort: "low" }),
+          redirect: "manual",
+        })
+      )
+      console.info("Station model response received", {
+        requestId,
+        status: response.status,
+        durationMs: Date.now() - started,
+        ray: response.headers.get("cf-ray"),
       })
-    )
+      return response
+    } catch (error) {
+      console.error("Station model request failed", {
+        requestId,
+        durationMs: Date.now() - started,
+        reference:
+          error instanceof Error
+            ? error.message.match(
+                /internal error; reference = ([a-z0-9]+)/
+              )?.[1]
+            : undefined,
+      })
+      throw error
+    }
   }
 
   // The demo uses npm packages; other network access requires explicit configuration.

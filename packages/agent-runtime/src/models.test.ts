@@ -169,6 +169,7 @@ describe("configured model routing", () => {
     expect(config.model).toBe(`terminus/${model}`)
     expect(config.small_model).toBe(config.model)
     expect(config.enabled_providers).toEqual(["terminus"])
+    expect(config.snapshot).toBe(false)
     expect(config.provider.terminus.options.apiKey).toBe("provided-by-worker")
     expect(opencodeCommand(model, run)).toContain(`terminus/${model}`)
   })

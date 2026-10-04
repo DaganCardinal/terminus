@@ -23,6 +23,9 @@ export function opencodeConfig(
   model: string
 ): string {
   return JSON.stringify({
+    // Terminus owns candidate history. OpenCode's optional snapshot subprocesses
+    // can hang in the Sandbox, preventing the harness from exiting.
+    snapshot: false,
     enabled_providers: ["terminus"],
     model: `terminus/${model}`,
     small_model: `terminus/${model}`,
