@@ -5,7 +5,7 @@ import {
 } from "@terminus/protocol"
 import { z } from "zod"
 import type { ModelProvider } from "./model-provider"
-import { dispatcherPrompt } from "./dispatcher-prompt"
+import { crossingPlanningGuidance, dispatcherPrompt } from "./dispatcher-prompt"
 
 export interface DispatchPlanningInput {
   goal: string
@@ -55,6 +55,10 @@ const fields = new Set([
   "expectedEvidence",
   "repositoryChange",
   "description",
+  "route",
+  "source",
+  "stationKey",
+  "stationId",
 ])
 
 function validationIssues(error: z.ZodError): DispatchValidationIssue[] {
@@ -90,6 +94,7 @@ export class ModelDispatcher implements DispatchPlanner {
         role: "dispatcher",
         system: [
           dispatcherPrompt,
+          crossingPlanningGuidance,
           "Return only JSON matching this schema:",
           JSON.stringify(z.toJSONSchema(dispatchProposalSchema)),
         ].join("\n\n"),

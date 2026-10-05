@@ -1,6 +1,9 @@
+import { advanceCrossing, recordCrossingOutcome } from "./crossing-operations"
 import type { Conductor, ReviewInput } from "@terminus/agent-runtime"
 import { RepositoryMovedError, type RepositoryHost } from "@terminus/artifacts"
 import {
+  sendToSiding,
+  stationCheckpoint,
   arrive,
   attachCar,
   beginReturn,
@@ -98,7 +101,27 @@ export async function advanceTrain(
   trainId: TrainId
 ): Promise<TrainMove> {
   const loaded = await loadTrain(ports, trainId)
+  const siding = await ports.store.sidingRequest(trainId)
+  if (siding !== null) {
+    const active = (await ports.store.integrations(loaded.networkId)).some(
+      (a) =>
+        a.input.trainId === trainId &&
+        ["cleared", "prepared"].includes(a.status)
+    )
+    if (active)
+      throw new Error("Cannot abandon a Train with an unresolved promotion")
+    const result = applied(sendToSiding(loaded.value, siding))
+    await ports.store.commit(
+      loaded.networkId,
+      [trainWrite(loaded, result.value), { kind: "siding_consumed", trainId }],
+      result.events
+    )
+    await wakeHeldTrains(ports, loaded.networkId)
+    return { kind: "finished", status: "siding" }
+  }
   if (await applyStationRemoval(ports, loaded)) return { kind: "moved" }
+  const crossingMove = await advanceCrossing(ports, loaded)
+  if (crossingMove) return crossingMove
   const { state } = loaded.value
   switch (state.status) {
     case "ready":
@@ -192,11 +215,19 @@ async function applyStationRemoval(
   const line = await ports.store.line(train.value.lineId)
   if (!line) throw new Error("Train has no Line")
   const { removalRequest, ...station } = requested.value
+  const sidedLines = new Set(
+    (await ports.store.trains(train.networkId))
+      .filter((t) => t.value.state.status === "siding")
+      .map((t) => t.value.lineId)
+  )
   const result = removeStation({
     train: train.value,
     line,
     station,
     stations: stations.map((s) => s.value),
+    crossings: (await ports.store.crossings(train.networkId)).filter(
+      (c) => !sidedLines.has(c.lineId)
+    ),
     reason: removalRequest!.reason,
   })
   if (!result.ok) {
@@ -277,6 +308,9 @@ export async function recordIntegrationOutcome(
   trainId: string,
   outcome: IntegrationOutcome
 ): Promise<void> {
+  const saved = await ports.store.integration(outcome.integrationId)
+  if (saved?.input.purpose === "crossing")
+    return recordCrossingOutcome(ports, trainId, outcome)
   const train = await loadTrain(ports, trainId)
   if (
     train.value.state.status !== "returning" ||
@@ -387,6 +421,12 @@ export async function clearTrain(
 ): Promise<void> {
   const train = await loadTrain(ports, trainId)
   if (train.value.state.status !== "blocked") return
+  if (
+    (await ports.store.crossings(train.networkId)).some(
+      (c) => c.lineId === train.value.lineId && c.state.status === "blocked"
+    )
+  )
+    return
   const cleared = applied(clearTrainBlock(train.value))
   const writes: Write[] = [trainWrite(train, cleared.value)]
   const events = [...cleared.events]
@@ -408,10 +448,13 @@ async function departOrReturn(
   const train = loaded.value
   const { line, stations } = await loadLine(ports, train.lineId)
   const ordered = stations.map((station) => station.value)
+  const crossings = await ports.store.crossings(loaded.networkId)
   const next = nextStation(ordered)
 
   if (!next) {
-    const returned = applied(beginReturn({ train, line, stations: ordered }))
+    const returned = applied(
+      beginReturn({ train, line, stations: ordered, crossings })
+    )
     await ports.store.commit(
       loaded.networkId,
       [trainWrite(loaded, returned.value)],
@@ -421,7 +464,13 @@ async function departOrReturn(
   }
 
   const context = await departureContext(ports, loaded.networkId, next)
-  const departed = depart({ train, line, stations: ordered, context })
+  const departed = depart({
+    train,
+    line,
+    stations: ordered,
+    context,
+    crossings,
+  })
   if (departed.ok) {
     const station = stations.find((s) => s.value.id === next.id)!
     await ports.store.commit(
@@ -643,6 +692,13 @@ async function accept(
       trainWrite(train, attached.value.train),
       stationWrite(station, attached.value.station),
       { kind: "car", car },
+      {
+        kind: "checkpoint",
+        checkpoint: stationCheckpoint(
+          attached.value.train,
+          attached.value.station
+        )!,
+      },
     ],
     attached.events
   )

@@ -1,3 +1,10 @@
+import {
+  lineStops,
+  resolveLineRoute,
+  validateCrossingTopology,
+} from "./crossing"
+import type { Line } from "./line"
+import type { Station } from "./station"
 import { hasConcreteRepositoryChange, type WorkManifest } from "./manifest"
 import { accept, reject, type Transition } from "./transition"
 
@@ -8,6 +15,7 @@ export interface PlannedLine {
   unloadRecommendation?: import("./unload-policy").UnloadRecommendation
   /** User selection; recommendation remains inspectable. */
   unloadMode?: import("./unload-policy").UnloadMode
+  route?: import("./crossing").PlannedStop[]
   stations: { key: string; name: string; manifest: WorkManifest }[]
 }
 
@@ -30,6 +38,9 @@ export interface PlanAssessment {
 
 export interface PlanningContext {
   validationNames: string[]
+  lines?: Line[]
+  stations?: Station[]
+  crossings?: import("./crossing").Crossing[]
   activeLines: { name: string; manifests: WorkManifest[] }[]
 }
 
@@ -72,6 +83,8 @@ export function assessDispatchProposal(
 ): PlanAssessment {
   const errors: string[] = []
   const collisions: CollisionForecast[] = []
+  let resolvedLines: Line[] = context.lines ?? []
+  let resolvedStations: Station[] = context.stations ?? []
   const lineKeys = new Set<string>()
   const stationKeys = new Set<string>()
   const plannedKeys = new Set(
@@ -91,7 +104,7 @@ export function assessDispatchProposal(
         errors.push(`Duplicate Station key: ${station.key}`)
       stationKeys.add(station.key)
       for (const dependency of station.manifest.dependencies) {
-        if (!seen.has(dependency))
+        if (!seen.has(dependency) && !line.route)
           errors.push(
             `${label}: dependency ${dependency} must be an earlier Station on the same Line${plannedKeys.has(dependency) ? "" : " (unknown key)"}.`
           )
@@ -113,6 +126,85 @@ export function assessDispatchProposal(
       }
     }
   }
+  try {
+    const keys = new Map(
+      proposal.lines.flatMap((l) =>
+        l.stations.map((s) => [s.key, s.key] as const)
+      )
+    )
+    const stations: Station[] = proposal.lines.flatMap((l) =>
+      l.stations.map((s) => ({
+        id: s.key,
+        lineId: l.key,
+        name: s.name,
+        manifest: s.manifest,
+        revisionCount: 0,
+        state: { status: "waiting" as const },
+      }))
+    )
+    const lines = proposal.lines.map(
+      (l) =>
+        resolveLineRoute(
+          {
+            id: l.key,
+            networkId: context.lines?.[0]?.networkId ?? "plan",
+            name: l.name,
+            stationIds: l.stations.map((s) => s.key),
+          },
+          l.route,
+          keys
+        ).line
+    )
+    resolvedLines = [...(context.lines ?? []), ...lines]
+    resolvedStations = [...(context.stations ?? []), ...stations]
+    errors.push(...validateCrossingTopology(resolvedLines, resolvedStations))
+    for (const s of stations)
+      for (const dep of s.manifest.dependencies)
+        if (
+          !stations.some((v) => v.id === dep) &&
+          !context.stations?.some((v) => v.id === dep)
+        )
+          errors.push(`Unknown dependency ${dep}`)
+  } catch (error) {
+    errors.push(String(error))
+  }
+  const receivesBefore = (
+    consumer: WorkManifest,
+    provider: WorkManifest
+  ): boolean => {
+    const station = resolvedStations.find((s) => s.manifest === consumer)
+    const line = resolvedLines.find((l) => l.id === station?.lineId)
+    if (!station || !line) return false
+    const includesProvider = (
+      checkpointId: string,
+      seen = new Set<string>()
+    ): boolean => {
+      if (seen.has(checkpointId)) return false
+      seen.add(checkpointId)
+      const source = resolvedStations.find((s) => s.id === checkpointId)
+      const owner = resolvedLines.find((l) => l.id === source?.lineId)
+      if (!owner) return false
+      for (const stop of lineStops(owner)) {
+        if (stop.kind === "crossing") {
+          if (includesProvider(stop.stationId, seen)) return true
+        } else {
+          if (
+            resolvedStations.find((s) => s.id === stop.stationId)?.manifest ===
+            provider
+          )
+            return true
+          if (stop.stationId === checkpointId) break
+        }
+      }
+      return false
+    }
+    for (const stop of lineStops(line)) {
+      if (stop.kind === "station" && stop.stationId === station.id) break
+      if (stop.kind === "crossing" && includesProvider(stop.stationId))
+        return true
+    }
+    return false
+  }
   const planned = proposal.lines.map((line) => ({
     name: line.name,
     manifests: line.stations.map((s) => s.manifest),
@@ -132,21 +224,26 @@ export function assessDispatchProposal(
         ),
       ]
       const contracts: string[] = []
-      for (const a of left.manifests.flatMap((m) => m.contracts)) {
-        for (const b of right.manifests.flatMap((m) => m.contracts)) {
-          if (
-            a.name !== b.name ||
-            a.kind !== b.kind ||
-            (a.change === "depends_on" && b.change === "depends_on")
-          )
-            continue
-          contracts.push(`${a.kind}: ${a.name}`)
-          if (a.change === "depends_on" || b.change === "depends_on")
-            errors.push(
-              `${left.name} and ${right.name} share a code dependency on ${a.name}; keep dependent work on one Line.`
-            )
+      for (const am of left.manifests)
+        for (const bm of right.manifests) {
+          for (const a of am.contracts)
+            for (const b of bm.contracts) {
+              if (
+                a.name !== b.name ||
+                a.kind !== b.kind ||
+                (a.change === "depends_on" && b.change === "depends_on")
+              )
+                continue
+              contracts.push(`${a.kind}: ${a.name}`)
+              if (
+                (a.change === "depends_on" && !receivesBefore(am, bm)) ||
+                (b.change === "depends_on" && !receivesBefore(bm, am))
+              )
+                errors.push(
+                  `${left.name} and ${right.name} share a code dependency on ${a.name}; keep dependent work on one Line or pick up its accepted checkpoint before the consumer.`
+                )
+            }
         }
-      }
       if (paths.length || contracts.length)
         collisions.push({
           line: left.name,

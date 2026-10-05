@@ -65,11 +65,11 @@ async function fixture(failedTests = false) {
   const runner = new SandboxStationRunner(
     {
       ...env,
-      STATION_AGENT_MODEL: model,
       AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
       AI_GATEWAY_ID: "test",
       AI_GATEWAY_TOKEN: "test-worker-token",
     },
+    model,
     repositories,
     ports.store,
     () => sandbox

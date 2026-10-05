@@ -51,7 +51,7 @@ Use these terms precisely. They are not aliases for Git concepts.
 | **Project** | One managed codebase, backed by one canonical Terminus repository in Artifacts. |
 | **Network** | All the Lines, Trains, and Stations for a Project, coordinated by one Dispatcher. |
 | **Terminus** | The canonical project state. It is **not** just `main`. Only a Train that passes integration checks is promoted into it. |
-| **Line** | An ordered workstream that runs from a distant **depot**, through its Stations, to Terminus. It is not a branch. Lines don't branch or merge before Terminus. |
+| **Line** | An ordered workstream that runs from a distant **depot**, through its Stations, to Terminus. It is not a branch. Lines do not branch. A configured one-way Crossing visits another Line's Station to merge its accepted checkpoint, copy missing Cars with provenance, and continue on the receiving Line. |
 | **Station** | One clearly defined task, defined by a Work Manifest. It is not an issue. |
 | **Work Manifest** | The structured definition of a Station: goal, scope, expected areas, areas to avoid, contracts, invariants, dependencies, acceptance criteria, and expected evidence. It is a first-class domain object stored in D1, never just a prompt. |
 | **Train** | The evolving integration snapshot for a Line. It is not a branch. Its repository is forked from Terminus when the Train is created, and it accumulates accepted work in order. Each Train owns its own state. |
@@ -268,7 +268,7 @@ Workspace-specific commands:
 - Add a shadcn component: `npx shadcn@latest add <component> -c apps/web`. Components are written to `packages/ui/src/components` and imported as `@terminus/ui/components/<name>`.
 - Regenerate Worker binding types after editing `apps/worker/wrangler.jsonc`: `npm run cf-typegen -w @terminus/worker`.
 - During implementation/testing, **all real roles use `@cf/zai-org/glm-5.3-flash`** per maintainer instruction. Do not substitute the more expensive design-doc defaults or introduce an automatic fallback.
-- Role models are Worker vars in `apps/worker/wrangler.jsonc` (`STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, `DISPATCHER_MODEL`, `TECHNICIAN_MODEL`). `fake` runs a role without a model; `FAKE_AGENT_DELAY_MS` and `FAKE_CONDUCTOR_RETURNS` tune the fakes.
+- Role models are user configuration stored in D1 (`model_settings`): General settings, optionally overridden per network, chosen from presets in `packages/protocol/src/models.ts`. The default preset (Extra-light) keeps every text role on `@cf/zai-org/glm-5.3-flash`. Workflows resolve a network's models in a durable step when work starts, so in-flight work keeps its models. The Worker vars `STATION_AGENT_MODEL`, `CONDUCTOR_MODEL`, `DISPATCHER_MODEL`, `TECHNICIAN_MODEL` only switch a role to `fake` (runs without a model); `FAKE_AGENT_DELAY_MS` and `FAKE_CONDUCTOR_RETURNS` tune the fakes.
 - Workspace packages are source-only TypeScript (`exports` points at `src/index.ts`). Vite and Wrangler compile them, so they have no build step.
 - Vitest is pinned to v4 because `@cloudflare/vitest-pool-workers` doesn't support v5 yet.
 
@@ -283,3 +283,13 @@ Workspace-specific commands:
 ## Git workflow
 
 **The human maintainer handles all commits, branches, and pull requests.** Do not commit, create branches, push, or open PRs unless explicitly asked. Leave your changes in the working tree.
+
+## Crossings
+
+- A Crossing is a pickup-only visit to a Station owned by another Line in the same Network. It never executes or changes the source Station. Crossings are configured when laying Lines; running routes stay fixed.
+- `Line.stops`, when present, owns route order. `stationIds` is its owned-Station compatibility projection; old Lines use Station-only routes.
+- Source acceptance atomically records an immutable checkpoint (repository, exact commit, ordered Cars). Pickup includes all work through that checkpoint, including imported Cars, and excludes later source work. The source Train continues independently.
+- The receiving Train keeps its Cars and copies only missing original Cars, preserving accepted commits, manifests, evidence, and reviews. The receiving Conductor's compatibility review belongs to the integration attempt.
+- Crossing merges use the shared candidate/validation/promotion machinery. They are an explicit exception to the pre-Terminus merge rule; ordinary Station acceptance remains a fast-forward. Only Terminus integration writes canonical project state.
+- Line exchange must be an acyclic one-way flow. No reciprocal exchanges, source manifest reruns, cherry-picking, rebasing, or squashing. Failed handoffs block and alert the Dispatcher; retry is explicit and Crossing Technician repair is deferred.
+- Integration reservations are per target repository. Uncertain promotions retain their reservation and must be reconciled before retry or siding. The receiving Train Workflow alone changes its Train state and completes pickup.

@@ -1,4 +1,6 @@
 import {
+  blockingIssues,
+  holdReasons,
   conflictsForRepair,
   repairMatches,
   evaluateTerminusEntry,
@@ -7,6 +9,7 @@ import {
 } from "@terminus/domain"
 import type { RepositoryHost } from "@terminus/artifacts"
 import {
+  conductorVerdictSchema,
   evidenceSchema,
   type IntegrationAttempt,
   type IntegrationResult,
@@ -18,6 +21,10 @@ export interface IntegrationPorts {
   store: NetworkStore
   repositories: RepositoryHost
   validator: IntegrationValidator
+  conductorForTrain?(
+    trainId: string,
+    model?: string
+  ): Promise<import("@terminus/agent-runtime").Conductor>
 }
 
 async function load(
@@ -40,13 +47,16 @@ export async function prepareIntegration(
   const train = await ports.store.train(input.trainId)
   if (
     !train ||
-    train.value.headCommit !== input.trainCommit ||
-    train.value.state.status !== "returning" ||
-    train.value.state.phase !== "integrating"
+    (input.purpose === "crossing"
+      ? !crossingVisitMatches(train.value, input)
+      : train.value.headCommit !== input.trainCommit ||
+        train.value.state.status !== "returning" ||
+        train.value.state.phase !== "integrating")
   )
     throw new Error("Train no longer matches Dispatcher clearance")
+  if (input.purpose === "crossing") await assertCrossing(ports, input)
   let merged: import("@terminus/artifacts").IntegrationMerge
-  if (input.repairId) {
+  if (input.purpose !== "crossing" && input.repairId) {
     const repair = (await ports.store.repair(input.repairId))?.value
     if (
       !repair ||
@@ -77,7 +87,7 @@ export async function prepareIntegration(
       issues: [
         {
           kind: "conflict",
-          detail: `Terminus merge conflicts: ${merged.conflictPaths.join(", ")}`,
+          detail: `${input.purpose === "crossing" ? "Crossing" : "Terminus"} merge conflicts: ${merged.conflictPaths.join(", ")}`,
         },
       ],
       conflictPaths: merged.conflictPaths,
@@ -139,18 +149,114 @@ export async function promoteIntegration(
   // A successful push with a lost D1 acknowledgement must be completed before
   // checking new holds: that accepted canonical state cannot be undone.
   const head = await ports.repositories.head(input.terminusRepoId)
-  if (head === candidate.headCommit) return complete(ports, attempt, evidence)
-  const train = await ports.store.train(input.trainId)
+  if (
+    head === candidate.headCommit &&
+    (input.purpose !== "crossing" || attempt.review?.verdict === "accept")
+  )
+    return complete(ports, attempt, evidence)
+  let train = await ports.store.train(input.trainId)
   if (
     !train ||
-    train.value.headCommit !== input.trainCommit ||
-    train.value.state.status !== "returning" ||
-    train.value.state.phase !== "integrating"
+    (input.purpose === "crossing"
+      ? !crossingVisitMatches(train.value, input)
+      : train.value.headCommit !== input.trainCommit ||
+        train.value.state.status !== "returning" ||
+        train.value.state.phase !== "integrating")
   )
     throw new Error("Train changed before Terminus promotion")
-  const repair = input.repairId
-    ? ((await ports.store.repair(input.repairId))?.value ?? null)
-    : null
+  if (input.purpose === "crossing") {
+    await assertCrossing(ports, input)
+    const crossing = input.crossingId
+      ? (await ports.store.crossing(input.crossingId))?.value
+      : undefined
+    if (!crossing?.checkpoint) throw new Error("Crossing has no checkpoint")
+    const snapshot = await ports.store.snapshot(input.networkId)
+    if (!snapshot) throw new Error("Unknown network")
+    let review = attempt.review
+    if (!review) {
+      const inspected = await ports.repositories.inspectIntegration?.(
+        input,
+        candidate
+      )
+      const conductor = await ports.conductorForTrain?.(
+        input.trainId,
+        input.conductorModel
+      )
+      if (!inspected || !conductor?.reviewCrossing)
+        throw new Error("Crossing review adapter is unavailable")
+      await ports.store.recordIntegrationDiff(id, inspected.diff)
+      const receivingLineId = train.value.lineId
+      const sourceCars = crossing.checkpoint.carIds.map((id) => {
+        const c = snapshot.cars.find((c) => c.id === id)
+        if (!c) throw new Error("Missing checkpoint Car")
+        return c
+      })
+      const verdict = conductorVerdictSchema.parse(
+        await conductor.reviewCrossing({
+          kind: "crossing",
+          crossingId: crossing.id,
+          sourceStationId: crossing.sourceStationId,
+          sourceCommit: input.trainCommit,
+          targetCommit: input.terminusCommit,
+          candidateCommit: candidate.headCommit,
+          ...inspected,
+          evidence,
+          sourceCars,
+          receivingCars: snapshot.cars.filter(
+            (c) => c.trainId === input.trainId
+          ),
+          downstreamManifests: snapshot.stations
+            .filter(
+              (s) =>
+                s.lineId === receivingLineId &&
+                s.state.status !== "complete" &&
+                s.state.status !== "cancelled"
+            )
+            .map((s) => s.manifest),
+        })
+      )
+      await ports.store.recordIntegrationReview(
+        id,
+        { ...verdict, model: conductor.model },
+        inspected.diff
+      )
+      review = (await load(ports, id)).review
+    }
+    if (review?.verdict !== "accept") {
+      const result: IntegrationResult = {
+        ok: false,
+        evidence,
+        issues: [
+          {
+            kind: "review_escalated",
+            detail: review?.summary ?? "Crossing review unavailable",
+          },
+        ],
+      }
+      await ports.store.finishIntegration(id, result)
+      return result
+    }
+  }
+  if (input.purpose === "crossing") {
+    // Model review may take time: recheck the stopped visit and its reservation
+    // against current state before applying the reviewed candidate.
+    train = await ports.store.train(input.trainId)
+    const reserved = await load(ports, id)
+    if (
+      !train ||
+      !crossingVisitMatches(train.value, input) ||
+      reserved.status !== "prepared" ||
+      reserved.candidate?.headCommit !== candidate.headCommit
+    )
+      throw new Error(
+        "Receiving visit or promotion reservation changed during review"
+      )
+    await assertCrossing(ports, input)
+  }
+  const repair =
+    input.purpose !== "crossing" && input.repairId
+      ? ((await ports.store.repair(input.repairId))?.value ?? null)
+      : null
   if (
     input.repairId &&
     (!repair ||
@@ -159,7 +265,11 @@ export async function promoteIntegration(
       repair.state.proposal.headCommit !== candidate.headCommit)
   )
     throw new Error("Repair approval changed before promotion")
-  const gate = evaluateTerminusEntry(train.value, {
+  const gate = (
+    input.purpose === "crossing"
+      ? evaluateCrossingPromotion
+      : evaluateTerminusEntry
+  )(train.value, {
     unloadPolicy: (await ports.store.unloadPolicy(train.value.id))?.value,
     holds: await ports.store.holds(input.networkId),
     conflicts: conflictsForRepair(
@@ -239,7 +349,11 @@ export async function failIntegration(
     // If this lookup fails, retain the reservation. Releasing an uncertain
     // canonical write would allow another promotion to race its recovery.
     const head = await ports.repositories.head(attempt.input.terminusRepoId)
-    if (head === attempt.candidate!.headCommit)
+    if (
+      head === attempt.candidate!.headCommit &&
+      (attempt.input.purpose !== "crossing" ||
+        attempt.review?.verdict === "accept")
+    )
       return complete(ports, attempt, attempt.evidence!)
   }
   const result: IntegrationResult = {
@@ -248,4 +362,48 @@ export async function failIntegration(
   }
   await ports.store.finishIntegration(id, result)
   return result
+}
+
+function crossingVisitMatches(
+  train: import("@terminus/domain").Train,
+  input: import("@terminus/protocol").IntegrationInput
+): boolean {
+  return (
+    train.headCommit === input.terminusCommit &&
+    (train.state.status === "docked" || train.state.status === "reviewing") &&
+    train.state.crossingId === input.crossingId
+  )
+}
+function evaluateCrossingPromotion(
+  train: import("@terminus/domain").Train,
+  context: import("@terminus/domain").GateContext
+) {
+  const issues = blockingIssues(train, context),
+    reasons = holdReasons(train, context)
+  return issues.length
+    ? { kind: "block" as const, issues }
+    : reasons.length
+      ? { kind: "hold" as const, reasons }
+      : { kind: "clear" as const }
+}
+
+async function assertCrossing(
+  ports: IntegrationPorts,
+  input: import("@terminus/protocol").IntegrationInput
+) {
+  const loaded = input.crossingId
+    ? await ports.store.crossing(input.crossingId)
+    : null
+  const train = await ports.store.train(input.trainId)
+  if (
+    !loaded ||
+    loaded.networkId !== input.networkId ||
+    loaded.value.lineId !== train?.value.lineId ||
+    loaded.value.state.status !== "integrating" ||
+    loaded.value.state.integrationId !== input.id ||
+    loaded.value.checkpoint?.commit !== input.trainCommit ||
+    loaded.value.checkpoint.repoId !== input.trainRepoId ||
+    train.value.repoId !== input.terminusRepoId
+  )
+    throw new Error("Crossing no longer matches its frozen handoff")
 }

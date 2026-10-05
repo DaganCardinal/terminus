@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { seedLine, seedNetwork, testPorts } from "../../test/fixtures"
 import type { Train } from "@terminus/domain"
@@ -6,6 +7,51 @@ import { StaleWriteError } from "./network-store"
 describe("NetworkStore", () => {
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it("resolves role models from a network override, then General, then the default", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const other = await seedNetwork(ports)
+    const at = "2026-10-05T12:00:00.000Z"
+
+    expect(await ports.store.generalModelSettings()).toEqual({
+      settings: { preset: "extra_light" },
+      updatedAt: null,
+    })
+    expect((await ports.store.roleModels(network.id)).dispatcher).toBe(
+      "@cf/zai-org/glm-5.3-flash"
+    )
+
+    await ports.store.setGeneralModelSettings({ preset: "light" }, at)
+    expect((await ports.store.roleModels(network.id)).dispatcher).toBe(
+      "@cf/zai-org/glm-5.3"
+    )
+
+    const medium = await ports.store.setNetworkModelSettings(
+      network.id,
+      { preset: "medium" },
+      at
+    )
+    expect(medium).toEqual({
+      override: { preset: "medium" },
+      general: { preset: "light" },
+      updatedAt: at,
+    })
+    expect((await ports.store.roleModels(network.id)).stationAgent).toBe(
+      "@cf/moonshotai/kimi-k2.7-code"
+    )
+    expect((await ports.store.roleModels(other.id)).stationAgent).toBe(
+      "@cf/zai-org/glm-5.3-flash"
+    )
+
+    expect(
+      (await ports.store.setNetworkModelSettings(network.id, null, at)).override
+    ).toBeNull()
+    expect((await ports.store.roleModels(network.id)).stationAgent).toBe(
+      "@cf/zai-org/glm-5.3-flash"
+    )
+    await ports.store.setGeneralModelSettings({ preset: "extra_light" }, at)
   })
 
   it("round-trips entities and appends events in order", async () => {
@@ -146,4 +192,50 @@ describe("NetworkStore", () => {
     })
     expect(await ports.store.signalCount(a!.id)).toBe(0)
   })
+})
+
+it("normalizes legacy Line ordering on reads and snapshots", async () => {
+  const ports = testPorts(),
+    network = await seedNetwork(ports)
+  const { line } = await seedLine(ports, network.id)
+  await env.DB.prepare(
+    "UPDATE lines SET record=json_remove(record,'$.stops') WHERE id=?"
+  )
+    .bind(line.id)
+    .run()
+  const expected = line.stationIds.map((stationId) => ({
+    kind: "station",
+    stationId,
+  }))
+  expect((await ports.store.line(line.id))!.stops).toEqual(expected)
+  expect((await ports.store.snapshot(network.id))!.lines[0]!.stops).toEqual(
+    expected
+  )
+})
+it("keeps a pending siding command from racing departure", async () => {
+  const ports = testPorts(),
+    network = await seedNetwork(ports)
+  const { train } = await seedLine(ports, network.id)
+  expect(await ports.store.requestSiding(train.id, "Abandon")).toBe(true)
+  await expect(
+    ports.store.commit(
+      network.id,
+      [
+        {
+          kind: "train",
+          version: 0,
+          train: {
+            ...train,
+            state: {
+              status: "in_transit",
+              from: { kind: "depot" },
+              toward: "station",
+            },
+          },
+        },
+      ],
+      []
+    )
+  ).rejects.toBeInstanceOf(StaleWriteError)
+  expect((await ports.store.train(train.id))!.value.state.status).toBe("ready")
 })

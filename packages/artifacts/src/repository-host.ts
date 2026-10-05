@@ -1,5 +1,9 @@
 import type { CommitId, RepoId } from "@terminus/domain"
-import type { RepositoryContext } from "@terminus/protocol"
+import type {
+  RepositoryContext,
+  RepositoryFile,
+  RepositoryOverview,
+} from "@terminus/protocol"
 
 export interface RepoRef {
   repoId: RepoId
@@ -7,6 +11,7 @@ export interface RepoRef {
 }
 
 export interface IntegrationMergeInput {
+  purpose?: "terminus" | "crossing"
   id: string
   terminusRepoId: RepoId
   terminusCommit: CommitId
@@ -35,7 +40,19 @@ export interface RepositoryHost {
     repairDiff: string
   }>
   readContext(repoId: RepoId, commit: CommitId): Promise<RepositoryContext>
+  /** A commit's file inventory and leading documents, for people browsing. */
+  readOverview(repoId: RepoId, commit: CommitId): Promise<RepositoryOverview>
+  /** One committed file, or null when the commit has none at `path`. */
+  readFile(
+    repoId: RepoId,
+    commit: CommitId,
+    path: string
+  ): Promise<RepositoryFile | null>
   head(repoId: RepoId): Promise<CommitId>
+  inspectIntegration?(
+    input: IntegrationMergeInput,
+    candidate: RepoRef
+  ): Promise<{ diff: string; changedPaths: string[] }>
   /** Persists a merge candidate separately from both Terminus and the Train. */
   prepareIntegration(input: IntegrationMergeInput): Promise<IntegrationMerge>
   /** Creates the canonical Terminus repository for a new project. */

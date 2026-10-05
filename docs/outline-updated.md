@@ -655,7 +655,7 @@ Blue Line:      ◇ ─ Profile UI ─ E2E Tests ─────────┘
 ◇ = depot, where the Line's Train is created
 ```
 
-Each Line runs independently toward Terminus. Lines do not currently branch or merge into each other before Terminus. Terminus is the only convergence point.
+Each Line runs independently toward Terminus. Lines do not branch. Configured Crossings allow one-way pickup at a source Station: the receiving Train merges its exact accepted checkpoint, copies missing original Cars, and continues on its own Line. Terminus remains the final canonical convergence point.
 
 Concurrency is one of the primary reasons the Dispatcher exists.
 
@@ -1017,3 +1017,7 @@ The central idea remains simple:
 > Work begins at Stations, reviewed value accumulates on Trains, the Dispatcher keeps the network coherent, and only accepted integration states return to Terminus.
 
 The 2D railway map makes that process understandable, but the orchestration model remains authoritative even when no UI is connected at all.
+
+## Crossing integration boundary
+
+Crossings are first-class, one-way pickup visits in ordered Line routes. Source Stations retain one implementation owner and a frozen acceptance checkpoint. Cars copied onto receiving Trains preserve their origin and commit identities; compatibility review and merged-candidate evidence are recorded separately. The shared Integration Workflow reserves one target repository, prepares and validates an isolated candidate, and promotes the exact reviewed commit. Only the receiving Train Workflow records pickup completion and changes that Train's state. Terminus remains the sole canonical project state. See README and AGENTS.md for configuration, failure handling, and demonstration instructions.

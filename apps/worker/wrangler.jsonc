@@ -64,11 +64,13 @@
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
     "PREVIEW_BASE_URL": "",
-    // All real roles use the inexpensive testing model. No automatic fallback.
-    "TECHNICIAN_MODEL": "@cf/zai-org/glm-5.3-flash",
-    "STATION_AGENT_MODEL": "@cf/zai-org/glm-5.3-flash",
-    "CONDUCTOR_MODEL": "@cf/zai-org/glm-5.3-flash",
-    "DISPATCHER_MODEL": "@cf/zai-org/glm-5.3-flash",
+    // `fake` runs a role without a model. Any other value runs the model chosen
+    // in Settings (General, or the network's override). The default preset,
+    // Extra-light, uses @cf/zai-org/glm-5.3-flash for every text role.
+    "TECHNICIAN_MODEL": "settings",
+    "STATION_AGENT_MODEL": "settings",
+    "CONDUCTOR_MODEL": "settings",
+    "DISPATCHER_MODEL": "settings",
     "STATION_MAX_RETRIES": "3",
     "AI_GATEWAY_ACCOUNT_ID": "",
     "AI_GATEWAY_ID": "default",

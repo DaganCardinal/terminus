@@ -56,7 +56,8 @@ export const sandboxNetworkSchema = z.object({
     })
   ),
   allowModel: z.boolean(),
-  modelRole: z.enum(["station_agent", "technician"]).optional(),
+  /** The one model this Sandbox's harness may call, resolved by orchestration. */
+  model: z.string().min(1).optional(),
 })
 export type SandboxNetwork = z.infer<typeof sandboxNetworkSchema>
 

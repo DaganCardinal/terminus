@@ -5,6 +5,7 @@ import {
   type GitWorkspace,
   type RepositoryAccess,
 } from "./git"
+import { isSecretPath } from "./repository-browse"
 
 /** Inspect committed blobs with read-only Git access; never install or execute project code. */
 export async function readRepositoryContext(
@@ -31,12 +32,7 @@ export async function readRepositoryContext(
     .split("\0")
     .filter((entry) => /^100(644|755) /.test(entry))
     .map((entry) => entry.slice(7))
-    .filter(
-      (path) =>
-        !/(^|\/)(\.env[^/]*|\.dev\.vars[^/]*|credentials[^/]*|[^/]*\.(pem|key))$/i.test(
-          path
-        )
-    )
+    .filter((path) => !isSecretPath(path))
     .sort()
   const priority = [
     "AGENTS.md",

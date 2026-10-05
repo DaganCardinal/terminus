@@ -3,7 +3,7 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers"
-import { technicianPorts } from "../agents/ports"
+import { repairModels, technicianPorts } from "../agents/ports"
 import {
   prepareTechnician,
   runTechnician,
@@ -17,13 +17,16 @@ export class TechnicianWorkflow extends WorkflowEntrypoint<
   { repairId: string }
 > {
   async run(event: WorkflowEvent<{ repairId: string }>, step: WorkflowStep) {
-    const ports = technicianPorts(this.env)
     const id = event.payload.repairId
     const retries = {
       limit: 5,
       delay: "1 second",
       backoff: "exponential",
     } as const
+    const models = await step.do("resolve role models", { retries }, () =>
+      repairModels(this.env, id)
+    )
+    const ports = technicianPorts(this.env, models)
     try {
       await step.do(
         "prepare repair workspace",

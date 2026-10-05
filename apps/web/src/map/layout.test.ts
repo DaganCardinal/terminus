@@ -342,3 +342,30 @@ describe("network map projection", () => {
     }
   })
 })
+
+it("routes both Lines through the source Station and places pickup visits in order", () => {
+  const source = line("source"),
+    receiver = line("receiver", 2)
+  receiver.stops = [
+    { kind: "station", stationId: receiver.stationIds[0]! },
+    { kind: "crossing", crossingId: "x", stationId: source.stationIds[1]! },
+    { kind: "station", stationId: receiver.stationIds[1]! },
+  ]
+  const result = layoutNetwork([source, receiver]),
+    [a, b] = result.routes
+  expect(a!.stations[1]).toEqual(b!.stations[1])
+  expect(b!.stationDistances[0]).toBeLessThan(b!.stationDistances[1]!)
+  expect(b!.stationDistances[1]).toBeLessThan(b!.stationDistances[2]!)
+  const d = trainDistance(
+    motion({
+      status: "docked",
+      from: { kind: "station", stationId: receiver.stationIds[0]! },
+      at: source.stationIds[1]!,
+      crossingId: "x",
+    }),
+    b!,
+    T0
+  )
+  expect(pointOnTrack(b!.track, d!)).toEqual(a!.stations[1])
+  expect(layoutNetwork(structuredClone([source, receiver]))).toEqual(result)
+})

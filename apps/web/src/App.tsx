@@ -1,49 +1,32 @@
-import { useEffect, useState } from "react"
-import { TrainFront } from "lucide-react"
-import { ThemeToggle } from "@/components/theme-toggle"
 import "./network.css"
+import "./pages.css"
 import { NetworkList } from "@/views/network-list"
+import { NetworkOverview } from "@/views/network-overview"
 import { NetworkStatus } from "@/views/network-status"
-
-function currentNetworkId(): string | null {
-  return /^#\/networks\/([^/]+)$/.exec(window.location.hash)?.[1] ?? null
-}
+import { SettingsPage } from "@/views/settings"
+import { useRoute } from "@/state/route"
 
 export function App() {
-  const [networkId, setNetworkId] = useState(currentNetworkId)
-
-  useEffect(() => {
-    const onChange = () => setNetworkId(currentNetworkId())
-    window.addEventListener("hashchange", onChange)
-    return () => window.removeEventListener("hashchange", onChange)
-  }, [])
-
-  if (networkId)
-    return (
-      <main className="app-shell">
-        <NetworkStatus key={networkId} networkId={networkId} />
-      </main>
-    )
+  const route = useRoute()
 
   return (
     <main className="app-shell">
-      <nav className="app-nav" aria-label="Main navigation">
-        <a href="#/" className="app-brand">
-          <span>
-            <TrainFront size={17} />
-          </span>
-          terminus<span className="brand-dot">.</span>
-        </a>
-        <span className="app-nav-label">Agent railway network</span>
-        <ThemeToggle className="theme-button" />
-      </nav>
-      <div className="network-list-page">
-        <header>
-          <h1>Networks</h1>
-          <p>Each network coordinates concurrent Lines for one project.</p>
-        </header>
+      {route.page === "map" ? (
+        <NetworkStatus key={route.networkId} networkId={route.networkId} />
+      ) : route.page === "settings" ? (
+        <SettingsPage
+          key={route.networkId ?? "general"}
+          networkId={route.networkId}
+        />
+      ) : route.page === "overview" ? (
+        <NetworkOverview
+          key={route.networkId}
+          networkId={route.networkId}
+          view={route.view}
+        />
+      ) : (
         <NetworkList />
-      </div>
+      )}
     </main>
   )
 }

@@ -3,7 +3,7 @@ import {
   updateTrainUnload,
 } from "../agents/unload-control"
 import { dispatchTechnician, approveTechnician } from "../agents/technician"
-import { technicianPorts } from "../agents/ports"
+import { networkModels, technicianPorts } from "../agents/ports"
 import {
   terminusPreviewRequestSchema,
   setUnloadModeRequestSchema,
@@ -13,13 +13,16 @@ import {
   placeHoldRequestSchema,
   createDispatchPlanRequestSchema,
   removeStationRequestSchema,
+  repositoryFileQuerySchema,
+  modelSettingsSchema,
+  setNetworkModelSettingsRequestSchema,
   type ApiError,
   type EventsResponse,
 } from "@terminus/protocol"
 import type { z } from "zod"
 import { launchTrainPreview, PreviewError } from "../integrations/train-preview"
 import { launchTerminusPreview } from "../integrations/terminus-preview"
-import { layDemoLines } from "../agents/demo-network"
+import { layCrossingDemoLines, layDemoLines } from "../agents/demo-network"
 import {
   clearTrain,
   createNetwork,
@@ -45,6 +48,131 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/demo/crossings" }),
+    async (_, env, { networkId }) => {
+      await layCrossingDemoLines(dispatcherPorts(env), networkId!)
+      return json({ ok: true })
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/trains/:trainId/siding" }),
+    async (request, env, { trainId }) => {
+      const ports = dispatcherPorts(env),
+        train = await ports.store.train(trainId!)
+      if (!train) return notFound("Unknown Train")
+      if (train.value.state.status === "siding") return json({ ok: true })
+      if (
+        !["ready", "held", "blocked"].includes(train.value.state.status) &&
+        !(
+          train.value.state.status === "returning" &&
+          train.value.state.phase === "awaiting_clearance"
+        )
+      )
+        throw new DispatchError(409, "Train must be stopped at a gate")
+      const { reason } = await parse(request, removeStationRequestSchema)
+      if (!(await ports.store.requestSiding(trainId!, reason)))
+        throw new DispatchError(409, "Train has an unresolved promotion")
+      await ports.notifyTrainCommand(trainId!).catch(() => {})
+      return json({ ok: true })
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/crossings/:crossingId" }),
+    async (_, env, { crossingId }) => {
+      const store = dispatcherPorts(env).store,
+        crossing = await store.crossing(crossingId!)
+      if (!crossing) return notFound("Unknown Crossing")
+      const snapshot = await store.snapshot(crossing.networkId)
+      const checkpoint =
+        crossing.value.checkpoint ??
+        (await store.checkpoint(crossing.value.sourceStationId))
+      return json({
+        crossing: crossing.value,
+        checkpoint,
+        attempts: await store.crossingAttempts(crossingId!),
+        cars:
+          snapshot?.cars.filter(
+            (c) =>
+              checkpoint?.carIds.includes(c.id) || c.crossingId === crossingId
+          ) ?? [],
+      })
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/crossings/:crossingId/retry" }),
+    async (_, env, { crossingId }) => {
+      const ports = dispatcherPorts(env),
+        loaded = await ports.store.crossing(crossingId!)
+      if (!loaded) return notFound("Unknown Crossing")
+      if (loaded.value.state.status !== "blocked")
+        throw new DispatchError(409, "Crossing is not blocked")
+      if (!loaded.value.retryRequested)
+        await ports.store.commit(
+          loaded.networkId,
+          [
+            {
+              kind: "crossing",
+              crossing: { ...loaded.value, retryRequested: true },
+              version: loaded.version,
+            },
+          ],
+          []
+        )
+      const active = (await ports.store.crossingAttempts(crossingId!)).find(
+        (a) => a.status === "cleared" || a.status === "prepared"
+      )
+      if (active?.result) await ports.retryIntegration(active.input.id)
+      const train = (await ports.store.trains(loaded.networkId)).find(
+        (t) => t.value.lineId === loaded.value.lineId
+      )
+      if (train) await ports.notifyTrainCommand(train.value.id)
+      return json({ ok: true })
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/settings/models" }),
+    async (_, env) =>
+      json(await dispatcherPorts(env).store.generalModelSettings()),
+  ],
+  [
+    "PUT",
+    new URLPattern({ pathname: "/api/settings/models" }),
+    async (request, env) => {
+      const settings = await parse(request, modelSettingsSchema)
+      const { store, now } = dispatcherPorts(env)
+      return json(await store.setGeneralModelSettings(settings, now()))
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/settings/models" }),
+    async (_, env, { networkId }) => {
+      const { store } = dispatcherPorts(env)
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      return json(await store.networkModelSettings(networkId!))
+    },
+  ],
+  [
+    "PUT",
+    new URLPattern({ pathname: "/api/networks/:networkId/settings/models" }),
+    async (request, env, { networkId }) => {
+      const { override } = await parse(
+        request,
+        setNetworkModelSettingsRequestSchema
+      )
+      const { store, now } = dispatcherPorts(env)
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      return json(
+        await store.setNetworkModelSettings(networkId!, override, now())
+      )
+    },
+  ],
   [
     "POST",
     new URLPattern({ pathname: "/api/networks/:networkId/preview" }),
@@ -111,7 +239,11 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     }),
     async (_, env, { networkId, conflictId }) =>
       json(
-        await dispatchTechnician(technicianPorts(env), networkId!, conflictId!),
+        await dispatchTechnician(
+          technicianPorts(env, await networkModels(env, networkId!)),
+          networkId!,
+          conflictId!
+        ),
         202
       ),
   ],
@@ -122,7 +254,11 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     }),
     async (_, env, { networkId, repairId }) =>
       json(
-        await approveTechnician(technicianPorts(env), networkId!, repairId!),
+        await approveTechnician(
+          technicianPorts(env, await networkModels(env, networkId!)),
+          networkId!,
+          repairId!
+        ),
         202
       ),
   ],
@@ -154,7 +290,11 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     async (request, env, { networkId }) => {
       const body = await parse(request, createDispatchPlanRequestSchema)
       return json(
-        await proposeDispatchPlan(dispatchPlanningPorts(env), networkId!, body),
+        await proposeDispatchPlan(
+          dispatchPlanningPorts(env, await networkModels(env, networkId!)),
+          networkId!,
+          body
+        ),
         202
       )
     },
@@ -167,7 +307,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     async (_, env, { networkId, planId }) =>
       json(
         await launchPlannedLines(
-          dispatchPlanningPorts(env),
+          dispatchPlanningPorts(env, await networkModels(env, networkId!)),
           networkId!,
           planId!
         ),
@@ -180,7 +320,11 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       pathname: "/api/networks/:networkId/plans/:planId/retry",
     }),
     async (_, env, { networkId, planId }) => {
-      await retryDispatchPlan(dispatchPlanningPorts(env), networkId!, planId!)
+      await retryDispatchPlan(
+        dispatchPlanningPorts(env, await networkModels(env, networkId!)),
+        networkId!,
+        planId!
+      )
       return new Response(null, { status: 202 })
     },
   ],
@@ -214,7 +358,56 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   [
     "GET",
     new URLPattern({ pathname: "/api/networks" }),
-    async (_, env) => json(await dispatcherPorts(env).store.networks()),
+    async (_, env) => json(await dispatcherPorts(env).store.networkListings()),
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/summary" }),
+    async (_, env, { networkId }) => {
+      const [listing] = await dispatcherPorts(env).store.networkListings(
+        networkId!
+      )
+      return listing ? json(listing) : notFound("Unknown network")
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/repository" }),
+    async (request, env, { networkId }) => {
+      const { store, repositories } = dispatcherPorts(env)
+      const network = await store.network(networkId!)
+      if (!network) return notFound("Unknown network")
+      const requested = new URL(request.url).searchParams.get("commit")
+      const overview = await repositories.readOverview(
+        network.terminusRepoId,
+        requested ?? network.terminusCommit
+      )
+      return commitAddressed(overview, requested !== null)
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/repository/file" }),
+    async (request, env, { networkId }) => {
+      const { store, repositories } = dispatcherPorts(env)
+      const network = await store.network(networkId!)
+      if (!network) return notFound("Unknown network")
+      const query = repositoryFileQuerySchema.safeParse(
+        Object.fromEntries(new URL(request.url).searchParams)
+      )
+      if (!query.success)
+        return error(
+          400,
+          "`commit` and `path` are required",
+          query.error.issues
+        )
+      const file = await repositories.readFile(
+        network.terminusRepoId,
+        query.data.commit,
+        query.data.path
+      )
+      return file ? commitAddressed(file, true) : notFound("No such file")
+    },
   ],
   [
     "POST",
@@ -343,6 +536,17 @@ async function parse<T extends z.ZodType>(
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status })
+}
+
+/** A commit's contents never change, so a read pinned to one may be cached. */
+function commitAddressed(body: unknown, pinned: boolean): Response {
+  return Response.json(body, {
+    headers: {
+      "cache-control": pinned
+        ? "private, max-age=86400, immutable"
+        : "no-store",
+    },
+  })
 }
 
 function error(status: number, message: string, details?: unknown): Response {

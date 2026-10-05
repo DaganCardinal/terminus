@@ -402,7 +402,7 @@ If the Train's latest commit has moved since the Station was forked (for example
 
 ## Integrating a Train into Terminus
 
-Integration into Terminus is the one place where a real merge happens, because Terminus may have moved since the Train was created. The Terminus integration Workflow performs the merge in a Sandbox owned by the orchestration layer.
+Terminus integration and configured Crossing pickups are the explicit merge boundaries. A Crossing merges an accepted source Station checkpoint into a stopped receiving Train without rerunning the Station. Terminus may have moved since the Train was created. The Terminus integration Workflow performs the merge in a Sandbox owned by the orchestration layer.
 
 **Use merge commits. Never rebase or squash.** Each Car references its accepted commit, and rebasing or squashing would rewrite those commit IDs and break every Car's provenance. If there are conflicts, the merge is not forced. The Train raises an issue, and the Dispatcher may dispatch a Technician.
 
@@ -1051,3 +1051,7 @@ Maintaining these boundaries is more important than the exact folder structure o
 ### Unloading policy and approval ownership
 
 Dispatcher-owned `train_unload_policies` records in D1 hold each Train's effective unload mode, the planning recommendation, and any approval of an exact accepted Train commit. They are permissions, not a second copy of Train lifecycle state. The Train Workflow evaluates the domain gate and alone records a `held` approval wait or its release. The review yard is the UI projection of that reason; Siding remains terminal abandonment. An unapproved Train is excluded from clearance eligibility. D1 atomically checks permission when reserving clearance and closes policy edits while that reservation is active. Integration still validates and promotes an exact merge candidate against current Terminus; approval does not authorize a changed Train or bypass checks.
+
+## Crossing integration boundary
+
+Crossings are first-class, one-way pickup visits in ordered Line routes. Source Stations retain one implementation owner and a frozen acceptance checkpoint. Cars copied onto receiving Trains preserve their origin and commit identities; compatibility review and merged-candidate evidence are recorded separately. The shared Integration Workflow reserves one target repository, prepares and validates an isolated candidate, and promotes the exact reviewed commit. Only the receiving Train Workflow records pickup completion and changes that Train's state. Terminus remains the sole canonical project state. See README and AGENTS.md for configuration, failure handling, and demonstration instructions.

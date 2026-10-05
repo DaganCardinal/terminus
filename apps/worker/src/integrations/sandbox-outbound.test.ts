@@ -5,13 +5,14 @@ const env = {
   AI_GATEWAY_ACCOUNT_ID: "account",
   AI_GATEWAY_ID: "gateway",
   AI_GATEWAY_TOKEN: "worker-secret",
-  STATION_AGENT_MODEL: "@cf/zai-org/glm-5.3-flash",
 }
+const model = "@cf/zai-org/glm-5.3-flash"
 const remote =
   "https://account.artifacts.cloudflare.net/git/default/station.git"
 const network = {
   repositories: [{ remote, token: "station-token", scope: "write" as const }],
   allowModel: true,
+  model,
 }
 
 afterEach(() => vi.restoreAllMocks())
@@ -33,7 +34,7 @@ describe("Sandbox outbound capabilities", () => {
           {
             method: "POST",
             body: JSON.stringify({
-              model: env.STATION_AGENT_MODEL,
+              model,
               messages: [{ role: "user", content: "private-prompt" }],
             }),
           }
@@ -64,7 +65,7 @@ describe("Sandbox outbound capabilities", () => {
           authorization: "Bearer placeholder",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ model: env.STATION_AGENT_MODEL, messages: [] }),
+        body: JSON.stringify({ model, messages: [] }),
       }
     )
     expect((await outboundRequest(request, env, network, send)).status).toBe(
@@ -75,7 +76,7 @@ describe("Sandbox outbound capabilities", () => {
     expect(forwarded.headers.get("cf-aig-gateway-id")).toBe("gateway")
     expect(forwarded.redirect).toBe("manual")
     expect(await forwarded.json()).toMatchObject({
-      model: env.STATION_AGENT_MODEL,
+      model,
       reasoning_effort: "low",
     })
   })
@@ -130,7 +131,7 @@ describe("Sandbox outbound capabilities", () => {
     expect(send).toHaveBeenCalledTimes(1)
   })
   it("limits Technician access to its configured model, writable workspace and read-only Train", async () => {
-    const roleEnv = { ...env, TECHNICIAN_MODEL: "@cf/test/technician" }
+    const technicianModel = "@cf/test/technician"
     const repairRemote = remote.replace("station.git", "repair.git")
     const trainRemote = remote.replace("station.git", "train.git")
     const repairNetwork = {
@@ -147,39 +148,32 @@ describe("Sandbox outbound capabilities", () => {
         },
       ],
       allowModel: true,
-      modelRole: "technician" as const,
+      model: technicianModel,
     }
     const send = vi.fn<typeof fetch>(async () => new Response("ok"))
-    const request = (model: string) =>
+    const request = (id: string) =>
       new Request(
         "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
-        { method: "POST", body: JSON.stringify({ model }) }
+        { method: "POST", body: JSON.stringify({ model: id }) }
       )
     expect(
       (
         await outboundRequest(
-          request(roleEnv.TECHNICIAN_MODEL),
-          roleEnv,
+          request(technicianModel),
+          env,
           repairNetwork,
           send
         )
       ).status
     ).toBe(200)
     expect(
-      (
-        await outboundRequest(
-          request(env.STATION_AGENT_MODEL),
-          roleEnv,
-          repairNetwork,
-          send
-        )
-      ).status
+      (await outboundRequest(request(model), env, repairNetwork, send)).status
     ).toBe(403)
     expect(
       (
         await outboundRequest(
           new Request(`${repairRemote}/git-receive-pack`, { method: "POST" }),
-          roleEnv,
+          env,
           repairNetwork,
           send
         )
@@ -193,7 +187,7 @@ describe("Sandbox outbound capabilities", () => {
         (
           await outboundRequest(
             new Request(url, { method: "POST" }),
-            roleEnv,
+            env,
             repairNetwork,
             send
           )
@@ -203,7 +197,7 @@ describe("Sandbox outbound capabilities", () => {
       (
         await outboundRequest(
           new Request(`${trainRemote}/git-upload-pack`, { method: "POST" }),
-          roleEnv,
+          env,
           repairNetwork,
           send
         )

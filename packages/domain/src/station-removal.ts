@@ -10,6 +10,7 @@ export interface StationRemovalInput {
   /** All network Stations, including cross-Line dependents. */
   stations: Station[]
   reason: string
+  crossings?: import("./crossing").Crossing[]
 }
 
 /** Cancellation preserves topology and history; it never satisfies a dependency. */
@@ -25,6 +26,15 @@ export function removeStation(
     !line.stationIds.includes(station.id)
   )
     return reject("invalid_input", "Station and Train must belong to this Line")
+  if (
+    input.crossings?.some(
+      (c) => c.sourceStationId === station.id && c.state.status !== "complete"
+    )
+  )
+    return reject(
+      "invalid_input",
+      "Unfinished Crossings depend on this Station"
+    )
   const dependents = stations.filter(
     (other) =>
       other.id !== station.id &&

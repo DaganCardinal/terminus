@@ -364,3 +364,25 @@ describe("durable Dispatcher planning and launch", () => {
     ).toHaveLength(1)
   })
 })
+
+it("launches planned Crossing references atomically across Lines", async () => {
+  const f = await fixture(),
+    p = proposal()
+  p.lines[1]!.route = [
+    { kind: "crossing", source: { kind: "planned", stationKey: "a-tests" } },
+    { kind: "station", key: "b" },
+  ]
+  f.ports.planner.plan = vi.fn(async () => p)
+  await prepareDispatchPlan(f.ports, f.plan.id)
+  await launchPlannedLines(f.ports, f.network.id, f.plan.id)
+  await layDispatchLines(f.ports, f.plan.id)
+  const snapshot = (await f.ports.store.snapshot(f.network.id))!
+  expect(snapshot.crossings).toHaveLength(1)
+  const c = snapshot.crossings![0]!,
+    source = snapshot.stations.find((s) => s.id === c.sourceStationId)!
+  expect(source.name).toBe("A tests")
+  expect(source.lineId).not.toBe(c.lineId)
+  expect(
+    snapshot.lines.find((l) => l.id === c.lineId)?.stops?.[0]
+  ).toMatchObject({ kind: "crossing", stationId: source.id })
+})

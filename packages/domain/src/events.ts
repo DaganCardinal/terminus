@@ -18,6 +18,44 @@ import type { ReviewFeedback } from "./station"
  */
 export type DomainEvent =
   | {
+      type: "crossing.created"
+      crossingId: string
+      trainId: string
+      stationId: string
+    }
+  | {
+      type: "crossing.approaching"
+      crossingId: string
+      trainId: string
+      stationId: string
+    }
+  | {
+      type: "crossing.started"
+      crossingId: string
+      trainId: string
+      stationId: string
+    }
+  | {
+      type: "crossing.blocked"
+      crossingId: string
+      trainId: string
+      stationId: string
+    }
+  | {
+      type: "crossing.retried"
+      crossingId: string
+      trainId: string
+      stationId: string
+    }
+  | {
+      type: "crossing.completed"
+      crossingId: string
+      trainId: string
+      stationId: string
+      mergeCommit: string
+      carIds: string[]
+    }
+  | {
       type: "train.unload_mode_changed"
       trainId: TrainId
       mode: import("./unload-policy").UnloadMode

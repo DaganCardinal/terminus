@@ -35,6 +35,7 @@ import {
 } from "./detail-parts"
 import { describeEvent, describeLocation, namesFor } from "./describe"
 import { UnloadModeSelect } from "./unload-mode-select"
+import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
 
 type Run = (command: () => Promise<unknown>) => Promise<void>
@@ -536,6 +537,13 @@ export function TrainDetails({
                 <p>{train.state.reason}</p>
               </Section>
             )}
+            <Crossings
+              snapshot={snapshot}
+              lineId={line.id}
+              run={run}
+              pending={pending}
+              onSource={(lineId, stationId) => onSelect({ lineId, stationId })}
+            />
             <Section title="Cars">
               <Consist color={color} cars={cars} stations={stations} />
               {cars.map((car) => (
@@ -544,6 +552,30 @@ export function TrainDetails({
                     {car.position}. {name(car.stationId)}
                   </summary>
                   <p>{car.manifest.goal}</p>
+                  {car.originCarId && (
+                    <p>
+                      Picked up from{" "}
+                      <button
+                        className="dmsg-link"
+                        onClick={() => {
+                          const origin = snapshot.cars.find(
+                            (c) => c.id === car.originCarId
+                          )
+                          const t = snapshot.trains.find(
+                            (t) => t.train.id === origin?.trainId
+                          )
+                          if (t)
+                            onSelect({
+                              lineId: t.train.lineId,
+                              stationId: car.stationId,
+                            })
+                        }}
+                      >
+                        original Car {car.originCarId}
+                      </button>
+                      . Original acceptance and review are preserved.
+                    </p>
+                  )}
                   <p>
                     <strong>Conductor review:</strong> {car.review.summary}
                   </p>
@@ -574,18 +606,38 @@ export function TrainDetails({
       })}
       <Section title="Station order">
         <ol className="station-order">
-          {stations.map((s, i) => (
-            <li key={s.id}>
-              <button
-                onClick={() => onSelect({ lineId: line.id, stationId: s.id })}
-              >
-                <span>{i + 1}</span>
-                {s.name}
-                <StatusBadge status={s.state.status} />
-                <ArrowUpRight size={14} />
-              </button>
-            </li>
-          ))}
+          {(
+            line.stops ??
+            line.stationIds.map((stationId) => ({
+              kind: "station" as const,
+              stationId,
+            }))
+          ).map((stop, i) => {
+            const s = snapshot.stations.find((s) => s.id === stop.stationId)
+            if (!s) return null
+            return (
+              <li key={s.id}>
+                <button
+                  onClick={() =>
+                    onSelect({ lineId: s.lineId, stationId: s.id })
+                  }
+                >
+                  <span>{i + 1}</span>
+                  {stop.kind === "crossing" ? `Pickup at ${s.name}` : s.name}
+                  <StatusBadge
+                    status={
+                      stop.kind === "crossing"
+                        ? (snapshot.crossings?.find(
+                            (c) => c.id === stop.crossingId
+                          )?.state.status ?? "waiting")
+                        : s.state.status
+                    }
+                  />
+                  <ArrowUpRight size={14} />
+                </button>
+              </li>
+            )
+          })}
           <li className="destination-row">
             <span>T</span> Terminus
           </li>

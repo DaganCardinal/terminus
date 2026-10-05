@@ -1,4 +1,6 @@
 import {
+  resolveLineRoute,
+  validateCrossingTopology,
   assessDispatchProposal,
   hasNewCollisionForecasts,
   createLine,
@@ -22,6 +24,7 @@ import {
   type DispatchPlanningPorts,
 } from "../agents/dispatch-planning"
 import type { Write } from "../integrations/network-store"
+import { orderedPlans } from "../agents/dispatcher"
 import { applied } from "./transitions"
 
 export async function prepareDispatchPlan(
@@ -94,29 +97,36 @@ export async function layDispatchLines(
   const events: DomainEvent[] = []
   const lineIds: string[] = []
   const trainIds: string[] = []
+  const allIds = new Map(
+    plan.state.proposal.lines.flatMap((l, index) =>
+      l.stations.map((s, i) => [s.key, `${plan.id}-l${index}-s${i}`] as const)
+    )
+  )
   for (const [index, planned] of plan.state.proposal.lines.entries()) {
     const lineId = `${plan.id}-l${index}`
     const trainId = `${plan.id}-t${index}`
-    const ids = new Map(
-      planned.stations.map((s, i) => [s.key, `${plan.id}-l${index}-s${i}`])
-    )
+    const ids = allIds
     const created = applied(
       createLine({
         id: lineId,
         networkId: plan.networkId,
         name: planned.name,
-        stations: planned.stations.map((station) => ({
-          id: ids.get(station.key)!,
-          name: station.name,
-          manifest: {
-            ...station.manifest,
-            dependencies: station.manifest.dependencies.map((key) =>
-              ids.get(key)!
-            ),
-          },
-        })),
+        stations: orderedPlans(planned.stations, planned.route).map(
+          (station) => ({
+            id: ids.get(station.key)!,
+            name: station.name,
+            manifest: {
+              ...station.manifest,
+              dependencies: station.manifest.dependencies.map(
+                (key) => ids.get(key) ?? key
+              ),
+            },
+          })
+        ),
       })
     )
+    const resolved = resolveLineRoute(created.value.line, planned.route, ids)
+    created.value.line = resolved.line
     const repo = await ports.repositories.fork({
       sourceRepoId: snapshot.network.terminusRepoId,
       commit: plan.terminusCommit,
@@ -131,6 +141,11 @@ export async function layDispatchLines(
       })
     )
     writes.push(
+      ...resolved.crossings.map((crossing): Write => ({
+        kind: "crossing",
+        crossing,
+        version: null,
+      })),
       { kind: "line", line: created.value.line },
       ...created.value.stations.map((station): Write => ({
         kind: "station",
@@ -151,7 +166,16 @@ export async function layDispatchLines(
         version: null,
       }
     )
-    events.push(...created.events, ...train.events)
+    events.push(
+      ...created.events,
+      ...train.events,
+      ...resolved.crossings.map((c) => ({
+        type: "crossing.created" as const,
+        crossingId: c.id,
+        trainId,
+        stationId: c.sourceStationId,
+      }))
+    )
     lineIds.push(lineId)
     trainIds.push(trainId)
   }
@@ -161,6 +185,26 @@ export async function layDispatchLines(
       lineIds,
       trainIds
     )
+  )
+  const topology = validateCrossingTopology(
+    [
+      ...snapshot.lines,
+      ...writes
+        .filter((w): w is Extract<Write, { kind: "line" }> => w.kind === "line")
+        .map((w) => w.line),
+    ],
+    [
+      ...snapshot.stations,
+      ...writes
+        .filter(
+          (w): w is Extract<Write, { kind: "station" }> => w.kind === "station"
+        )
+        .map((w) => w.station),
+    ]
+  )
+  if (topology.length) throw new Error(topology.join("; "))
+  writes.sort(
+    (a, b) => (a.kind === "crossing" ? 1 : 0) - (b.kind === "crossing" ? 1 : 0)
   )
   // Version and canonical-baseline triggers abort the WHOLE batch on a stale launch.
   writes.unshift({

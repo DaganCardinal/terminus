@@ -189,6 +189,7 @@ export interface RouteLayout {
   trackEnd: number
   stations: Point[]
   stationDistances: number[]
+  stopStationIds?: string[]
   depot: Point
 }
 
@@ -197,6 +198,8 @@ export interface RouteLayout {
  * crosses another and none needs a short jog. A middle row runs straight in.
  * Extra Stations widen the canvas; extra Lines make it taller. */
 export function layoutNetwork(lines: Line[]) {
+  if (lines.some((l) => l.stops?.some((s) => s.kind === "crossing")))
+    return layoutCrossings(lines)
   let availableShapes: RouteShape[] = [...routeShapes]
   const shapes = lines.map((line) => {
     if (availableShapes.length === 0) availableShapes = [...routeShapes]
@@ -370,7 +373,7 @@ const secondsBetween = (from: string, to: number) =>
 /** Track distances of the run toward a Station: where it starts, where a
  * Train waits for the work, and the Station itself. */
 function leg(route: RouteLayout, toward: string) {
-  const index = route.line.stationIds.indexOf(toward)
+  const index = (route.stopStationIds ?? route.line.stationIds).indexOf(toward)
   const to = route.stationDistances[index] ?? 0
   const from = index > 0 ? route.stationDistances[index - 1]! : 0
   return { from, to, wait: Math.max((from + to) / 2, to - WAIT_GAP) }
@@ -384,7 +387,9 @@ function transitDistance(route: RouteLayout, toward: string, seconds: number) {
 /** Where a Train is drawn while it is not moving. */
 function restingDistance(state: TrainState, route: RouteLayout): number | null {
   const station = (id: string) =>
-    route.stationDistances[route.line.stationIds.indexOf(id)] ?? 0
+    route.stationDistances[
+      (route.stopStationIds ?? route.line.stationIds).indexOf(id)
+    ] ?? 0
   switch (state.status) {
     case "unloaded":
     case "siding":
@@ -451,4 +456,99 @@ export function trainDistance(
 /** True while a Train's target position changes over time. */
 export function isMoving(motion: TrainMotion): boolean {
   return motion.state.status === "in_transit"
+}
+
+/** Shared Station vertices provide deterministic topology; positions never decide movement. */
+function layoutCrossings(lines: Line[]) {
+  const stops = (line: Line) =>
+    line.stops ??
+    line.stationIds.map((stationId) => ({
+      kind: "station" as const,
+      stationId,
+    }))
+  const predecessors = new Map<string, Set<string>>()
+  const owners = new Map<string, number>()
+  for (const [row, line] of lines.entries()) {
+    let previous = `depot:${line.id}`
+    for (const stop of stops(line)) {
+      if (stop.kind === "station") owners.set(stop.stationId, row)
+      const before = predecessors.get(stop.stationId) ?? new Set<string>()
+      before.add(previous)
+      predecessors.set(stop.stationId, before)
+      previous = stop.stationId
+    }
+  }
+  const ranks = new Map<string, number>(),
+    visiting = new Set<string>()
+  const rank = (id: string): number => {
+    if (ranks.has(id)) return ranks.get(id)!
+    if (visiting.has(id)) return 1 // Invalid topology is rejected by the backend.
+    visiting.add(id)
+    const value = Math.max(
+      0,
+      ...[...(predecessors.get(id) ?? [])].map((p) => rank(p) + 1)
+    )
+    visiting.delete(id)
+    ranks.set(id, value)
+    return value
+  }
+  for (const id of predecessors.keys()) rank(id)
+  const maxRank = Math.max(1, ...ranks.values())
+  const hub = {
+    x: MARGIN_X + (maxRank + 1) * STATION_SPACING,
+    y: LABEL_ROOM + (Math.max(0, lines.length - 1) * ROW_CLEARANCE) / 2,
+  }
+  const rowY = (row: number) => LABEL_ROOM + row * ROW_CLEARANCE
+  const routes: RouteLayout[] = lines.map((line, index) => {
+    const ids = stops(line).map((s) => s.stationId)
+    const depot = { x: MARGIN_X - STATION_SPACING / 2, y: rowY(index) }
+    const stations = ids.map((id) => ({
+      x: MARGIN_X + (ranks.get(id) ?? 1) * STATION_SPACING,
+      y: rowY(owners.get(id) ?? index),
+    }))
+    const points: Point[] = [depot]
+    const stationVertices: number[] = []
+    for (const target of stations) {
+      const prev = points.at(-1)!
+      if (prev.y !== target.y)
+        points.push(
+          { x: (prev.x + target.x) / 2, y: prev.y },
+          { x: (prev.x + target.x) / 2, y: target.y }
+        )
+      points.push(target)
+      stationVertices.push(points.length - 1)
+    }
+    const end = points.at(-1)!
+    points.push(
+      { x: hub.x - STATION_SPACING / 2, y: end.y },
+      { x: hub.x - STATION_SPACING / 2, y: hub.y },
+      { x: hub.x, y: hub.y }
+    )
+    const track = roundTrack(points, (i) =>
+      stationVertices.includes(i) ? 0 : CORNER_RADIUS
+    )
+    const distances = stationVertices.map((v) => track.vertexDistance[v] ?? 0)
+    return {
+      line,
+      number: index + 1,
+      color: lineColor(line, index),
+      shape: "direct",
+      side: "left",
+      points,
+      stationTrack: stations,
+      track,
+      trackEnd: track.length,
+      stations,
+      stationDistances: distances,
+      stopStationIds: ids,
+      depot,
+    }
+  })
+  return {
+    width: hub.x + HUB_LABEL_HALF_WIDTH + PADDING,
+    height: rowY(Math.max(0, lines.length - 1)) + TRAIN_ROOM + PADDING,
+    hub,
+    hubHalfHeight: HUB_RADIUS,
+    routes,
+  }
 }

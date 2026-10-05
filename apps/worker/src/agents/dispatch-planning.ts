@@ -27,6 +27,9 @@ export interface DispatchPlanningPorts extends Pick<
 /** Existing Lines still own unintegrated code, even when individual Stations are complete. */
 export function planningContext(snapshot: NetworkSnapshot): PlanningContext {
   return {
+    lines: snapshot.lines,
+    stations: snapshot.stations,
+    crossings: snapshot.crossings ?? [],
     validationNames: (snapshot.network.validation ?? defaultValidation).map(
       (check) => check.name
     ),

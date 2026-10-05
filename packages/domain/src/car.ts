@@ -37,4 +37,8 @@ export interface Car {
   review: ConductorReview
   /** ISO 8601 timestamp. */
   acceptedAt: string
+  originCarId?: string
+  sourceCarId?: string
+  crossingId?: string
+  copiedAt?: string
 }

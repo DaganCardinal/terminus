@@ -9,7 +9,7 @@ import type { NetworkSnapshot } from "@terminus/protocol"
 import { ArrowLeft, CirclePause, Radio } from "lucide-react"
 import { Button } from "@terminus/ui/components/button"
 import { Drawer } from "@/components/drawer"
-import { ThemeToggle } from "@/components/theme-toggle"
+import { AppMenu } from "@/components/app-menu"
 import { MOBILE_QUERY, useMediaQuery } from "@/components/use-media-query"
 import {
   NetworkMap,
@@ -17,6 +17,7 @@ import {
   type MapSelection,
 } from "@/map/network-map"
 import { api } from "@/state/api"
+import { routes } from "@/state/route"
 import { useNetwork } from "@/state/use-network"
 import {
   ActivityFeed,
@@ -167,8 +168,8 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
       <div className="map-topfade" aria-hidden="true" />
 
       <header ref={header} className="network-header">
-        <a className="back-link glass" href="#/">
-          <ArrowLeft size={14} /> All networks
+        <a className="back-link glass" href={routes.overview(networkId)}>
+          <ArrowLeft size={14} /> Overview
         </a>
         <div className="network-title">
           <h1>{snapshot.network.name}</h1>
@@ -236,7 +237,10 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           <Radio size={16} />
           <span className="overlay-button-label">Activity</span>
         </button>
-        <ThemeToggle className="overlay-button glass" />
+        <AppMenu
+          variant="map"
+          settingsHref={routes.networkSettings(networkId)}
+        />
       </div>
 
       {(error || commandError) && (

@@ -84,3 +84,55 @@ function manifest(
     ...fields,
   }
 }
+
+/** Explicit Crossing demo: Footer checkpoint, independent theme work, then shared App wiring. */
+export async function layCrossingDemoLines(
+  ports: DispatcherPorts,
+  networkId: NetworkId
+): Promise<void> {
+  const source = await layLine(ports, networkId, {
+    ...redLine,
+    name: "Footer Line",
+    stations: [
+      ...redLine.stations,
+      {
+        key: "footer-style",
+        name: "Footer styling",
+        manifest: manifest({
+          goal: "Add a standalone footer stylesheet without changing the exported Footer contract or App.",
+          expectedAreas: ["src/components/footer.css"],
+        }),
+      },
+    ],
+  })
+  await layLine(ports, networkId, {
+    ...blueLine,
+    unloadMode: "auto",
+    name: "Application Line",
+    stations: [
+      ...blueLine.stations,
+      {
+        key: "app-wiring",
+        name: "App integration",
+        manifest: manifest({
+          goal: "Wire the accepted Footer and local ThemeToggle into App. Add focused App tests. The Footer implementation and tests arrive through the Crossing.",
+          scope: ["App integration using the inherited Footer"],
+          expectedAreas: ["src/App.tsx", "src/App.test.tsx"],
+          contracts: [
+            { name: "Footer", kind: "symbol", change: "depends_on" },
+            { name: "ThemeToggle", kind: "symbol", change: "depends_on" },
+          ],
+          dependencies: ["theme-toggle"],
+        }),
+      },
+    ],
+    route: [
+      { kind: "station", key: "theme-toggle" },
+      {
+        kind: "crossing",
+        source: { kind: "existing", stationId: source.stations[1]!.id },
+      },
+      { kind: "station", key: "app-wiring" },
+    ],
+  })
+}

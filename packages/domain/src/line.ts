@@ -10,6 +10,8 @@ export interface Line {
   name: string
   /** Stations in travel order, depot first. */
   stationIds: StationId[]
+  /** Authoritative route when present; stationIds is its compatibility projection. */
+  stops?: import("./crossing").LineStop[]
 }
 
 export interface StationPlan {
@@ -60,6 +62,10 @@ export function createLine(
     networkId: input.networkId,
     name: input.name,
     stationIds: input.stations.map((plan) => plan.id),
+    stops: input.stations.map((plan) => ({
+      kind: "station",
+      stationId: plan.id,
+    })),
   }
   const stations: Station[] = input.stations.map((plan) => ({
     id: plan.id,
@@ -85,7 +91,11 @@ export function lineStations(
 ): Station[] | null {
   const byId = new Map(stations.map((station) => [station.id, station]))
   const ordered: Station[] = []
-  for (const id of line.stationIds) {
+  const ids =
+    line.stops
+      ?.filter((stop) => stop.kind === "station")
+      .map((stop) => stop.stationId) ?? line.stationIds
+  for (const id of ids) {
     const station = byId.get(id)
     if (!station) return null
     ordered.push(station)

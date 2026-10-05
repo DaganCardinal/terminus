@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { plannedStopSchema } from "./crossing"
 import {
   concreteRepositoryChangeSchema,
   repositoryChangeSchema,
@@ -58,6 +59,7 @@ export const dispatchProposalSchema = z
             key,
             name: z.string().trim().min(1).max(120),
             unloadRecommendation: unloadRecommendationSchema,
+            route: z.array(plannedStopSchema).min(1).max(24).optional(),
             stations: z
               .array(
                 z

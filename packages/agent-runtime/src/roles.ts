@@ -8,7 +8,11 @@ import type {
   StationWorkspace,
   WorkManifest,
 } from "@terminus/domain"
-import type { ConductorVerdict, ValidationCommand } from "@terminus/protocol"
+import type {
+  CrossingReviewInput,
+  ConductorVerdict,
+  ValidationCommand,
+} from "@terminus/protocol"
 
 export interface StationRunInput {
   stationId: StationId
@@ -47,4 +51,7 @@ export interface ReviewInput {
 export interface Conductor {
   readonly model: string
   review(input: ReviewInput): Promise<ConductorVerdict>
+  reviewCrossing?(input: CrossingReviewInput): Promise<ConductorVerdict>
 }
+
+export type { CrossingReviewInput } from "@terminus/protocol"

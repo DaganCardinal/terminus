@@ -42,6 +42,7 @@ export class SandboxStationRunner implements StationRunner {
 
   constructor(
     env: Env,
+    model: string,
     repositories: Pick<ArtifactsRepositoryHost, "access" | "revoke">,
     store: NetworkStore,
     sandbox?: (runId: string) => StationSandbox
@@ -53,7 +54,7 @@ export class SandboxStationRunner implements StationRunner {
       sandbox ?? ((runId) => env.SANDBOX.getByName(`station-${runId}`))
     this.config = {
       harness: "opencode@1.18.32",
-      model: env.STATION_AGENT_MODEL,
+      model,
     }
   }
 
@@ -125,6 +126,7 @@ export class SandboxStationRunner implements StationRunner {
           { remote: access.remote, token: access.token, scope: "write" },
         ],
         allowModel: true,
+        model: this.config.model,
       })
       // Each run starts from durable Station history, including prior revisions.
       const repository = new StationGit(

@@ -26,6 +26,7 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
   private readonly sandboxFactory: (id: string) => StationSandbox
   constructor(
     env: Env,
+    model: string,
     repositories: Pick<ArtifactsRepositoryHost, "access" | "revoke">,
     sandboxFactory?: (id: string) => StationSandbox
   ) {
@@ -33,7 +34,7 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
     this.repositories = repositories
     this.sandboxFactory =
       sandboxFactory ?? ((id) => env.SANDBOX.getByName(`technician-${id}`))
-    this.config = { harness: "opencode@1.18.32", model: env.TECHNICIAN_MODEL }
+    this.config = { harness: "opencode@1.18.32", model }
   }
   async run(
     repair: TechnicianRepair,
@@ -63,7 +64,7 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
           scope: access.scope,
         })),
         allowModel: true,
-        modelRole: "technician",
+        model: this.config.model,
       })
       const workspace: GitWorkspace = {
         run: async (command, cwd, env) =>

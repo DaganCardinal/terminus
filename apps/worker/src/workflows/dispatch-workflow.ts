@@ -3,7 +3,7 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers"
-import { dispatchPlanningPorts } from "../agents/ports"
+import { dispatchPlanningPorts, planModels } from "../agents/ports"
 import {
   dispatchPlanState,
   layDispatchLines,
@@ -27,8 +27,11 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
   DispatchWorkflowParams
 > {
   async run(event: WorkflowEvent<DispatchWorkflowParams>, step: WorkflowStep) {
-    const ports = dispatchPlanningPorts(this.env)
     const { planId } = event.payload
+    const models = await step.do("resolve role models", { retries }, () =>
+      planModels(this.env, planId)
+    )
+    const ports = dispatchPlanningPorts(this.env, models)
     let phase: "planning" | "launching" = "planning"
     try {
       // Model output is saved before this step returns; retries reuse a saved proposal.

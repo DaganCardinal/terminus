@@ -1,9 +1,10 @@
 import {
+  crossingReviewInputSchema,
   conductorVerdictSchema,
   type ConductorVerdict,
 } from "@terminus/protocol"
 import { unmetRequiredChecks } from "@terminus/domain"
-import type { Conductor, ReviewInput } from "./roles"
+import type { Conductor, ReviewInput, CrossingReviewInput } from "./roles"
 import type { ModelProvider } from "./model-provider"
 import { conductorPrompt } from "./conductor-prompt"
 
@@ -15,6 +16,18 @@ export class ModelConductor implements Conductor {
     this.provider = provider
   }
 
+  async reviewCrossing(input: CrossingReviewInput): Promise<ConductorVerdict> {
+    input = crossingReviewInputSchema.parse(input)
+    return conductorVerdictSchema.parse(
+      await this.provider.generateStructured({
+        role: "conductor",
+        system:
+          conductorPrompt +
+          "\nReview a one-way Crossing compatibility handoff. The source Cars were already accepted. Evaluate their combined effect on receiving Cars/contracts and downstream work using the actual merge diff and independent checks. Do not request source implementation revisions. An empty diff explicitly means the source checkpoint is already included and may be accepted with passing checks. Return or escalate incompatible work; no self-implementation.",
+        input,
+      })
+    )
+  }
   async review(input: ReviewInput): Promise<ConductorVerdict> {
     const missing = unmetRequiredChecks(
       input.proposal.evidence,

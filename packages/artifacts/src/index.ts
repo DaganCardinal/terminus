@@ -5,5 +5,6 @@ export * from "./git"
 export * from "./station-git"
 export * from "./integration-git"
 export * from "./preview-git"
+export * from "./repository-browse"
 
 export * from "./technician-git"

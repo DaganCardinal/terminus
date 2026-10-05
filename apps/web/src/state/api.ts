@@ -1,4 +1,5 @@
 import {
+  crossingDetailsSchema,
   technicianRepairSchema,
   eventsResponseSchema,
   dispatchPlanSchema,
@@ -10,14 +11,67 @@ import {
   type ApiError,
   type EventsResponse,
   type Hold,
+  type NetworkListing,
   type NetworkSnapshot,
   type NetworkSummary,
+  repositoryFileSchema,
+  repositoryOverviewSchema,
+  generalModelSettingsSchema,
+  networkModelSettingsSchema,
+  type ModelSettings,
   type PlaceHoldRequest,
 } from "@terminus/protocol"
 
 /** Application-level commands and queries against the Worker API. */
 export const api = {
-  networks: () => request<NetworkSummary[]>("/networks"),
+  sideTrain: (id: string, reason: string) =>
+    request(`/trains/${encodeURIComponent(id)}/siding`, {
+      method: "POST",
+      body: { reason },
+    }),
+  crossing: async (id: string) =>
+    crossingDetailsSchema.parse(
+      await request(`/crossings/${encodeURIComponent(id)}`)
+    ),
+  retryCrossing: (id: string) =>
+    request(`/crossings/${encodeURIComponent(id)}/retry`, { method: "POST" }),
+  networks: () => request<NetworkListing[]>("/networks"),
+  networkSummary: (networkId: string) =>
+    request<NetworkListing>(`/networks/${networkId}/summary`),
+  /** Pinned to a commit, so the browser may cache it. */
+  repositoryOverview: async (networkId: string, commit: string) =>
+    repositoryOverviewSchema.parse(
+      await request(
+        `/networks/${networkId}/repository?commit=${encodeURIComponent(commit)}`
+      )
+    ),
+  repositoryFile: async (networkId: string, commit: string, path: string) =>
+    repositoryFileSchema.parse(
+      await request(
+        `/networks/${networkId}/repository/file?${new URLSearchParams({ commit, path })}`
+      )
+    ),
+  modelSettings: async () =>
+    generalModelSettingsSchema.parse(await request("/settings/models")),
+  saveModelSettings: async (settings: ModelSettings) =>
+    generalModelSettingsSchema.parse(
+      await request("/settings/models", { method: "PUT", body: settings })
+    ),
+  networkModelSettings: async (networkId: string) =>
+    networkModelSettingsSchema.parse(
+      await request(`/networks/${networkId}/settings/models`)
+    ),
+  /** Null removes the network's override so it follows General again. */
+  saveNetworkModelSettings: async (
+    networkId: string,
+    override: ModelSettings | null
+  ) =>
+    networkModelSettingsSchema.parse(
+      await request(`/networks/${networkId}/settings/models`, {
+        method: "PUT",
+        body: { override },
+      })
+    ),
   createNetwork: (name: string, sourceUrl?: string) =>
     request<NetworkSummary>("/networks", {
       method: "POST",
@@ -29,6 +83,8 @@ export const api = {
     eventsResponseSchema.parse(
       await request(`/networks/${networkId}/events?after=${after}`)
     ),
+  layCrossingDemoLines: (id: string) =>
+    request(`/networks/${id}/demo/crossings`, { method: "POST" }),
   layDemoLines: (networkId: string) =>
     request<void>(`/networks/${networkId}/demo`, { method: "POST" }),
   proposePlan: async (networkId: string, body: CreateDispatchPlanRequest) =>

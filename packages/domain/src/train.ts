@@ -20,18 +20,21 @@ export interface TrainInTransit {
 }
 
 export interface TrainApproaching {
+  crossingId?: string
   status: "approaching"
   from: TrainLocation
   toward: StationId
 }
 
 export interface TrainDocked {
+  crossingId?: string
   status: "docked"
   from: TrainLocation
   at: StationId
 }
 
 export interface TrainReviewing {
+  crossingId?: string
   status: "reviewing"
   from: TrainLocation
   at: StationId

@@ -2,6 +2,10 @@ import {
   eventsResponseSchema,
   integrationAttemptSchema,
   dispatchPlanSchema,
+  repositoryFileSchema,
+  repositoryOverviewSchema,
+  type NetworkListing,
+  type NetworkModelSettings,
   type NetworkSnapshot,
   type NetworkSummary,
 } from "@terminus/protocol"
@@ -385,4 +389,176 @@ describe("API validation", () => {
     })
     expect(await snapshot(network.id)).toEqual(before)
   })
+})
+
+describe("model settings", () => {
+  const put = (path: string, body: unknown) =>
+    api(path, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+  it("saves General settings and lets a network override or follow them", async () => {
+    const network = await createNetwork()
+    expect(await (await api("/settings/models")).json()).toMatchObject({
+      settings: { preset: "extra_light" },
+    })
+
+    expect((await put("/settings/models", { preset: "light" })).status).toBe(
+      200
+    )
+    const path = `/networks/${network.id}/settings/models`
+    expect(await (await api(path)).json()).toEqual({
+      override: null,
+      general: { preset: "light" },
+      updatedAt: null,
+    })
+
+    const models = {
+      dispatcher: "@cf/zai-org/glm-5.3",
+      conductor: "@cf/zai-org/glm-5.3",
+      stationAgent: "@cf/moonshotai/kimi-k2.7-code",
+      technician: "@cf/zai-org/glm-5.3-flash",
+      engineer: "@cf/cloudflare/clef",
+    }
+    const saved = await put(path, { override: { preset: "custom", models } })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toMatchObject({
+      override: { preset: "custom", models },
+      general: { preset: "light" },
+    })
+
+    const cleared: NetworkModelSettings = await (
+      await put(path, { override: null })
+    ).json()
+    expect(cleared.override).toBeNull()
+    await put("/settings/models", { preset: "extra_light" })
+  })
+
+  it("refuses an Engineer that is not Clef, unknown presets, and unknown networks", async () => {
+    const network = await createNetwork()
+    const path = `/networks/${network.id}/settings/models`
+    expect(
+      (
+        await put(path, {
+          override: {
+            preset: "custom",
+            models: {
+              dispatcher: "@cf/zai-org/glm-5.3",
+              conductor: "@cf/zai-org/glm-5.3",
+              stationAgent: "@cf/zai-org/glm-5.3",
+              technician: "@cf/zai-org/glm-5.3",
+              engineer: "@cf/zai-org/glm-5.3",
+            },
+          },
+        })
+      ).status
+    ).toBe(400)
+    expect((await put("/settings/models", { preset: "heavy" })).status).toBe(
+      400
+    )
+    expect((await api("/networks/missing/settings/models")).status).toBe(404)
+    expect(
+      (
+        await put("/networks/missing/settings/models", {
+          override: { preset: "light" },
+        })
+      ).status
+    ).toBe(404)
+  })
+})
+
+describe("browsing networks", () => {
+  it("lists networks with their upstream source and activity", async () => {
+    const response = await post("/networks", {
+      name: "Imported",
+      sourceUrl: "https://github.com/owner/project.git",
+    })
+    const network: NetworkSummary = await response.json()
+    expect(network.sourceUrl).toBe("https://github.com/owner/project.git")
+
+    const listings: NetworkListing[] = await (await api("/networks")).json()
+    const listing = listings.find((entry) => entry.id === network.id)
+    expect(listing).toMatchObject({
+      sourceUrl: "https://github.com/owner/project.git",
+      activity: {
+        lines: 0,
+        trains: {},
+        activeLines: [],
+        stations: { total: 0, complete: 0 },
+        cars: 0,
+        openConflicts: 0,
+        plansAwaitingLaunch: 0,
+        lastPromotion: null,
+        promotions: 0,
+      },
+    })
+    expect(await (await api(`/networks/${network.id}/summary`)).json()).toEqual(
+      listing
+    )
+    expect((await api("/networks/network-missing/summary")).status).toBe(404)
+  })
+
+  it("reads Terminus documents and files, caching only commit-pinned reads", async () => {
+    const network = await createNetwork()
+    const latest = await api(`/networks/${network.id}/repository`)
+    expect(latest.headers.get("cache-control")).toBe("no-store")
+    const overview = repositoryOverviewSchema.parse(await latest.json())
+    expect(overview.commit).toBe(network.terminusCommit)
+    expect(overview.documents[0]?.path).toBe("README.md")
+
+    const pinned = await api(
+      `/networks/${network.id}/repository/file?commit=${network.terminusCommit}&path=src/App.tsx`
+    )
+    expect(pinned.headers.get("cache-control")).toContain("immutable")
+    expect(repositoryFileSchema.parse(await pinned.json())).toMatchObject({
+      path: "src/App.tsx",
+      content: expect.stringContaining("export function App"),
+    })
+    expect(
+      (
+        await api(
+          `/networks/${network.id}/repository/file?commit=${network.terminusCommit}&path=missing.ts`
+        )
+      ).status
+    ).toBe(404)
+    expect(
+      (await api(`/networks/${network.id}/repository/file?path=src/App.tsx`))
+        .status
+    ).toBe(400)
+  })
+})
+
+it("runs the Crossing demo through real Workflows and unloads both Trains", async () => {
+  const network = await createNetwork()
+  expect((await post(`/networks/${network.id}/demo/crossings`)).status).toBe(
+    200
+  )
+  await waitUntil(async () => {
+    const s = await snapshot(network.id)
+    return (
+      s.trains.length === 2 &&
+      s.trains.every((t) => t.train.state.status === "unloaded")
+    )
+  }, 25000)
+  const s = await snapshot(network.id),
+    c = s.crossings![0]!
+  expect(c.state.status).toBe("complete")
+  expect(c.checkpoint?.carIds).toHaveLength(2)
+  const copied = s.cars.filter((car) => car.crossingId === c.id)
+  expect(copied).toHaveLength(2)
+  expect(
+    s.cars.filter(
+      (car) =>
+        car.trainId ===
+        s.trains.find((t) => t.train.lineId === c.lineId)!.train.id
+    )
+  ).toHaveLength(4)
+  const detail = await api(`/crossings/${c.id}`)
+  expect(detail.status).toBe(200)
+  const body: { attempts: { review: { verdict: string } }[] } =
+    await detail.json()
+  expect(body.attempts[0]!.review.verdict).toBe("accept")
+  expect((await post(`/crossings/${c.id}/retry`)).status).toBe(409)
 })

@@ -74,10 +74,10 @@ function fixture(exitCode = 0) {
   const runner = new SandboxTechnicianRunner(
     {
       ...env,
-      TECHNICIAN_MODEL: model,
       AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
       AI_GATEWAY_TOKEN: "worker-only-secret",
     },
+    model,
     repositories,
     () => sandbox
   )
@@ -92,7 +92,7 @@ describe("Sandbox Technician capabilities and completion", () => {
       ["train-repo", "read"],
     ])
     expect(f.sandbox.configure).toHaveBeenCalledWith(
-      expect.objectContaining({ allowModel: true, modelRole: "technician" })
+      expect.objectContaining({ allowModel: true, model })
     )
     expect(f.sandbox.run).toHaveBeenCalledWith(
       expect.arrayContaining([

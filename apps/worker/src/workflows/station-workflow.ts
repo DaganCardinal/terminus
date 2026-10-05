@@ -6,7 +6,7 @@ import {
   type WorkflowStep,
   type WorkflowStepConfig,
 } from "cloudflare:workers"
-import { stationPorts } from "../agents/ports"
+import { stationPorts, trainModels } from "../agents/ports"
 import { TRAIN_EVENTS } from "./events"
 import { prepareStation, runStationAgent } from "./station-operations"
 import type { StationRunParams } from "./train-operations"
@@ -21,8 +21,11 @@ const stepConfig: WorkflowStepConfig = {
  */
 export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
   async run(event: WorkflowEvent<StationRunParams>, step: WorkflowStep) {
-    const ports = stationPorts(this.env)
     const params = event.payload
+    const models = await step.do("resolve role models", stepConfig, () =>
+      trainModels(this.env, params.trainId)
+    )
+    const ports = stationPorts(this.env, models)
 
     let result: StationRunResult
     try {

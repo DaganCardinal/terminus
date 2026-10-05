@@ -12,6 +12,7 @@ import type {
 import { z } from "zod"
 import { unloadModeSchema } from "./unload"
 import { domainEventSchema, holdSchema } from "./events"
+import { plannedStopSchema } from "./crossing"
 import { workManifestSchema } from "./manifest"
 import { validationCommandsSchema, type ValidationCommand } from "./execution"
 
@@ -43,6 +44,7 @@ export const layLineRequestSchema = z.object({
   unloadMode: unloadModeSchema.optional(),
   name: z.string().trim().min(1),
   stations: z.array(stationPlanRequestSchema).min(1),
+  route: z.array(plannedStopSchema).min(1).optional(),
 })
 
 export type LayLineRequest = z.infer<typeof layLineRequestSchema>
@@ -85,6 +87,32 @@ export interface NetworkSummary {
   terminusCommit: string
   createdAt: string
   validation?: ValidationCommand[]
+  /** The public Git URL Terminus was imported from, when there was one. */
+  sourceUrl?: string
+}
+
+/** What the networks list shows about each network, without its full snapshot. */
+export interface NetworkActivity {
+  lines: number
+  /** Trains per status. Statuses with no Trains are omitted. */
+  trains: Partial<Record<TrainState["status"], number>>
+  /** Lines whose Train has not yet unloaded or been sided, in creation order.
+   * `index` is the Line's position among all of the network's Lines. */
+  activeLines: { name: string; index: number; status: TrainState["status"] }[]
+  stations: { total: number; complete: number }
+  cars: number
+  openConflicts: number
+  /** Dispatch plans reviewed and waiting for an explicit launch. */
+  plansAwaitingLaunch: number
+  /** When the network last recorded an event (ISO 8601). */
+  lastEventAt: string | null
+  /** The most recent Train promoted into Terminus. */
+  lastPromotion: { at: string; commit: string } | null
+  promotions: number
+}
+
+export interface NetworkListing extends NetworkSummary {
+  activity: NetworkActivity
 }
 
 export interface TrainView {
@@ -110,6 +138,7 @@ export interface NetworkSnapshot {
   repairs?: import("@terminus/domain").TechnicianRepair[]
   unloadPolicies?: import("@terminus/domain").TrainUnloadPolicy[]
   plans: DispatchPlan[]
+  crossings?: import("@terminus/domain").Crossing[]
   lastSeq: number
 }
 

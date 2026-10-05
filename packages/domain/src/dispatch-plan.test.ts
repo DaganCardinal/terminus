@@ -211,3 +211,28 @@ describe("deterministic plan assessment", () => {
     ).toEqual([])
   })
 })
+
+it("permits a cross-Line contract consumer only after pickup includes its provider", () => {
+  const p = proposal()
+  const consumer = p.lines[0]!.stations.pop()!
+  consumer.manifest.contracts = [
+    { name: "Footer", kind: "symbol", change: "depends_on" },
+  ]
+  p.lines[0]!.stations[0]!.manifest.contracts = [
+    { name: "Footer", kind: "symbol", change: "adds" },
+  ]
+  p.lines.push({
+    key: "blue",
+    name: "Blue Line",
+    stations: [consumer],
+    route: [
+      { kind: "crossing", source: { kind: "planned", stationKey: "footer" } },
+      { kind: "station", key: consumer.key },
+    ],
+  })
+  expect(assessDispatchProposal(p, context).errors).toEqual([])
+  p.lines[1]!.route!.reverse()
+  expect(assessDispatchProposal(p, context).errors.join(" ")).toMatch(
+    /code dependency/
+  )
+})

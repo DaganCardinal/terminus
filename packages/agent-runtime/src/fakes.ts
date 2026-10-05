@@ -67,6 +67,13 @@ export class FakeConductor implements Conductor {
     this.#returns = options.returns ?? 0
   }
 
+  async reviewCrossing(): Promise<ConductorVerdict> {
+    return {
+      verdict: "accept",
+      summary: "Checkpoint is compatible with receiving Train",
+      findings: [],
+    }
+  }
   async review(input: ReviewInput): Promise<ConductorVerdict> {
     if (input.revisionCount < this.#returns) {
       return {

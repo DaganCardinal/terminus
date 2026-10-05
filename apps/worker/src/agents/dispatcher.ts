@@ -1,5 +1,7 @@
 import type { RepositoryHost } from "@terminus/artifacts"
 import {
+  resolveLineRoute,
+  validateCrossingTopology,
   conflictsForRepair,
   repairMatches,
   createLine,
@@ -98,6 +100,7 @@ export async function createNetwork(
     terminusCommit: terminus.headCommit,
     createdAt: ports.now(),
     validation: request.validation ?? defaultValidation,
+    ...(request.sourceUrl ? { sourceUrl: request.sourceUrl } : {}),
   }
   await ports.store.commit(id, [{ kind: "network", network }], [])
   return network
@@ -148,7 +151,7 @@ export async function layLine(
     id: ports.newId("line"),
     networkId,
     name: request.name,
-    stations: request.stations.map((plan) => ({
+    stations: orderedPlans(request.stations, request.route).map((plan) => ({
       id: ids.get(plan.key)!,
       name: plan.name,
       manifest: {
@@ -160,7 +163,20 @@ export async function layLine(
     })),
   })
   if (!created.ok) throw new DispatchError(400, created.error.message)
-  const { line, stations } = created.value
+  const stations = created.value.stations
+  let resolved: ReturnType<typeof resolveLineRoute>
+  try {
+    resolved = resolveLineRoute(created.value.line, request.route, ids)
+  } catch (error) {
+    throw new DispatchError(400, String(error))
+  }
+  const { line, crossings } = resolved
+  const snapshot = await ports.store.snapshot(networkId)
+  const errors = validateCrossingTopology(
+    [...(snapshot?.lines ?? []), line],
+    [...(snapshot?.stations ?? []), ...stations]
+  )
+  if (errors.length) throw new DispatchError(400, errors.join("; "))
 
   const trainId = ports.newId("train")
   const repo = await ports.repositories.fork({
@@ -184,6 +200,11 @@ export async function layLine(
       station,
       version: null,
     })),
+    ...crossings.map((crossing): Write => ({
+      kind: "crossing",
+      crossing,
+      version: null,
+    })),
     { kind: "train", train: train.value, version: null },
     {
       kind: "unload_policy",
@@ -194,6 +215,12 @@ export async function layLine(
   try {
     await ports.store.commit(networkId, writes, [
       ...created.events,
+      ...crossings.map((c) => ({
+        type: "crossing.created" as const,
+        crossingId: c.id,
+        trainId,
+        stationId: c.sourceStationId,
+      })),
       ...train.events,
     ])
   } catch (error) {
@@ -282,6 +309,19 @@ export async function removeStation(
     (t) => t.value.lineId === station.value.lineId
   )
   if (!line || !train) throw new DispatchError(404, "Station has no Line Train")
+  const trains = await ports.store.trains(networkId)
+  if (
+    (await ports.store.crossings(networkId)).some(
+      (c) =>
+        c.sourceStationId === stationId &&
+        c.state.status !== "complete" &&
+        trains.some(
+          (t) =>
+            t.value.lineId === c.lineId && t.value.state.status !== "siding"
+        )
+    )
+  )
+    throw new DispatchError(409, "Unfinished Crossings depend on this Station")
   const requested = requestStationRemoval({
     train: train.value,
     line,
@@ -428,4 +468,22 @@ export async function retryIntegration(
       "Attempt already finished; clear a blocked Train to start a new attempt"
     )
   await ports.retryIntegration(integrationId)
+}
+
+export function orderedPlans<T extends { key: string }>(
+  stations: T[],
+  route: import("@terminus/domain").PlannedStop[] | undefined
+): T[] {
+  if (!route) return stations
+  const keys = route.filter((s) => s.kind === "station").map((s) => s.key)
+  if (
+    keys.length !== stations.length ||
+    new Set(keys).size !== keys.length ||
+    stations.some((s) => !keys.includes(s.key))
+  )
+    throw new DispatchError(
+      400,
+      "Route must include each owned Station exactly once"
+    )
+  return keys.map((key) => stations.find((s) => s.key === key)!)
 }

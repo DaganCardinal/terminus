@@ -10,12 +10,8 @@ export async function outboundRequest(
   request: Request,
   env: Pick<
     Env,
-    | "AI_GATEWAY_ACCOUNT_ID"
-    | "AI_GATEWAY_ID"
-    | "AI_GATEWAY_TOKEN"
-    | "STATION_AGENT_MODEL"
-  > &
-    Partial<Pick<Env, "TECHNICIAN_MODEL">>,
+    "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_ID" | "AI_GATEWAY_TOKEN"
+  >,
   network: SandboxNetwork,
   send: typeof fetch = fetch
 ): Promise<Response> {
@@ -55,6 +51,7 @@ export async function outboundRequest(
   const modelPath = `/client/v4/accounts/${env.AI_GATEWAY_ACCOUNT_ID}/ai/v1/chat/completions`
   if (
     network.allowModel &&
+    network.model &&
     url.hostname === "api.cloudflare.com" &&
     url.pathname === modelPath &&
     request.method === "POST" &&
@@ -68,10 +65,7 @@ export async function outboundRequest(
     )
     if (
       !payload.success ||
-      payload.data.model !==
-        (network.modelRole === "technician"
-          ? env.TECHNICIAN_MODEL
-          : env.STATION_AGENT_MODEL) ||
+      payload.data.model !== network.model ||
       !env.AI_GATEWAY_TOKEN
     )
       return denied()

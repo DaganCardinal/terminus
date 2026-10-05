@@ -54,6 +54,18 @@ export function describeEvent(
   name: (id: string) => string
 ): string {
   switch (event.type) {
+    case "crossing.created":
+      return `Crossing laid at ${name(event.stationId)}`
+    case "crossing.approaching":
+      return `${name(event.trainId)} approaching pickup at ${name(event.stationId)}`
+    case "crossing.started":
+      return `${name(event.trainId)} checking pickup at ${name(event.stationId)}`
+    case "crossing.blocked":
+      return `${name(event.trainId)} blocked at Crossing ${name(event.stationId)}`
+    case "crossing.retried":
+      return `${name(event.trainId)} retrying pickup at ${name(event.stationId)}`
+    case "crossing.completed":
+      return `${name(event.trainId)} picked up ${event.carIds.length} Cars at ${name(event.stationId)}`
     case "dispatcher.unload_mode_changed":
       return `Unload selection updated for planned Line ${event.lineKey}`
     case "train.unload_mode_changed":

@@ -258,8 +258,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 4px 12px;
 }
-.network-header h1,
-.network-list-page h1 {
+.network-header h1 {
   font-size: 22px;
   line-height: 1.25;
   font-weight: 650;
@@ -412,6 +411,90 @@ button:disabled {
 }
 .holds-popover li + li {
   border-top: 1px solid var(--border);
+}
+
+/* App menu: appearance and settings, on the map and in the app bar */
+.app-menu {
+  position: relative;
+}
+.app-menu-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: 220px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--glass-shadow);
+}
+.app-menu-popover.glass {
+  background: var(--glass-strong);
+}
+.app-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 8px 0 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  color: var(--foreground);
+}
+.app-menu-item span {
+  flex: 1;
+}
+.app-menu-item svg {
+  color: var(--muted-foreground);
+}
+.app-menu-item:hover,
+.app-menu-item:focus-visible {
+  outline: none;
+  background: var(--muted);
+}
+.app-menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+}
+/* A switch, so the checked state reads as position as well as colour. */
+.app-menu-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--foreground) 18%, transparent);
+  transition: background 0.15s;
+}
+.app-menu-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 25%);
+  transition: transform 0.15s;
+}
+[aria-checked="true"] > .app-menu-switch {
+  background: var(--brand);
+}
+[aria-checked="true"] > .app-menu-switch::after {
+  transform: translateX(12px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-menu-switch,
+  .app-menu-switch::after {
+    transition: none;
+  }
 }
 
 /* ── Map canvas ──────────────────────────────────────── */
@@ -2334,19 +2417,6 @@ button.pstop-row:focus-visible {
 }
 
 /* ── Network list ────────────────────────────────────── */
-.network-list-page {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 40px 24px 64px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-.network-list-page > header p {
-  margin-top: 4px;
-  font-size: 13px;
-  color: var(--muted-foreground);
-}
 .create-network {
   padding: 20px;
   display: grid;
@@ -2387,47 +2457,6 @@ button.pstop-row:focus-visible {
   grid-column: 1 / -1;
   font-size: 13px;
   color: var(--danger-ink);
-}
-.network-index {
-  overflow: hidden;
-}
-.network-index ul {
-  padding: 0 8px 8px;
-}
-.network-index a {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  font-size: 13px;
-}
-.network-index a:hover {
-  background: var(--muted);
-}
-.network-index a span:first-child {
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.network-index time {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-.network-index-empty {
-  padding: 40px 24px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--muted-foreground);
-}
-.network-index-empty strong {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--foreground);
 }
 
 /* ── Responsive ──────────────────────────────────────── */

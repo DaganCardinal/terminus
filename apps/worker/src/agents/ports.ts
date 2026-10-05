@@ -9,6 +9,7 @@ import {
   ModelDispatcher,
   FakeDispatchPlanner,
   type Conductor,
+  type ModelProvider,
   type StationRunner,
 } from "@terminus/agent-runtime"
 import {
@@ -16,6 +17,7 @@ import {
   FakeRepositoryHost,
   type RepositoryHost,
 } from "@terminus/artifacts"
+import type { ModelRole } from "@terminus/protocol"
 import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { SandboxTechnicianRunner } from "../integrations/technician-runner"
@@ -43,11 +45,61 @@ import type { DispatchPlanningPorts } from "./dispatch-planning"
 /** A role configured as `fake` runs without a model. */
 const FAKE = "fake"
 
-export function trainPorts(env: Env): TrainPorts {
+/**
+ * The model each role runs with for one piece of work. Resolved from the
+ * network's settings when the work starts, or from what the work recorded.
+ */
+export type ConfiguredModels = Record<ModelRole, string>
+
+/** The models a network's settings choose right now. */
+export function networkModels(
+  env: Env,
+  networkId: string
+): Promise<ConfiguredModels> {
+  return new NetworkStore(env.DB).roleModels(networkId)
+}
+
+/** A Train and its Station runs use the models of the Train's network. */
+export async function trainModels(
+  env: Env,
+  trainId: string
+): Promise<ConfiguredModels> {
+  const train = await new NetworkStore(env.DB).train(trainId)
+  if (!train) throw new Error(`Unknown Train ${trainId}`)
+  return networkModels(env, train.networkId)
+}
+
+/** A plan keeps the Dispatcher model it was proposed with. */
+export async function planModels(
+  env: Env,
+  planId: string
+): Promise<ConfiguredModels> {
+  const plan = await new NetworkStore(env.DB).dispatchPlan(planId)
+  if (!plan) throw new Error(`Unknown plan ${planId}`)
+  return {
+    ...(await networkModels(env, plan.networkId)),
+    dispatcher: plan.value.model,
+  }
+}
+
+/** A repair keeps the Technician model it was dispatched with. */
+export async function repairModels(
+  env: Env,
+  repairId: string
+): Promise<ConfiguredModels> {
+  const repair = await new NetworkStore(env.DB).repair(repairId)
+  if (!repair) throw new Error(`Unknown repair ${repairId}`)
+  return {
+    ...(await networkModels(env, repair.networkId)),
+    technician: repair.value.agent.model,
+  }
+}
+
+export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
   return {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
-    conductor: conductor(env),
+    conductor: conductor(env, models.conductor),
     stationMaxRetries: stationMaxRetries(env),
     startStationRun: (params) => startStationRun(env, params),
     startIntegration: async (integrationId) => {
@@ -71,6 +123,8 @@ export function trainPorts(env: Env): TrainPorts {
 export function integrationPorts(env: Env): IntegrationPorts {
   const host = repositories(env)
   return {
+    conductorForTrain: async (id, model) =>
+      conductor(env, model ?? (await trainModels(env, id)).conductor),
     store: new NetworkStore(env.DB),
     repositories: host,
     validator:
@@ -80,7 +134,10 @@ export function integrationPorts(env: Env): IntegrationPorts {
   }
 }
 
-export function technicianPorts(env: Env): TechnicianPorts {
+export function technicianPorts(
+  env: Env,
+  models: ConfiguredModels
+): TechnicianPorts {
   const host = repositories(env)
   return {
     ...dispatcherPorts(env),
@@ -88,17 +145,18 @@ export function technicianPorts(env: Env): TechnicianPorts {
     runner:
       env.TECHNICIAN_MODEL === FAKE
         ? new FakeTechnicianRunner()
-        : new SandboxTechnicianRunner(env, realRepositories(env)),
+        : new SandboxTechnicianRunner(
+            env,
+            models.technician,
+            realRepositories(env)
+          ),
     reviewer:
       env.CONDUCTOR_MODEL === FAKE
         ? new FakeRepairConductor()
-        : new ModelRepairConductor(env.CONDUCTOR_MODEL, {
-            generateStructured: (request) =>
-              new GatewayModelProvider(
-                gatewayConfig(env, env.CONDUCTOR_MODEL),
-                gatewayTransport
-              ).generateStructured(request),
-          }),
+        : new ModelRepairConductor(
+            models.conductor,
+            gatewayProvider(env, models.conductor)
+          ),
     validator:
       host instanceof ArtifactsRepositoryHost
         ? new SandboxIntegrationValidator(host, new SandboxWorkspaces(env))
@@ -118,11 +176,11 @@ export function technicianPorts(env: Env): TechnicianPorts {
   }
 }
 
-export function stationPorts(env: Env): StationPorts {
+export function stationPorts(env: Env, models: ConfiguredModels): StationPorts {
   return {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
-    runner: stationRunner(env),
+    runner: stationRunner(env, models.stationAgent),
   }
 }
 
@@ -178,19 +236,19 @@ export function dispatcherPorts(env: Env): DispatcherPorts {
   }
 }
 
-export function dispatchPlanningPorts(env: Env): DispatchPlanningPorts {
+export function dispatchPlanningPorts(
+  env: Env,
+  models: ConfiguredModels
+): DispatchPlanningPorts {
   return {
     ...dispatcherPorts(env),
     planner:
       env.DISPATCHER_MODEL === FAKE
         ? new FakeDispatchPlanner()
-        : new ModelDispatcher(env.DISPATCHER_MODEL, {
-            generateStructured: (request) =>
-              new GatewayModelProvider(
-                gatewayConfig(env, env.DISPATCHER_MODEL),
-                gatewayTransport
-              ).generateStructured(request),
-          }),
+        : new ModelDispatcher(
+            models.dispatcher,
+            gatewayProvider(env, models.dispatcher)
+          ),
     startPlanning: async (planId) => {
       try {
         await env.DISPATCH_WORKFLOW.create({ id: planId, params: { planId } })
@@ -243,12 +301,13 @@ function repositories(env: Env): RepositoryHost {
   return realRepositories(env)
 }
 
-function stationRunner(env: Env): StationRunner {
+function stationRunner(env: Env, model: string): StationRunner {
   if (env.STATION_AGENT_MODEL !== FAKE) {
     if (env.REPOSITORY_MODE !== "artifacts")
       throw new Error("Real Station Agents require Artifacts repositories")
     return new SandboxStationRunner(
       env,
+      model,
       realRepositories(env),
       new NetworkStore(env.DB)
     )
@@ -259,17 +318,21 @@ function stationRunner(env: Env): StationRunner {
   })
 }
 
-function conductor(env: Env): Conductor {
-  if (env.CONDUCTOR_MODEL !== FAKE) {
-    return new ModelConductor(env.CONDUCTOR_MODEL, {
-      generateStructured: (request) =>
-        new GatewayModelProvider(
-          gatewayConfig(env, env.CONDUCTOR_MODEL),
-          gatewayTransport
-        ).generateStructured(request),
-    })
-  }
+function conductor(env: Env, model: string): Conductor {
+  if (env.CONDUCTOR_MODEL !== FAKE)
+    return new ModelConductor(model, gatewayProvider(env, model))
   return new FakeConductor({ returns: Number(env.FAKE_CONDUCTOR_RETURNS) })
+}
+
+/** Gateway configuration is checked per call, so a misconfigured role fails its own step. */
+function gatewayProvider(env: Env, model: string): ModelProvider {
+  return {
+    generateStructured: (request) =>
+      new GatewayModelProvider(
+        gatewayConfig(env, model),
+        gatewayTransport
+      ).generateStructured(request),
+  }
 }
 
 async function startStationRun(

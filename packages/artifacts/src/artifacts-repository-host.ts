@@ -7,6 +7,7 @@ import type {
 import { TechnicianGit, type RepairGitInput } from "./technician-git"
 import { prepareMerge } from "./integration-git"
 import { readRepositoryContext } from "./repository-context"
+import { readRepositoryFile, readRepositoryOverview } from "./repository-browse"
 import {
   git,
   remoteHead,
@@ -106,6 +107,26 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
+  async readOverview(repoId: string, commit: string) {
+    return this.withWorkspace(
+      [{ repoId, scope: "read" }],
+      async (workspace, [access]) => {
+        if (!access) throw new Error("Missing repository access")
+        return readRepositoryOverview(workspace, access, commit)
+      }
+    )
+  }
+
+  async readFile(repoId: string, commit: string, path: string) {
+    return this.withWorkspace(
+      [{ repoId, scope: "read" }],
+      async (workspace, [access]) => {
+        if (!access) throw new Error("Missing repository access")
+        return readRepositoryFile(workspace, access, commit, path)
+      }
+    )
+  }
+
   async prepareIntegration(
     input: IntegrationMergeInput
   ): Promise<IntegrationMerge> {
@@ -145,6 +166,51 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
+  async inspectIntegration(input: IntegrationMergeInput, candidate: RepoRef) {
+    return this.withWorkspace(
+      [{ repoId: candidate.repoId, scope: "read" }],
+      async (workspace, [access]) => {
+        if (!access) throw new Error("Missing candidate access")
+        const directory = "/workspace/inspect"
+        await git(workspace, [
+          "clone",
+          "--no-checkout",
+          "--",
+          access.remote,
+          directory,
+        ])
+        const diff = await git(
+          workspace,
+          [
+            "diff",
+            "--binary",
+            "--full-index",
+            input.terminusCommit,
+            candidate.headCommit,
+          ],
+          directory
+        )
+        const changedPaths = (
+          await git(
+            workspace,
+            [
+              "diff",
+              "--name-only",
+              "-z",
+              input.terminusCommit,
+              candidate.headCommit,
+            ],
+            directory
+          )
+        )
+          .split("\0")
+          .filter(Boolean)
+        if (diff.length > 200000)
+          throw new Error("Crossing diff exceeds review limit")
+        return { diff, changedPaths }
+      }
+    )
+  }
   async createTerminus(input: {
     name: string
     sourceUrl?: string

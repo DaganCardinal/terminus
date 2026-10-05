@@ -329,8 +329,33 @@ export function NetworkMap({
               fill="url(#map-dots)"
               onClick={onClear}
             />
+            {/* Paint every track before shared Station markers. */}
+            {routes.map(({ line, track, color }) => (
+              <g
+                key={`track-${line.id}`}
+                className={
+                  selection !== null && selection.lineId !== line.id
+                    ? "route route-dimmed"
+                    : "route"
+                }
+              >
+                <path
+                  d={track.d}
+                  className="track-casing"
+                  strokeWidth={TRACK_WIDTH + 6}
+                />
+                <path
+                  d={track.d}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={TRACK_WIDTH}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              </g>
+            ))}
             {routes.map((route) => {
-              const { line, color, track, depot, side } = route
+              const { line, color, depot, side } = route
               const views = snapshot.trains.filter(
                 ({ train }) => train.lineId === line.id
               )
@@ -346,19 +371,6 @@ export function NetworkMap({
                   key={line.id}
                   className={dimmed ? "route route-dimmed" : "route"}
                 >
-                  <path
-                    d={track.d}
-                    className="track-casing"
-                    strokeWidth={TRACK_WIDTH + 6}
-                  />
-                  <path
-                    d={track.d}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth={TRACK_WIDTH}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  />
                   <g
                     role="button"
                     tabIndex={0}
@@ -418,7 +430,12 @@ export function NetworkMap({
                   {line.stationIds.map((id, i) => {
                     const station = snapshot.stations.find((s) => s.id === id)
                     if (!station) return null
-                    const p = route.stations[i]!
+                    const p =
+                      route.stations[
+                        route.stopStationIds
+                          ? route.stopStationIds.indexOf(id)
+                          : i
+                      ]!
                     const status = station.state.status
                     const blocked = status === "blocked"
                     const working = ![
@@ -498,6 +515,23 @@ export function NetworkMap({
                           stroke={blocked ? "var(--map-danger)" : color}
                           strokeWidth="3"
                         />
+                        {(snapshot.crossings ?? []).some(
+                          (c) => c.sourceStationId === id
+                        ) && (
+                          <text
+                            x={p.x + 18}
+                            y={p.y + 32}
+                            className="station-state"
+                          >
+                            {(snapshot.crossings ?? [])
+                              .filter((c) => c.sourceStationId === id)
+                              .map(
+                                (c) =>
+                                  `→ ${snapshot.lines.find((l) => l.id === c.lineId)?.name ?? "Line"}: ${c.state.status}`
+                              )
+                              .join(" · ")}
+                          </text>
+                        )}
                         {status === "complete" && (
                           <path
                             d={`M${p.x - 3},${p.y} l2,2 l4,-4`}

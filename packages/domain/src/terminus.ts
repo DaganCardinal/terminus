@@ -1,3 +1,4 @@
+import { nextStop, type Crossing } from "./crossing"
 import type { Conflict } from "./conflict"
 import { openConflictsFor } from "./conflict"
 import { evaluateTerminusEntry, type GateContext } from "./engineer"
@@ -16,6 +17,7 @@ export function beginReturn(input: {
   train: Train
   line: Line
   stations: Station[]
+  crossings?: Crossing[]
 }): Transition<Train> {
   const { train, line } = input
   if (train.state.status !== "ready") {
@@ -39,6 +41,8 @@ export function beginReturn(input: {
       station.state.status !== "complete" &&
       station.state.status !== "cancelled"
   )
+  if (nextStop(line, ordered, input.crossings ?? [])?.kind === "crossing")
+    return reject("stations_remaining", "Train still has a Crossing ahead")
   if (remaining.length > 0) {
     return reject(
       "stations_remaining",

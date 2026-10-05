@@ -1,3 +1,4 @@
+import { nextStop, type Crossing } from "./crossing"
 import type { Car, ConductorReview } from "./car"
 import {
   evaluateDeparture,
@@ -27,6 +28,7 @@ export interface DepartInput {
   /** At least every Station on the Train's Line. */
   stations: Station[]
   context: DepartureContext
+  crossings?: Crossing[]
 }
 
 /**
@@ -51,6 +53,12 @@ export function depart(input: DepartInput): Transition<TrainAndStation> {
   if (!ordered) {
     return reject("invalid_input", `Missing Stations for Line ${line.id}`)
   }
+  const stop = nextStop(line, ordered, input.crossings ?? [])
+  if (stop?.kind === "crossing")
+    return reject(
+      "invalid_state",
+      "Train must pick up its next Crossing before departing toward owned work"
+    )
   const station = nextStation(ordered)
   if (!station) {
     return reject(
@@ -212,9 +220,20 @@ export function arrive(train: Train): Transition<Train> {
     )
   }
   const { from, toward } = train.state
-  return accept({ ...train, state: { status: "docked", from, at: toward } }, [
-    { type: "train.arrived", trainId: train.id, stationId: toward },
-  ])
+  return accept(
+    {
+      ...train,
+      state: {
+        status: "docked",
+        from,
+        at: toward,
+        ...(train.state.crossingId
+          ? { crossingId: train.state.crossingId }
+          : {}),
+      },
+    },
+    [{ type: "train.arrived", trainId: train.id, stationId: toward }]
+  )
 }
 
 export function startReview(

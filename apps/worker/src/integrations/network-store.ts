@@ -1,4 +1,6 @@
 import type {
+  Crossing,
+  StationCheckpoint,
   Car,
   Conflict,
   DomainEvent,
@@ -19,6 +21,7 @@ import type {
 } from "@terminus/domain"
 import {
   signalFor,
+  lineStops,
   integrateRepair,
   resolveConflict,
   rejectApprovedRepair,
@@ -26,6 +29,8 @@ import {
 import {
   technicianRepairSchema,
   trainUnloadPolicySchema,
+  crossingSchema,
+  checkpointSchema,
   conductorVerdictSchema,
   type ConductorVerdict,
   stationRunResultSchema,
@@ -36,6 +41,13 @@ import {
   integrationResultSchema,
   evidenceSchema,
   dispatchPlanSchema,
+  modelSettingsSchema,
+  effectiveRoleModels,
+  DEFAULT_MODEL_SETTINGS,
+  type GeneralModelSettings,
+  type ModelSettings,
+  type NetworkModelSettings,
+  type RoleModels,
   type IntegrationAttempt,
   type IntegrationInput,
   type IntegrationCandidate,
@@ -50,8 +62,13 @@ import { defaultValidation } from "./execution-config"
 import type {
   EventEnvelope,
   NetworkSnapshot,
+  NetworkActivity,
+  NetworkListing,
   NetworkSummary,
 } from "@terminus/protocol"
+
+const GENERAL_SCOPE = "general"
+const networkScope = (networkId: NetworkId) => `network:${networkId}`
 
 /** An entity with the version and network it was read with. */
 export interface Loaded<T> {
@@ -62,6 +79,9 @@ export interface Loaded<T> {
 
 /** A row write. `version` is the version read, or null to insert. */
 export type Write =
+  | { kind: "siding_consumed"; trainId: string }
+  | { kind: "crossing"; crossing: Crossing; version: number | null }
+  | { kind: "checkpoint"; checkpoint: StationCheckpoint }
   | { kind: "unload_policy"; policy: TrainUnloadPolicy; version: number | null }
   | {
       kind: "technician_repair"
@@ -102,6 +122,21 @@ interface NetworkRow {
   terminus_commit: string
   created_at: string
   validation: string
+  source_url: string | null
+}
+
+interface NetworkListingRow extends NetworkRow {
+  line_count: number
+  train_counts: string | null
+  active_lines: string | null
+  station_total: number
+  station_complete: number
+  car_count: number
+  open_conflicts: number
+  plans_ready: number
+  last_event_at: string | null
+  last_promotion: string | null
+  promotions: number
 }
 
 interface TrainRow extends RecordRow {
@@ -125,6 +160,105 @@ export class NetworkStore {
     this.#db = db
   }
 
+  async requestSiding(trainId: string, reason: string): Promise<boolean> {
+    await this.#db
+      .prepare(
+        `INSERT INTO train_siding_requests(id,reason) SELECT ?,? WHERE NOT EXISTS
+      (SELECT 1 FROM integration_attempts WHERE train_id=? AND status IN ('cleared','prepared'))
+      AND EXISTS (SELECT 1 FROM trains WHERE id=? AND
+        (status IN ('ready','held','blocked') OR (status='returning' AND json_extract(record,'$.state.phase')='awaiting_clearance')))
+      ON CONFLICT(id) DO NOTHING`
+      )
+      .bind(trainId, reason, trainId, trainId)
+      .run()
+    return (await this.sidingRequest(trainId)) !== null
+  }
+  async sidingRequest(trainId: string): Promise<string | null> {
+    const row = await this.#db
+      .prepare("SELECT reason FROM train_siding_requests WHERE id=?")
+      .bind(trainId)
+      .first<{ reason: string }>()
+    return row?.reason ?? null
+  }
+  async crossing(id: string): Promise<Loaded<Crossing> | null> {
+    const row = await this.#db
+      .prepare("SELECT record,version,network_id FROM crossings WHERE id=?")
+      .bind(id)
+      .first<VersionedRow>()
+    return row
+      ? {
+          ...loaded<Crossing>(row),
+          value: crossingSchema.parse(JSON.parse(row.record)),
+        }
+      : null
+  }
+  async crossings(networkId: string): Promise<Crossing[]> {
+    return (await this.#records<Crossing>("crossings", networkId)).map((c) =>
+      crossingSchema.parse(c)
+    )
+  }
+  async checkpoint(id: string): Promise<StationCheckpoint | null> {
+    const row = await this.#db
+      .prepare("SELECT record FROM station_checkpoints WHERE id=?")
+      .bind(id)
+      .first<RecordRow>()
+    return row ? checkpointSchema.parse(JSON.parse(row.record)) : null
+  }
+  async crossingAttempts(id: string): Promise<IntegrationAttempt[]> {
+    const { results } = await this.#db
+      .prepare(
+        "SELECT * FROM integration_attempts WHERE purpose='crossing' AND json_extract(input,'$.crossingId')=? ORDER BY rowid"
+      )
+      .bind(id)
+      .all<IntegrationRow>()
+    return results.map(toIntegration)
+  }
+  async recordIntegrationDiff(id: string, diff: string): Promise<void> {
+    await this.#db
+      .prepare(
+        "UPDATE integration_attempts SET diff=? WHERE id=? AND status='prepared' AND diff IS NULL"
+      )
+      .bind(diff, id)
+      .run()
+  }
+  async recordIntegrationReview(
+    id: string,
+    review: NonNullable<IntegrationAttempt["review"]>,
+    diff: string
+  ): Promise<void> {
+    await this.#db
+      .prepare(
+        "UPDATE integration_attempts SET review=?,diff=? WHERE id=? AND review IS NULL AND status='prepared'"
+      )
+      .bind(JSON.stringify(review), diff, id)
+      .run()
+  }
+  async claimCrossingIntegration(
+    input: IntegrationInput
+  ): Promise<IntegrationAttempt | null> {
+    const validated = integrationInputSchema.parse(input)
+    await this.#db
+      .prepare(
+        `INSERT INTO integration_attempts(id,network_id,train_id,status,input,created_at,purpose,target_repo_id)
+      SELECT ?,?,?,'cleared',?,?,'crossing',? WHERE NOT EXISTS
+      (SELECT 1 FROM integration_attempts WHERE target_repo_id=? AND status IN ('cleared','prepared'))
+      AND EXISTS(SELECT 1 FROM trains WHERE id=? AND json_extract(record,'$.headCommit')=? AND json_extract(record,'$.state.crossingId')=?)`
+      )
+      .bind(
+        input.id,
+        input.networkId,
+        input.trainId,
+        JSON.stringify(validated),
+        new Date().toISOString(),
+        input.terminusRepoId,
+        input.terminusRepoId,
+        input.trainId,
+        input.terminusCommit,
+        input.crossingId
+      )
+      .run()
+    return this.integration(input.id)
+  }
   async unloadPolicy(
     trainId: string
   ): Promise<Loaded<TrainUnloadPolicy> | null> {
@@ -205,7 +339,7 @@ export class NetworkStore {
   async latestIntegration(trainId: string): Promise<IntegrationAttempt | null> {
     const row = await this.#db
       .prepare(
-        "SELECT * FROM integration_attempts WHERE train_id = ? ORDER BY rowid DESC LIMIT 1"
+        "SELECT * FROM integration_attempts WHERE train_id = ? AND purpose = 'terminus' ORDER BY rowid DESC LIMIT 1"
       )
       .bind(trainId)
       .first<IntegrationRow>()
@@ -296,9 +430,9 @@ export class NetworkStore {
       await this.#db.batch([
         this.#db
           .prepare(
-            `INSERT INTO integration_attempts (id, network_id, train_id, status, input, created_at)
-        SELECT ?, ?, ?, 'cleared', ?, ? WHERE NOT EXISTS
-        (SELECT 1 FROM integration_attempts WHERE network_id = ? AND status IN ('cleared', 'prepared'))
+            `INSERT INTO integration_attempts (id, network_id, train_id, status, input, created_at, target_repo_id)
+        SELECT ?, ?, ?, 'cleared', ?, ?, ? WHERE NOT EXISTS
+        (SELECT 1 FROM integration_attempts WHERE target_repo_id = ? AND status IN ('cleared', 'prepared'))
         AND EXISTS (SELECT 1 FROM networks WHERE id = ? AND terminus_commit = ?)`
           )
           .bind(
@@ -307,7 +441,8 @@ export class NetworkStore {
             input.trainId,
             JSON.stringify(validated),
             new Date().toISOString(),
-            input.networkId,
+            input.terminusRepoId,
+            input.terminusRepoId,
             input.networkId,
             input.terminusCommit
           ),
@@ -372,6 +507,12 @@ export class NetworkStore {
       return
     }
     const { input } = attempt
+    if (
+      validated.ok &&
+      input.purpose === "crossing" &&
+      attempt.review?.verdict !== "accept"
+    )
+      throw new Error("Crossing promotion has no receiving approval")
     const statements: D1PreparedStatement[] = []
     if (validated.ok) {
       if (
@@ -380,14 +521,15 @@ export class NetworkStore {
         JSON.stringify(attempt.evidence) !== JSON.stringify(validated.evidence)
       )
         throw new Error("Cannot promote an unprepared candidate")
-      statements.push(
-        this.#db
-          .prepare(
-            `UPDATE networks SET terminus_commit =
+      if (input.purpose !== "crossing")
+        statements.push(
+          this.#db
+            .prepare(
+              `UPDATE networks SET terminus_commit =
         CASE WHEN terminus_commit = ? THEN ? ELSE NULL END WHERE id = ?`
-          )
-          .bind(input.terminusCommit, validated.mergeCommit, input.networkId)
-      )
+            )
+            .bind(input.terminusCommit, validated.mergeCommit, input.networkId)
+        )
     }
     statements.push(
       this.#db
@@ -510,6 +652,7 @@ export class NetworkStore {
     input: IntegrationInput,
     event: DomainEvent
   ): D1PreparedStatement {
+    if (input.purpose === "crossing") return this.#db.prepare("SELECT 1")
     return this.#db
       .prepare(
         `INSERT INTO events (network_id, type, train_id, payload, occurred_at)
@@ -631,6 +774,88 @@ export class NetworkStore {
       .run()
   }
 
+  /** The General model settings, or the defaults until someone saves them. */
+  async generalModelSettings(): Promise<GeneralModelSettings> {
+    const rows = await this.#modelSettingRows(GENERAL_SCOPE)
+    const general = rows.get(GENERAL_SCOPE)
+    return {
+      settings: general?.settings ?? DEFAULT_MODEL_SETTINGS,
+      updatedAt: general?.updatedAt ?? null,
+    }
+  }
+
+  async setGeneralModelSettings(
+    settings: ModelSettings,
+    now: string
+  ): Promise<GeneralModelSettings> {
+    await this.#db
+      .prepare(
+        "INSERT INTO model_settings (scope, network_id, settings, updated_at) VALUES (?, NULL, ?, ?) ON CONFLICT(scope) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at"
+      )
+      .bind(GENERAL_SCOPE, JSON.stringify(settings), now)
+      .run()
+    return this.generalModelSettings()
+  }
+
+  async networkModelSettings(
+    networkId: NetworkId
+  ): Promise<NetworkModelSettings> {
+    const scope = networkScope(networkId)
+    const rows = await this.#modelSettingRows(GENERAL_SCOPE, scope)
+    const override = rows.get(scope)
+    return {
+      override: override?.settings ?? null,
+      general: rows.get(GENERAL_SCOPE)?.settings ?? DEFAULT_MODEL_SETTINGS,
+      updatedAt: override?.updatedAt ?? null,
+    }
+  }
+
+  /** Null removes the override so the network follows General again. */
+  async setNetworkModelSettings(
+    networkId: NetworkId,
+    override: ModelSettings | null,
+    now: string
+  ): Promise<NetworkModelSettings> {
+    const scope = networkScope(networkId)
+    await (
+      override
+        ? this.#db
+            .prepare(
+              "INSERT INTO model_settings (scope, network_id, settings, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at"
+            )
+            .bind(scope, networkId, JSON.stringify(override), now)
+        : this.#db
+            .prepare("DELETE FROM model_settings WHERE scope = ?")
+            .bind(scope)
+    ).run()
+    return this.networkModelSettings(networkId)
+  }
+
+  /** The models a network's roles run with, as of now. */
+  async roleModels(networkId: NetworkId): Promise<RoleModels> {
+    return effectiveRoleModels(await this.networkModelSettings(networkId))
+  }
+
+  async #modelSettingRows(
+    ...scopes: string[]
+  ): Promise<Map<string, { settings: ModelSettings; updatedAt: string }>> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT scope, settings, updated_at FROM model_settings WHERE scope IN (${scopes.map(() => "?").join(", ")})`
+      )
+      .bind(...scopes)
+      .all<{ scope: string; settings: string; updated_at: string }>()
+    return new Map(
+      results.map((row) => [
+        row.scope,
+        {
+          settings: modelSettingsSchema.parse(JSON.parse(row.settings)),
+          updatedAt: row.updated_at,
+        },
+      ])
+    )
+  }
+
   async network(id: NetworkId): Promise<NetworkSummary | null> {
     const row = await this.#db
       .prepare("SELECT * FROM networks WHERE id = ?")
@@ -646,12 +871,76 @@ export class NetworkStore {
     return results.map(toNetwork)
   }
 
+  /** Networks with the activity the networks list shows, in one query. */
+  async networkListings(networkId?: NetworkId): Promise<NetworkListing[]> {
+    const statement = this.#db.prepare(
+      `SELECT n.*,
+          (SELECT COUNT(*) FROM lines WHERE network_id = n.id) AS line_count,
+          (SELECT json_group_object(status, total) FROM (
+            SELECT status, COUNT(*) AS total FROM trains
+            WHERE network_id = n.id GROUP BY status)) AS train_counts,
+          (SELECT json_group_array(json_object(
+              'name', json_extract(l.record, '$.name'),
+              'index', l.position, 'status', t.status))
+            FROM (SELECT id, record, ROW_NUMBER() OVER (ORDER BY rowid) - 1
+                AS position FROM lines WHERE network_id = n.id) l
+            JOIN trains t ON t.line_id = l.id
+            WHERE t.status NOT IN ('unloaded', 'siding')) AS active_lines,
+          (SELECT COUNT(*) FROM stations
+            WHERE network_id = n.id AND status <> 'cancelled') AS station_total,
+          (SELECT COUNT(*) FROM stations
+            WHERE network_id = n.id AND status = 'complete') AS station_complete,
+          (SELECT COUNT(*) FROM cars WHERE network_id = n.id) AS car_count,
+          (SELECT COUNT(*) FROM conflicts
+            WHERE network_id = n.id AND status = 'open') AS open_conflicts,
+          (SELECT COUNT(*) FROM dispatch_plans
+            WHERE network_id = n.id AND status = 'ready') AS plans_ready,
+          (SELECT MAX(occurred_at) FROM events
+            WHERE network_id = n.id) AS last_event_at,
+          (SELECT json_object('at', occurred_at,
+              'commit', json_extract(payload, '$.mergeCommit'))
+            FROM events WHERE network_id = n.id AND type = 'terminus.promoted'
+            ORDER BY seq DESC LIMIT 1) AS last_promotion,
+          (SELECT COUNT(*) FROM events
+            WHERE network_id = n.id AND type = 'terminus.promoted') AS promotions
+        FROM networks n
+        ${networkId ? "WHERE n.id = ?" : ""}
+        ORDER BY n.created_at DESC`
+    )
+    const { results } = await (
+      networkId ? statement.bind(networkId) : statement
+    ).all<NetworkListingRow>()
+    return results.map((row) => ({
+      ...toNetwork(row),
+      activity: {
+        lines: row.line_count,
+        trains: JSON.parse(
+          row.train_counts ?? "{}"
+        ) as NetworkActivity["trains"],
+        activeLines: (
+          JSON.parse(row.active_lines ?? "[]") as NetworkActivity["activeLines"]
+        ).sort((a, b) => a.index - b.index),
+        stations: { total: row.station_total, complete: row.station_complete },
+        cars: row.car_count,
+        openConflicts: row.open_conflicts,
+        plansAwaitingLaunch: row.plans_ready,
+        lastEventAt: row.last_event_at,
+        lastPromotion: row.last_promotion
+          ? (JSON.parse(row.last_promotion) as NetworkActivity["lastPromotion"])
+          : null,
+        promotions: row.promotions,
+      },
+    }))
+  }
+
   async line(id: LineId): Promise<Line | null> {
     const row = await this.#db
       .prepare("SELECT record FROM lines WHERE id = ?")
       .bind(id)
       .first<RecordRow>()
-    return row ? parse<Line>(row) : null
+    if (!row) return null
+    const line = parse<Line>(row)
+    return { ...line, stops: lineStops(line) }
   }
 
   async train(id: TrainId): Promise<Loaded<Train> | null> {
@@ -809,6 +1098,7 @@ export class NetworkStore {
       plans,
       repairs,
       unloadPolicies,
+      crossings,
     ] = await this.#db.batch([
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
       select("lines"),
@@ -834,6 +1124,7 @@ export class NetworkStore {
       select("dispatch_plans"),
       select("technician_repairs"),
       select("train_unload_policies"),
+      select("crossings"),
     ])
     const network = networks!.results[0] as NetworkRow | undefined
     if (!network) return null
@@ -841,7 +1132,11 @@ export class NetworkStore {
       (result?.results as RecordRow[]).map((row) => parse<T>(row))
     return {
       network: toNetwork(network),
-      lines: records<Line>(lines),
+      crossings: records<Crossing>(crossings),
+      lines: records<Line>(lines).map((line) => ({
+        ...line,
+        stops: lineStops(line),
+      })),
       stations: records<Station>(stations),
       trains: (trains!.results as TrainRow[]).map((row) => {
         const train = parse<Train>(row)
@@ -891,6 +1186,33 @@ export class NetworkStore {
   ): D1PreparedStatement {
     const db = this.#db
     switch (write.kind) {
+      case "siding_consumed":
+        return db
+          .prepare("DELETE FROM train_siding_requests WHERE id=?")
+          .bind(write.trainId)
+      case "crossing": {
+        const { crossing: c, version } = write
+        const record = JSON.stringify(crossingSchema.parse(c))
+        return version === null
+          ? db
+              .prepare(
+                "INSERT INTO crossings(id,network_id,line_id,source_station_id,record,version) VALUES (?,?,?,?,?,0)"
+              )
+              .bind(c.id, networkId, c.lineId, c.sourceStationId, record)
+          : db
+              .prepare("UPDATE crossings SET record=?,version=? WHERE id=?")
+              .bind(record, version + 1, c.id)
+      }
+      case "checkpoint":
+        return db
+          .prepare(
+            "INSERT INTO station_checkpoints(id,network_id,record) VALUES (?,?,?) ON CONFLICT(id) DO NOTHING"
+          )
+          .bind(
+            write.checkpoint.stationId,
+            networkId,
+            JSON.stringify(checkpointSchema.parse(write.checkpoint))
+          )
       case "unload_policy": {
         const { policy, version } = write
         const record = JSON.stringify(trainUnloadPolicySchema.parse(policy))
@@ -949,7 +1271,7 @@ export class NetworkStore {
         const { network } = write
         return db
           .prepare(
-            "INSERT INTO networks (id, name, terminus_repo_id, terminus_commit, created_at, validation) VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO networks (id, name, terminus_repo_id, terminus_commit, created_at, validation, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)"
           )
           .bind(
             network.id,
@@ -957,7 +1279,8 @@ export class NetworkStore {
             network.terminusRepoId,
             network.terminusCommit,
             network.createdAt,
-            JSON.stringify(network.validation ?? defaultValidation)
+            JSON.stringify(network.validation ?? defaultValidation),
+            network.sourceUrl ?? null
           )
       }
       case "line":
@@ -1076,6 +1399,7 @@ function toNetwork(row: NetworkRow): NetworkSummary {
     terminusCommit: row.terminus_commit,
     createdAt: row.created_at,
     validation: validationCommandsSchema.parse(JSON.parse(row.validation)),
+    ...(row.source_url ? { sourceUrl: row.source_url } : {}),
   }
 }
 
@@ -1098,6 +1422,8 @@ function reviewId(input: ReviewInput): string {
 }
 
 interface IntegrationRow {
+  review?: string | null
+  diff?: string | null
   input: string
   status: string
   candidate: string | null
@@ -1112,5 +1438,7 @@ function toIntegration(row: IntegrationRow): IntegrationAttempt {
     candidate: row.candidate ? JSON.parse(row.candidate) : null,
     evidence: row.evidence ? JSON.parse(row.evidence) : null,
     result: row.result ? JSON.parse(row.result) : null,
+    ...(row.review ? { review: JSON.parse(row.review) } : {}),
+    ...(row.diff !== null && row.diff !== undefined ? { diff: row.diff } : {}),
   })
 }

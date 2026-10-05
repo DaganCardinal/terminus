@@ -11,13 +11,26 @@ import type { IntegrationMerge, IntegrationMergeInput } from "./repository-host"
 const directory = "/workspace/repo"
 
 /** The candidate has canonical first-parent history and the accepted Train as its second parent. */
-export async function prepareMerge(
+export async function prepareRepositoryMerge(
   workspace: GitWorkspace,
   candidate: RepositoryAccess,
   train: RepositoryAccess,
-  input: IntegrationMergeInput
+  spec: RepositoryMergeInput
 ): Promise<IntegrationMerge> {
-  if ((await remoteHead(workspace, train)) !== input.trainCommit)
+  const input: IntegrationMergeInput = {
+    id: spec.id,
+    purpose: spec.sourceMustMatchHead ? "terminus" : "crossing",
+    terminusRepoId: spec.targetRepoId,
+    terminusCommit: spec.targetCommit,
+    trainRepoId: spec.sourceRepoId,
+    trainCommit: spec.sourceCommit,
+    trainBaseline: spec.baseline ?? spec.targetCommit,
+    acceptedCommits: spec.acceptedCommits,
+  }
+  if (
+    input.purpose !== "crossing" &&
+    (await remoteHead(workspace, train)) !== input.trainCommit
+  )
     throw new RepositoryMovedError("Train moved after Dispatcher clearance")
   await git(workspace, [
     "clone",
@@ -41,12 +54,29 @@ export async function prepareMerge(
     return result.exitCode === 0
   }
   if (
-    !(await ancestor(input.trainBaseline, input.terminusCommit)) ||
-    !(await ancestor(input.trainBaseline, input.trainCommit))
+    input.purpose !== "crossing" &&
+    (!(await ancestor(input.trainBaseline, input.terminusCommit)) ||
+      !(await ancestor(input.trainBaseline, input.trainCommit)))
   )
     throw new RepositoryMovedError(
       "Integration no longer shares the Train's Terminus baseline"
     )
+  if (input.purpose === "crossing") {
+    const current = await remoteHead(workspace, train)
+    if (!current)
+      throw new RepositoryMovedError(
+        "Source repository has no accepted history"
+      )
+    await git(
+      workspace,
+      ["fetch", "--no-tags", "--", train.remote, current],
+      directory
+    )
+    if (!(await ancestor(input.trainCommit, current)))
+      throw new RepositoryMovedError(
+        "Checkpoint is no longer reachable from source history"
+      )
+  }
   for (const commit of input.acceptedCommits) {
     if (!(await ancestor(commit, input.trainCommit)))
       throw new RepositoryMovedError(
@@ -173,4 +203,32 @@ export class IntegrationGit {
         "Validation changed the integration candidate; evidence no longer describes its commit"
       )
   }
+}
+
+export interface RepositoryMergeInput {
+  id: string
+  targetRepoId: string
+  targetCommit: string
+  sourceRepoId: string
+  sourceCommit: string
+  acceptedCommits: string[]
+  sourceMustMatchHead: boolean
+  baseline?: string
+}
+export function prepareMerge(
+  workspace: GitWorkspace,
+  candidate: RepositoryAccess,
+  source: RepositoryAccess,
+  input: IntegrationMergeInput
+): Promise<IntegrationMerge> {
+  return prepareRepositoryMerge(workspace, candidate, source, {
+    id: input.id,
+    targetRepoId: input.terminusRepoId,
+    targetCommit: input.terminusCommit,
+    sourceRepoId: input.trainRepoId,
+    sourceCommit: input.trainCommit,
+    acceptedCommits: input.acceptedCommits,
+    sourceMustMatchHead: input.purpose !== "crossing",
+    baseline: input.trainBaseline,
+  })
 }

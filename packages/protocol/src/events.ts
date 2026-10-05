@@ -54,6 +54,18 @@ const stationEvent = <T extends string>(type: T) =>
 const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
+  trainAtStationEvent("crossing.created").extend({ crossingId: z.string() }),
+  trainAtStationEvent("crossing.approaching").extend({
+    crossingId: z.string(),
+  }),
+  trainAtStationEvent("crossing.started").extend({ crossingId: z.string() }),
+  trainAtStationEvent("crossing.blocked").extend({ crossingId: z.string() }),
+  trainAtStationEvent("crossing.retried").extend({ crossingId: z.string() }),
+  trainAtStationEvent("crossing.completed").extend({
+    crossingId: z.string(),
+    mergeCommit: z.string(),
+    carIds: z.array(z.string()),
+  }),
   trainEvent("train.unload_mode_changed").extend({ mode: unloadModeSchema }),
   trainEvent("train.unload_approved").extend({
     trainCommit: z.string(),

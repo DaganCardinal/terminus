@@ -305,6 +305,15 @@ export function DispatcherPanel({
                   <Sparkles size={14} />
                   {pending ? "Laying Lines…" : "Lay demo Lines"}
                 </Button>
+                <Button
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() =>
+                    void command(() => api.layCrossingDemoLines(networkId))
+                  }
+                >
+                  Lay Crossing demo
+                </Button>
               </div>
             </div>
           )}

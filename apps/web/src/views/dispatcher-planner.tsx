@@ -16,6 +16,7 @@ import type {
 } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { lineColor } from "@/map/layout"
+import { crossingScope } from "./crossing-scope"
 import { api } from "@/state/api"
 import {
   ManifestView,
@@ -325,6 +326,38 @@ function Proposal({
                   </PlanNote>
                 )}
               </div>
+            )}
+            {lines.some((l) => l.route?.some((s) => s.kind === "crossing")) && (
+              <PlanNote tone="held" title="Crossing routes">
+                {lines.map((l) => (
+                  <p key={l.key}>
+                    <strong>{l.name}:</strong>{" "}
+                    {(
+                      l.route ??
+                      l.stations.map((s) => ({
+                        kind: "station" as const,
+                        key: s.key,
+                      }))
+                    )
+                      .map((stop) =>
+                        stop.kind === "station"
+                          ? (l.stations.find((s) => s.key === stop.key)?.name ??
+                            stop.key)
+                          : (() => {
+                              const inherited = crossingScope(
+                                lines,
+                                snapshot,
+                                stop.source
+                              )
+                              return `Pickup at ${inherited.station} (${inherited.line} → ${l.name}; inherited scope: ${inherited.areas.join(", ") || "not specified"})`
+                            })()
+                      )
+                      .join(" → ")}
+                    . Pickups include all accepted Cars through the source
+                    Station.
+                  </p>
+                ))}
+              </PlanNote>
             )}
             <div className="plan-lines">
               {lines.map((line, index) => (

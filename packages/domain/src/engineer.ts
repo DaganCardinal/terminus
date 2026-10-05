@@ -145,7 +145,7 @@ export function signalFor(train: Train): SignalAspect | null {
   }
 }
 
-function holdReasons(train: Train, context: GateContext): HoldReason[] {
+export function holdReasons(train: Train, context: GateContext): HoldReason[] {
   return holdsApplyingTo(train, context.holds).map(holdReason)
 }
 

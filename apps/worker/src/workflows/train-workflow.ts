@@ -11,7 +11,7 @@ import {
   type WorkflowStep,
   type WorkflowStepConfig,
 } from "cloudflare:workers"
-import { trainPorts } from "../agents/ports"
+import { trainModels, trainPorts } from "../agents/ports"
 import { TRAIN_EVENTS, type TrainWorkflowParams } from "./events"
 import {
   advanceTrain,
@@ -33,8 +33,12 @@ export class TrainWorkflow extends WorkflowEntrypoint<
   TrainWorkflowParams
 > {
   async run(event: WorkflowEvent<TrainWorkflowParams>, step: WorkflowStep) {
-    const ports = trainPorts(this.env)
     const { trainId } = event.payload
+    // A Train keeps the models its network chose when it started running.
+    const models = await step.do("resolve role models", stepConfig, () =>
+      trainModels(this.env, trainId)
+    )
+    const ports = trainPorts(this.env, models)
 
     for (let leg = 1; ; leg++) {
       const move = await step.do(`advance ${leg}`, stepConfig, () =>

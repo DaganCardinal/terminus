@@ -1,62 +1,106 @@
-import { ArrowUpRight, LoaderCircle, MonitorPlay } from "lucide-react"
+import { ArrowUpRight, LoaderCircle, MonitorPlay, RotateCw } from "lucide-react"
 import { Button, buttonVariants } from "@terminus/ui/components/button"
+import { cn } from "@terminus/ui/lib/utils"
 import {
   prepareTerminusPreview,
   useTerminusPreview,
 } from "@/state/terminus-previews"
 
+/**
+ * Starts a Sandbox preview of the current Terminus commit, then becomes a
+ * link to it. Preview state is shared per network and commit, so the map's
+ * Terminus panel and the overview page always show the same button state.
+ */
 export function TerminusPreviewButton({
   networkId,
   commit,
+  compact = false,
 }: {
   networkId: string
   commit: string
+  /** A header-sized button with a short status line instead of a note. */
+  compact?: boolean
 }) {
   const preview = useTerminusPreview(networkId, commit)
   const preparing = preview.status === "preparing"
+  const error = preview.status === "idle" ? preview.error : undefined
+  const size = compact ? "lg" : "sm"
+  const start = () => void prepareTerminusPreview(networkId, commit)
+
+  const note =
+    error ??
+    (preparing
+      ? compact
+        ? "Building this snapshot; keep reading while it prepares."
+        : "Installing dependencies and building this snapshot. You can close this panel while it prepares."
+      : preview.status === "ready"
+        ? compact
+          ? null
+          : "Opens this canonical snapshot in a new tab. Refresh the preview if it has expired."
+        : compact
+          ? null
+          : "Opens the combined application after successful integration.")
+
   return (
-    <div className="train-preview">
+    <div className={compact ? "terminus-preview-compact" : "train-preview"}>
       {preview.status === "ready" ? (
         <div className="terminus-preview-actions">
           <a
-            className={buttonVariants({ size: "sm" })}
+            className={cn(
+              buttonVariants({
+                size,
+                variant: compact ? "outline" : "default",
+              }),
+              compact && "px-4"
+            )}
             href={preview.url}
             target="_blank"
             rel="noopener noreferrer"
           >
-            Open Terminus preview <ArrowUpRight size={15} />
+            <MonitorPlay size={16} />
+            View Preview
+            <ArrowUpRight size={15} />
           </a>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => void prepareTerminusPreview(networkId, commit)}
-          >
-            Refresh preview
-          </Button>
+          {compact ? (
+            <Button
+              size="icon-lg"
+              variant="ghost"
+              aria-label="Refresh preview"
+              title="Refresh preview"
+              onClick={start}
+            >
+              <RotateCw size={15} />
+            </Button>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={start}>
+              Refresh preview
+            </Button>
+          )}
         </div>
       ) : (
         <Button
-          size="sm"
+          size={size}
+          variant={compact ? "outline" : "default"}
+          className={compact ? "px-4" : undefined}
           disabled={preparing}
-          onClick={() => void prepareTerminusPreview(networkId, commit)}
+          onClick={start}
         >
           {preparing ? (
-            <LoaderCircle className="animate-spin" size={15} />
+            <LoaderCircle className="animate-spin" size={16} />
           ) : (
-            <MonitorPlay size={15} />
+            <MonitorPlay size={16} />
           )}
-          {preparing ? "Preparing preview…" : "Preview Terminus"}
+          {preparing ? "Starting Preview…" : "Start Preview"}
         </Button>
       )}
-      <p className="detail-note" role="status">
-        {preview.status === "idle" && preview.error
-          ? preview.error
-          : preparing
-            ? "Installing dependencies and building this snapshot. You can close this panel while it prepares."
-            : preview.status === "ready"
-              ? "Opens this canonical snapshot in a new tab. Refresh the preview if it has expired."
-              : "Opens the combined application after successful integration."}
-      </p>
+      {note && (
+        <p
+          className={compact ? "terminus-preview-note" : "detail-note"}
+          role={error ? "alert" : "status"}
+        >
+          {note}
+        </p>
+      )}
     </div>
   )
 }
