@@ -18,6 +18,63 @@ import type { ReviewFeedback } from "./station"
  */
 export type DomainEvent =
   | {
+      type:
+        | "junction.created"
+        | "junction.review_started"
+        | "junction.ready"
+        | "junction.retried"
+        | "junction.abandoned"
+      junctionId: string
+    }
+  | {
+      type: "junction.candidate_prepared" | "junction.promotion_confirmed"
+      junctionId: string
+      trainId: string
+      integrationId: string
+      mergeCommit: string
+    }
+  | {
+      type: "junction.integration_failed" | "junction.integration_interrupted"
+      junctionId: string
+      trainId: string
+      integrationId: string
+      issues: Issue[]
+    }
+  | {
+      type: "junction.integration_retried" | "junction.integration_reviewed"
+      junctionId: string
+      trainId: string
+      integrationId: string
+    }
+  | {
+      type: "junction.release_approved"
+      junctionId: string
+      mergeCommit: string
+    }
+  | {
+      type: "junction.input_accepted"
+      junctionId: string
+      trainId: string
+      integrationId: string
+      mergeCommit: string
+    }
+  | {
+      type: "junction.released" | "junction.train_unloaded"
+      junctionId: string
+      trainId: string
+      mergeCommit: string
+    }
+  | {
+      type: "junction.blocked" | "dispatcher.junction_attention_requested"
+      junctionId: string
+      issues: Issue[]
+    }
+  | {
+      type: "junction.integration_requested" | "junction.integration_started"
+      junctionId: string
+      trainId: string
+    }
+  | {
       type: "crossing.created"
       crossingId: string
       trainId: string

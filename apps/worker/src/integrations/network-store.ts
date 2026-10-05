@@ -1,4 +1,5 @@
 import type {
+  Junction,
   Crossing,
   StationCheckpoint,
   Car,
@@ -27,6 +28,7 @@ import {
   rejectApprovedRepair,
 } from "@terminus/domain"
 import {
+  junctionSchema,
   technicianRepairSchema,
   trainUnloadPolicySchema,
   crossingSchema,
@@ -79,6 +81,9 @@ export interface Loaded<T> {
 
 /** A row write. `version` is the version read, or null to insert. */
 export type Write =
+  | { kind: "junction"; junction: Junction; version: number | null }
+  | { kind: "junction_ack"; integrationId: string }
+  | { kind: "junction_command_consumed"; junctionId: string }
   | { kind: "siding_consumed"; trainId: string }
   | { kind: "crossing"; crossing: Crossing; version: number | null }
   | { kind: "checkpoint"; checkpoint: StationCheckpoint }
@@ -128,6 +133,7 @@ interface NetworkRow {
 interface NetworkListingRow extends NetworkRow {
   line_count: number
   train_counts: string | null
+  junction_counts: string | null
   active_lines: string | null
   station_total: number
   station_complete: number
@@ -226,12 +232,150 @@ export class NetworkStore {
     review: NonNullable<IntegrationAttempt["review"]>,
     diff: string
   ): Promise<void> {
+    const attempt = await this.integration(id)
+    if (!attempt) throw new Error("Unknown integration attempt")
+    const statements = [
+      this.#db
+        .prepare(
+          "UPDATE integration_attempts SET review=?,diff=? WHERE id=? AND review IS NULL AND status='prepared'"
+        )
+        .bind(JSON.stringify(review), diff, id),
+    ]
+    if (attempt.input.purpose === "junction")
+      statements.push(
+        this.#integrationEvent(attempt.input, {
+          type: "junction.integration_reviewed",
+          junctionId: attempt.input.junctionId!,
+          trainId: attempt.input.trainId,
+          integrationId: id,
+        })
+      )
+    await this.#db.batch(statements)
+  }
+  async junction(id: string): Promise<Loaded<Junction> | null> {
+    const row = await this.#db
+      .prepare("SELECT record,version,network_id FROM junctions WHERE id=?")
+      .bind(id)
+      .first<VersionedRow>()
+    return row
+      ? {
+          ...loaded<Junction>(row),
+          value: junctionSchema.parse(JSON.parse(row.record)),
+        }
+      : null
+  }
+  async junctions(networkId: string): Promise<Junction[]> {
+    return (await this.#records<Junction>("junctions", networkId)).map((j) =>
+      junctionSchema.parse(j)
+    )
+  }
+  async junctionCommand(id: string): Promise<{
+    release_commit: string | null
+    retry: number
+    abandon_reason: string | null
+  } | null> {
+    return this.#db
+      .prepare(
+        "SELECT release_commit,retry,abandon_reason FROM junction_commands WHERE id=?"
+      )
+      .bind(id)
+      .first()
+  }
+  async commandJunction(
+    id: string,
+    command: { commit?: string; retry?: boolean; reason?: string }
+  ): Promise<void> {
+    if (command.commit) {
+      const junction = await this.junction(id)
+      if (
+        junction?.value.state.status === "released" &&
+        junction.value.state.commit === command.commit
+      )
+        return
+      if (
+        junction?.value.state.status !== "ready" ||
+        junction.value.headCommit !== command.commit
+      )
+        throw new Error("junction_release_stale")
+      const existing = await this.junctionCommand(id)
+      if (existing?.release_commit === command.commit) return
+      await this.#db.batch([
+        this.#db
+          .prepare(
+            "INSERT INTO events(network_id,type,payload,occurred_at) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM junction_commands WHERE id=? AND release_commit=?)"
+          )
+          .bind(
+            junction.networkId,
+            "junction.release_approved",
+            JSON.stringify({
+              type: "junction.release_approved",
+              junctionId: id,
+              mergeCommit: command.commit,
+            }),
+            new Date().toISOString(),
+            id,
+            command.commit
+          ),
+        this.#db
+          .prepare(
+            "INSERT INTO junction_commands(id,release_commit) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET release_commit=excluded.release_commit"
+          )
+          .bind(id, command.commit),
+      ])
+    } else
+      await this.#db
+        .prepare(
+          "INSERT INTO junction_commands(id,retry,abandon_reason) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET retry=excluded.retry,abandon_reason=excluded.abandon_reason"
+        )
+        .bind(id, command.retry ? 1 : 0, command.reason ?? null)
+        .run()
+  }
+  async requestJunctionEntry(junctionId: string, train: Train): Promise<void> {
     await this.#db
       .prepare(
-        "UPDATE integration_attempts SET review=?,diff=? WHERE id=? AND review IS NULL AND status='prepared'"
+        "INSERT INTO junction_entries(junction_id,train_id,source_commit) VALUES (?,?,?) ON CONFLICT(junction_id,train_id) DO NOTHING"
       )
-      .bind(JSON.stringify(review), diff, id)
+      .bind(junctionId, train.id, train.headCommit)
       .run()
+  }
+  async junctionEntries(
+    id: string
+  ): Promise<{ trainId: string; commit: string }[]> {
+    const { results } = await this.#db
+      .prepare(
+        "SELECT train_id,source_commit FROM junction_entries WHERE junction_id=? ORDER BY seq"
+      )
+      .bind(id)
+      .all<{ train_id: string; source_commit: string }>()
+    return results.map((r) => ({
+      trainId: r.train_id,
+      commit: r.source_commit,
+    }))
+  }
+  async claimJunctionIntegration(
+    input: IntegrationInput
+  ): Promise<IntegrationAttempt | null> {
+    const validated = integrationInputSchema.parse(input)
+    await this.#db
+      .prepare(
+        `INSERT INTO integration_attempts(id,network_id,train_id,status,input,created_at,purpose,target_repo_id)
+      SELECT ?,?,?,'cleared',?,?,'junction',? WHERE NOT EXISTS (SELECT 1 FROM integration_attempts WHERE target_repo_id=? AND status IN ('cleared','prepared'))
+      AND EXISTS (SELECT 1 FROM junctions WHERE id=? AND json_extract(record,'$.headCommit')=? AND json_extract(record,'$.state.status') IN ('collecting','blocked'))
+      ON CONFLICT(id) DO NOTHING`
+      )
+      .bind(
+        input.id,
+        input.networkId,
+        input.trainId,
+        JSON.stringify(validated),
+        new Date().toISOString(),
+        input.terminusRepoId,
+        input.terminusRepoId,
+        input.junctionId,
+        input.terminusCommit
+      )
+      .run()
+    return this.integration(input.id)
   }
   async claimCrossingIntegration(
     input: IntegrationInput
@@ -285,7 +429,7 @@ export class NetworkStore {
   async repair(id: string): Promise<Loaded<TechnicianRepair> | null> {
     const row = await this.#db
       .prepare(
-        "SELECT record, version, network_id FROM technician_repairs WHERE id = ?"
+        "SELECT record, version, network_id FROM technician_repairs WHERE id = ?1 UNION ALL SELECT record,version,network_id FROM junction_repairs WHERE id=?1"
       )
       .bind(id)
       .first<VersionedRow>()
@@ -298,9 +442,13 @@ export class NetworkStore {
   }
 
   async repairs(networkId: string): Promise<TechnicianRepair[]> {
-    return (
-      await this.#records<TechnicianRepair>("technician_repairs", networkId)
-    ).map((repair) => technicianRepairSchema.parse(repair))
+    return [
+      ...(await this.#records<TechnicianRepair>(
+        "technician_repairs",
+        networkId
+      )),
+      ...(await this.#records<TechnicianRepair>("junction_repairs", networkId)),
+    ].map((repair) => technicianRepairSchema.parse(repair))
   }
 
   async approvedRepair(trainId: string): Promise<TechnicianRepair | null> {
@@ -509,7 +657,7 @@ export class NetworkStore {
     const { input } = attempt
     if (
       validated.ok &&
-      input.purpose === "crossing" &&
+      (input.purpose === "crossing" || input.purpose === "junction") &&
       attempt.review?.verdict !== "accept"
     )
       throw new Error("Crossing promotion has no receiving approval")
@@ -521,7 +669,7 @@ export class NetworkStore {
         JSON.stringify(attempt.evidence) !== JSON.stringify(validated.evidence)
       )
         throw new Error("Cannot promote an unprepared candidate")
-      if (input.purpose !== "crossing")
+      if ((input.purpose ?? "terminus") === "terminus")
         statements.push(
           this.#db
             .prepare(
@@ -537,7 +685,11 @@ export class NetworkStore {
           "UPDATE integration_attempts SET status = ?, result = ? WHERE id = ? AND result IS NULL"
         )
         .bind(
-          validated.ok ? "completed" : "failed",
+          validated.ok
+            ? input.purpose === "junction"
+              ? "prepared"
+              : "completed"
+            : "failed",
           JSON.stringify(validated),
           id
         ),
@@ -558,7 +710,7 @@ export class NetworkStore {
             }
       )
     )
-    if (validated.ok && input.repairId) {
+    if (validated.ok && input.repairId && input.purpose !== "junction") {
       const loaded = await this.repair(input.repairId)
       const conflict = (await this.conflicts(input.networkId)).find(
         (item) => item.id === loaded?.value.conflictId
@@ -606,7 +758,12 @@ export class NetworkStore {
             )
         )
     }
-    if (!validated.ok && !validated.holds && input.repairId) {
+    if (
+      !validated.ok &&
+      !validated.holds &&
+      input.repairId &&
+      input.purpose !== "junction"
+    ) {
       const loaded = await this.repair(input.repairId)
       if (loaded?.value.state.status === "approved") {
         const rejected = rejectApprovedRepair(
@@ -653,6 +810,19 @@ export class NetworkStore {
     event: DomainEvent
   ): D1PreparedStatement {
     if (input.purpose === "crossing") return this.#db.prepare("SELECT 1")
+    if (input.purpose === "junction" && !event.type.startsWith("junction.")) {
+      const names: Partial<Record<DomainEvent["type"], DomainEvent["type"]>> = {
+        "terminus.candidate_prepared": "junction.candidate_prepared",
+        "terminus.promoted": "junction.promotion_confirmed",
+        "terminus.integration_failed": "junction.integration_failed",
+        "terminus.integration_interrupted": "junction.integration_interrupted",
+        "terminus.integration_retried": "junction.integration_retried",
+      }
+      const type = names[event.type]
+      if (!type)
+        throw new Error(`Unexpected Junction integration event ${event.type}`)
+      event = { ...event, type, junctionId: input.junctionId! } as DomainEvent
+    }
     return this.#db
       .prepare(
         `INSERT INTO events (network_id, type, train_id, payload, occurred_at)
@@ -876,6 +1046,7 @@ export class NetworkStore {
     const statement = this.#db.prepare(
       `SELECT n.*,
           (SELECT COUNT(*) FROM lines WHERE network_id = n.id) AS line_count,
+          (SELECT json_group_object(status,total) FROM (SELECT json_extract(record,'$.state.status') AS status, COUNT(*) AS total FROM junctions WHERE network_id=n.id GROUP BY json_extract(record,'$.state.status'))) AS junction_counts,
           (SELECT json_group_object(status, total) FROM (
             SELECT status, COUNT(*) AS total FROM trains
             WHERE network_id = n.id GROUP BY status)) AS train_counts,
@@ -914,6 +1085,9 @@ export class NetworkStore {
       ...toNetwork(row),
       activity: {
         lines: row.line_count,
+        junctions: JSON.parse(
+          row.junction_counts ?? "{}"
+        ) as NetworkActivity["junctions"],
         trains: JSON.parse(
           row.train_counts ?? "{}"
         ) as NetworkActivity["trains"],
@@ -1099,6 +1273,9 @@ export class NetworkStore {
       repairs,
       unloadPolicies,
       crossings,
+      junctions,
+      junctionRepairs,
+      junctionApprovals,
     ] = await this.#db.batch([
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
       select("lines"),
@@ -1125,6 +1302,13 @@ export class NetworkStore {
       select("technician_repairs"),
       select("train_unload_policies"),
       select("crossings"),
+      select("junctions"),
+      select("junction_repairs"),
+      this.#db
+        .prepare(
+          "SELECT junction_commands.id AS junctionId,release_commit AS releaseCommit FROM junction_commands JOIN junctions ON junctions.id=junction_commands.id WHERE junctions.network_id=? AND release_commit IS NOT NULL"
+        )
+        .bind(networkId),
     ])
     const network = networks!.results[0] as NetworkRow | undefined
     if (!network) return null
@@ -1132,6 +1316,15 @@ export class NetworkStore {
       (result?.results as RecordRow[]).map((row) => parse<T>(row))
     return {
       network: toNetwork(network),
+      junctionApprovals: (
+        junctionApprovals!.results as {
+          junctionId: string
+          releaseCommit: string
+        }[]
+      ).map((a) => ({ junctionId: a.junctionId, commit: a.releaseCommit })),
+      junctions: records<Junction>(junctions).map((j) =>
+        junctionSchema.parse(j)
+      ),
       crossings: records<Crossing>(crossings),
       lines: records<Line>(lines).map((line) => ({
         ...line,
@@ -1161,9 +1354,10 @@ export class NetworkStore {
       plans: records<DispatchPlan>(plans).map((plan) =>
         dispatchPlanSchema.parse(plan)
       ),
-      repairs: records<TechnicianRepair>(repairs).map((repair) =>
-        technicianRepairSchema.parse(repair)
-      ),
+      repairs: [
+        ...records<TechnicianRepair>(repairs),
+        ...records<TechnicianRepair>(junctionRepairs),
+      ].map((repair) => technicianRepairSchema.parse(repair)),
       unloadPolicies: records<TrainUnloadPolicy>(unloadPolicies).map((policy) =>
         trainUnloadPolicySchema.parse(policy)
       ),
@@ -1186,6 +1380,30 @@ export class NetworkStore {
   ): D1PreparedStatement {
     const db = this.#db
     switch (write.kind) {
+      case "junction_command_consumed":
+        return db
+          .prepare("DELETE FROM junction_commands WHERE id=?")
+          .bind(write.junctionId)
+      case "junction_ack":
+        return db
+          .prepare(
+            "UPDATE integration_attempts SET status='completed' WHERE id=? AND purpose='junction' AND status='prepared' AND json_extract(result,'$.ok')=1"
+          )
+          .bind(write.integrationId)
+      case "junction": {
+        if (write.junction.networkId !== networkId)
+          throw new Error("Junction belongs to another network")
+        const record = JSON.stringify(junctionSchema.parse(write.junction))
+        return write.version === null
+          ? db
+              .prepare(
+                "INSERT INTO junctions(id,network_id,record,version) VALUES (?,?,?,0)"
+              )
+              .bind(write.junction.id, networkId, record)
+          : db
+              .prepare("UPDATE junctions SET record=?,version=? WHERE id=?")
+              .bind(record, write.version + 1, write.junction.id)
+      }
       case "siding_consumed":
         return db
           .prepare("DELETE FROM train_siding_requests WHERE id=?")
@@ -1231,6 +1449,18 @@ export class NetworkStore {
       case "technician_repair": {
         const { repair, version } = write
         const record = JSON.stringify(technicianRepairSchema.parse(repair))
+        if (repair.source.junctionId)
+          return version === null
+            ? db
+                .prepare(
+                  "INSERT INTO junction_repairs(id,network_id,record,version) VALUES (?,?,?,0)"
+                )
+                .bind(repair.id, networkId, record)
+            : db
+                .prepare(
+                  "UPDATE junction_repairs SET record=?,version=? WHERE id=?"
+                )
+                .bind(record, version + 1, repair.id)
         if (repair.networkId !== networkId)
           throw new Error("Repair belongs to another network")
         return version === null

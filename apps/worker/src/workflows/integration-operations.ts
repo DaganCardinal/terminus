@@ -44,14 +44,19 @@ export async function prepareIntegration(
   const attempt = await load(ports, id)
   if (attempt.status !== "cleared") return
   const { input } = attempt
-  const train = await ports.store.train(input.trainId)
+  const train =
+    input.purpose === "junction"
+      ? await junctionSource(ports, input)
+      : await ports.store.train(input.trainId)
   if (
     !train ||
-    (input.purpose === "crossing"
-      ? !crossingVisitMatches(train.value, input)
-      : train.value.headCommit !== input.trainCommit ||
-        train.value.state.status !== "returning" ||
-        train.value.state.phase !== "integrating")
+    (input.purpose === "junction"
+      ? false
+      : input.purpose === "crossing"
+        ? !crossingVisitMatches(train.value, input)
+        : train.value.headCommit !== input.trainCommit ||
+          train.value.state.status !== "returning" ||
+          train.value.state.phase !== "integrating")
   )
     throw new Error("Train no longer matches Dispatcher clearance")
   if (input.purpose === "crossing") await assertCrossing(ports, input)
@@ -87,7 +92,7 @@ export async function prepareIntegration(
       issues: [
         {
           kind: "conflict",
-          detail: `${input.purpose === "crossing" ? "Crossing" : "Terminus"} merge conflicts: ${merged.conflictPaths.join(", ")}`,
+          detail: `${input.purpose === "junction" ? "Junction" : input.purpose === "crossing" ? "Crossing" : "Terminus"} merge conflicts: ${merged.conflictPaths.join(", ")}`,
         },
       ],
       conflictPaths: merged.conflictPaths,
@@ -151,17 +156,23 @@ export async function promoteIntegration(
   const head = await ports.repositories.head(input.terminusRepoId)
   if (
     head === candidate.headCommit &&
-    (input.purpose !== "crossing" || attempt.review?.verdict === "accept")
+    ((input.purpose ?? "terminus") === "terminus" ||
+      attempt.review?.verdict === "accept")
   )
     return complete(ports, attempt, evidence)
-  let train = await ports.store.train(input.trainId)
+  let train =
+    input.purpose === "junction"
+      ? await junctionSource(ports, input)
+      : await ports.store.train(input.trainId)
   if (
     !train ||
-    (input.purpose === "crossing"
-      ? !crossingVisitMatches(train.value, input)
-      : train.value.headCommit !== input.trainCommit ||
-        train.value.state.status !== "returning" ||
-        train.value.state.phase !== "integrating")
+    (input.purpose === "junction"
+      ? false
+      : input.purpose === "crossing"
+        ? !crossingVisitMatches(train.value, input)
+        : train.value.headCommit !== input.trainCommit ||
+          train.value.state.status !== "returning" ||
+          train.value.state.phase !== "integrating")
   )
     throw new Error("Train changed before Terminus promotion")
   if (input.purpose === "crossing") {
@@ -237,6 +248,25 @@ export async function promoteIntegration(
       return result
     }
   }
+  if (input.purpose === "junction") {
+    await reviewJunctionInput(ports, attempt)
+    const reviewed = await load(ports, id)
+    if (reviewed.review?.verdict !== "accept") {
+      const result: IntegrationResult = {
+        ok: false,
+        evidence,
+        issues: [
+          {
+            kind: "review_escalated",
+            detail: reviewed.review?.summary ?? "Junction review unavailable",
+          },
+        ],
+      }
+      await ports.store.finishIntegration(id, result)
+      return result
+    }
+    train = await junctionSource(ports, input)
+  }
   if (input.purpose === "crossing") {
     // Model review may take time: recheck the stopped visit and its reservation
     // against current state before applying the reviewed candidate.
@@ -266,7 +296,7 @@ export async function promoteIntegration(
   )
     throw new Error("Repair approval changed before promotion")
   const gate = (
-    input.purpose === "crossing"
+    input.purpose === "crossing" || input.purpose === "junction"
       ? evaluateCrossingPromotion
       : evaluateTerminusEntry
   )(train.value, {
@@ -351,7 +381,7 @@ export async function failIntegration(
     const head = await ports.repositories.head(attempt.input.terminusRepoId)
     if (
       head === attempt.candidate!.headCommit &&
-      (attempt.input.purpose !== "crossing" ||
+      ((attempt.input.purpose ?? "terminus") === "terminus" ||
         attempt.review?.verdict === "accept")
     )
       return complete(ports, attempt, attempt.evidence!)
@@ -406,4 +436,128 @@ async function assertCrossing(
     train.value.repoId !== input.terminusRepoId
   )
     throw new Error("Crossing no longer matches its frozen handoff")
+}
+
+async function junctionSource(
+  ports: IntegrationPorts,
+  input: import("@terminus/protocol").IntegrationInput
+) {
+  const j = input.junctionId
+    ? await ports.store.junction(input.junctionId)
+    : null
+  if (
+    !j ||
+    j.networkId !== input.networkId ||
+    j.value.repoId !== input.terminusRepoId ||
+    j.value.headCommit !== input.terminusCommit ||
+    j.value.state.status !== "collecting"
+  )
+    throw new Error("Junction target changed before promotion")
+  const repair = input.repairId
+    ? await ports.store.repair(input.repairId)
+    : null
+  if (repair?.value.source.kind === "junction_feature") {
+    if (
+      repair.value.source.junctionId !== j.value.id ||
+      repair.value.state.status !== "approved" ||
+      input.trainRepoId !== j.value.repoId ||
+      input.trainCommit !== j.value.headCommit
+    )
+      throw new Error("Feature repair sources changed")
+    return {
+      ...j,
+      value: {
+        id: j.value.outgoingTrainId,
+        lineId: j.value.outgoingLineId,
+        repoId: j.value.repoId,
+        terminusBaseline: j.value.terminusBaseline,
+        headCommit: j.value.headCommit,
+        carIds: [],
+        state: {
+          status: "ready" as const,
+          at: { kind: "junction" as const, junctionId: j.value.id },
+        },
+      },
+    }
+  }
+  const train = await ports.store.train(input.trainId)
+  if (
+    !train ||
+    !j.value.incomingTrainIds.includes(train.value.id) ||
+    train.value.destination?.kind !== "junction" ||
+    train.value.destination.junctionId !== j.value.id ||
+    train.value.repoId !== input.trainRepoId ||
+    train.value.headCommit !== input.trainCommit ||
+    !(
+      train.value.state.status === "returning" ||
+      (train.value.state.status === "held" &&
+        train.value.state.resume.status === "returning") ||
+      (repair?.value.state.status === "approved" &&
+        train.value.state.status === "blocked")
+    )
+  )
+    throw new Error("Junction input changed before promotion")
+  return train
+}
+async function reviewJunctionInput(
+  ports: IntegrationPorts,
+  attempt: IntegrationAttempt
+) {
+  if (attempt.review) return
+  const { input, candidate, evidence } = attempt
+  if (!candidate || !evidence)
+    throw new Error("No validated Junction candidate")
+  const j = (await ports.store.junction(input.junctionId!))!.value
+  const snapshot = await ports.store.snapshot(input.networkId)
+  if (!snapshot) throw new Error("Unknown network")
+  const inspected = await ports.repositories.inspectIntegration?.(
+    input,
+    candidate
+  )
+  const conductor = await ports.conductorForTrain?.(
+    input.trainId,
+    input.conductorModel
+  )
+  if (!inspected || !conductor?.reviewJunction)
+    throw new Error("Junction review adapter unavailable")
+  await ports.store.recordIntegrationDiff(input.id, inspected.diff)
+  const train = await ports.store.train(input.trainId)
+  const featureRepair = input.repairId
+    ? (await ports.store.repair(input.repairId))?.value.source.kind ===
+      "junction_feature"
+    : false
+  const sourceCars = snapshot.cars.filter((c) =>
+    featureRepair
+      ? j.inputs.some((i) => i.carIds.includes(c.id))
+      : train?.value.carIds.includes(c.id)
+  )
+  const verdict = conductorVerdictSchema.parse(
+    await conductor.reviewJunction({
+      kind: featureRepair ? "junction_feature" : "junction_input",
+      junctionId: j.id,
+      brief: j.brief,
+      sourceCommit: input.trainCommit,
+      targetCommit: input.terminusCommit,
+      candidateCommit: candidate.headCommit,
+      ...inspected,
+      evidence,
+      sourceCars,
+      receivingCars: j.inputs.flatMap((i) =>
+        i.carIds.map((id) => {
+          const c = snapshot.cars.find((c) => c.id === id)
+          if (!c) throw new Error("Missing Junction provenance")
+          return c
+        })
+      ),
+      repairIds: j.repairIds,
+      ...(await (
+        await import("./junction-operations")
+      ).junctionReviewProvenance(ports, j)),
+    })
+  )
+  await ports.store.recordIntegrationReview(
+    input.id,
+    { ...verdict, model: conductor.model },
+    inspected.diff
+  )
 }

@@ -100,11 +100,12 @@ export async function validateTechnician(
   const attempt = await ports.store.integration(
     loaded.value.source.integrationId
   )
-  if (!attempt) throw new Error("Repair lost its failed integration provenance")
+  if (!attempt && !loaded.value.validation)
+    throw new Error("Repair lost its failed integration provenance")
   const evidence = evidenceSchema.parse(
     await ports.validator.validate(
       { repoId: state.workspaceRepoId, headCommit: state.proposal.headCommit },
-      attempt.input.validation
+      loaded.value.validation ?? attempt!.input.validation
     )
   )
   const validated = applied(validateRepair(loaded.value, evidence))
@@ -193,6 +194,19 @@ async function assertSources(
   ports: TechnicianPorts,
   repair: import("@terminus/domain").TechnicianRepair
 ) {
+  if (repair.source.junctionId) {
+    const j = await ports.store.junction(repair.source.junctionId)
+    const train = await ports.store.train(repair.source.trainId)
+    if (
+      !j ||
+      j.value.state.status !== "blocked" ||
+      j.value.headCommit !== repair.source.terminusCommit ||
+      (repair.source.kind !== "junction_feature" &&
+        train?.value.headCommit !== repair.source.trainCommit)
+    )
+      throw new Error("Junction repair source moved")
+    return
+  }
   const train = await ports.store.train(repair.source.trainId)
   const network = await ports.store.network(repair.networkId)
   const conflict = (await ports.store.conflicts(repair.networkId)).find(

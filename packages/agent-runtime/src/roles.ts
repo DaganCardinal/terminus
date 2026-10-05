@@ -51,6 +51,9 @@ export interface ReviewInput {
 export interface Conductor {
   readonly model: string
   review(input: ReviewInput): Promise<ConductorVerdict>
+  reviewJunction?(
+    input: import("@terminus/protocol").JunctionReviewInput
+  ): Promise<ConductorVerdict>
   reviewCrossing?(input: CrossingReviewInput): Promise<ConductorVerdict>
 }
 

@@ -72,6 +72,7 @@ export const carSchema = z.object({
   acceptedAt: z.string(),
   originCarId: z.string().optional(),
   sourceCarId: z.string().optional(),
+  junctionId: z.string().optional(),
   crossingId: z.string().optional(),
   copiedAt: z.string().optional(),
 })

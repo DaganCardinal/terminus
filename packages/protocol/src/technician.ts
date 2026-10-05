@@ -1,4 +1,6 @@
 import { z } from "zod"
+import { featureBriefSchema } from "./junction"
+import { validationCommandsSchema } from "./execution"
 import {
   proposalSchema,
   conductorVerdictSchema,
@@ -18,8 +20,15 @@ const reviewed = candidate.extend({
 export const technicianRepairSchema = z.object({
   id: z.string().min(1),
   networkId: z.string().min(1),
+  problem: z
+    .object({ kind: z.enum(["conflict", "checks", "review"]), id: z.string() })
+    .optional(),
+  validation: validationCommandsSchema.optional(),
+  featureBrief: featureBriefSchema.optional(),
   conflictId: z.string().min(1),
   source: z.object({
+    junctionId: z.string().optional(),
+    kind: z.enum(["junction_input", "junction_feature"]).optional(),
     integrationId: z.string().min(1),
     trainId: z.string().min(1),
     trainRepoId: z.string().min(1),

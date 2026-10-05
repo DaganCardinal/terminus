@@ -16,6 +16,11 @@
   ],
   "workflows": [
     {
+      "name": "terminus-junction",
+      "binding": "JUNCTION_WORKFLOW",
+      "class_name": "JunctionWorkflow",
+    },
+    {
       "name": "terminus-technician",
       "binding": "TECHNICIAN_WORKFLOW",
       "class_name": "TechnicianWorkflow",
@@ -96,6 +101,11 @@
         },
       ],
       "workflows": [
+        {
+          "name": "terminus-junction-fake",
+          "binding": "JUNCTION_WORKFLOW",
+          "class_name": "JunctionWorkflow",
+        },
         {
           "name": "terminus-technician-fake",
           "binding": "TECHNICIAN_WORKFLOW",

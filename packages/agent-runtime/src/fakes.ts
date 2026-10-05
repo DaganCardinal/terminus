@@ -67,6 +67,15 @@ export class FakeConductor implements Conductor {
     this.#returns = options.returns ?? 0
   }
 
+  async reviewJunction(): Promise<
+    import("@terminus/protocol").ConductorVerdict
+  > {
+    return {
+      verdict: "accept",
+      summary: "Feature convergence accepted",
+      findings: [],
+    }
+  }
   async reviewCrossing(): Promise<ConductorVerdict> {
     return {
       verdict: "accept",

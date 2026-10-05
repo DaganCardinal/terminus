@@ -352,6 +352,7 @@ export async function requestTerminusClearance(
   const loaded = await ports.store.train(trainId)
   if (!loaded) throw new DispatchError(404, `Unknown Train ${trainId}`)
   if (
+    loaded.value.destination?.kind === "junction" ||
     loaded.value.state.status !== "returning" ||
     loaded.value.state.phase !== "awaiting_clearance"
   )
@@ -386,6 +387,7 @@ export async function requestTerminusClearance(
   const policies = await ports.store.unloadPolicies(network.id)
   const eligible = trains.filter(
     ({ value }) =>
+      value.destination?.kind !== "junction" &&
       value.state.status === "returning" &&
       value.state.phase === "awaiting_clearance" &&
       evaluateTerminusEntry(value, {

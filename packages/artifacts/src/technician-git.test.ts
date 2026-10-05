@@ -16,7 +16,10 @@ afterEach(async () => {
       .map((path) => rm(path, { recursive: true, force: true }))
   )
 })
-async function fixture(deletion = false) {
+async function fixture(
+  deletion = false,
+  mode: "conflict" | "checks" | "feature" = "conflict"
+) {
   const root = await mkdtemp(join(tmpdir(), "terminus-technician-git-"))
   temporary.push(root)
   const origin = join(root, "origin")
@@ -48,11 +51,13 @@ async function fixture(deletion = false) {
   ])
   await run(["checkout", "main"])
   if (deletion) await run(["rm", "shared.ts"])
-  else
+  else if (mode === "conflict")
     await writeFile(
       join(origin, "shared.ts"),
       "export const shared = 'terminus'\n"
     )
+  if (mode !== "conflict")
+    await writeFile(join(origin, "independent.ts"), "independent work\n")
   await run(["add", "."])
   await run(["commit", "-m", "Concurrent Terminus work"])
   const terminusCommit = await run(["rev-parse", "HEAD"])
@@ -96,6 +101,22 @@ async function fixture(deletion = false) {
       acceptedCommits: [trainCommit],
     },
   }
+  if (mode === "feature") {
+    input.source.kind = "junction_feature"
+    input.source.junctionId = "j"
+    input.source.trainCommit = terminusCommit
+    input.source.acceptedCommits = [terminusCommit]
+    await run(["--git-dir", trainRemote, "fetch", "--", origin, terminusCommit])
+    await run([
+      "--git-dir",
+      trainRemote,
+      "update-ref",
+      "refs/heads/train",
+      terminusCommit,
+    ])
+  }
+  if (mode !== "conflict")
+    input.problem = { kind: "checks", id: "feature-failed" }
   let counter = 0
   async function workspace() {
     const path = join(root, `workspace-${++counter}`)
@@ -212,4 +233,37 @@ describe("Technician Git reconciliation", () => {
       "shared.ts",
     ])
   })
+})
+
+it.each(["checks", "feature"] as const)(
+  "bounds %s repairs while preserving reviewed source ancestry",
+  async (mode) => {
+    const f = await fixture(false, mode),
+      w = await f.workspace()
+    expect(await w.git.prepare()).toBeNull()
+    await writeFile(
+      join(w.path, "shared.ts"),
+      "export const shared = 'repaired'\n"
+    )
+    const commit = await w.git.candidateCommit(),
+      snapshot = await w.git.snapshot(commit)
+    expect(snapshot.repairPaths).toEqual(["shared.ts"])
+    const parents = await f.run(["show", "-s", "--format=%P", commit], w.path)
+    expect(parents).toBe(
+      mode === "feature"
+        ? f.input.source.terminusCommit
+        : `${f.input.source.terminusCommit} ${f.input.source.trainCommit}`
+    )
+    await w.git.publish(commit)
+    const fresh = await f.workspace()
+    expect(await fresh.git.prepare()).toBe(commit)
+    expect(await fresh.git.snapshot(commit)).toEqual(snapshot)
+  }
+)
+it("rejects check repairs that broaden repository scope", async () => {
+  const f = await fixture(false, "checks"),
+    w = await f.workspace()
+  await w.git.prepare()
+  await writeFile(join(w.path, "untouched.ts"), "out of scope\n")
+  await expect(w.git.candidateCommit()).rejects.toThrow(/outside/)
 })

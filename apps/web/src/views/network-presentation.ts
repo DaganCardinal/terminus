@@ -30,9 +30,12 @@ export function networkRemark(activity: NetworkActivity): NetworkRemark {
   const held = count(["held"])
   const moving = count(MOVING)
 
-  if (blocked > 0 || activity.openConflicts > 0) {
+  const junctionBlocked = activity.junctions?.blocked ?? 0
+  const junctionReady = activity.junctions?.ready ?? 0
+  if (blocked > 0 || activity.openConflicts > 0 || junctionBlocked > 0) {
     const parts = [
       blocked > 0 && plural(blocked, "Train") + " blocked",
+      junctionBlocked > 0 && plural(junctionBlocked, "Junction") + " blocked",
       activity.openConflicts > 0 &&
         plural(activity.openConflicts, "open conflict"),
     ].filter(Boolean)
@@ -56,6 +59,12 @@ export function networkRemark(activity: NetworkActivity): NetworkRemark {
       tone: "held",
       label: "Held",
       detail: plural(held, "Train") + " held",
+    }
+  if (junctionReady > 0)
+    return {
+      tone: "review",
+      label: "Feature ready",
+      detail: plural(junctionReady, "Junction") + " awaiting release",
     }
   if (activity.plansAwaitingLaunch > 0)
     return {

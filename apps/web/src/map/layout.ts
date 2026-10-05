@@ -191,15 +191,52 @@ export interface RouteLayout {
   stationDistances: number[]
   stopStationIds?: string[]
   depot: Point
+  /** Where the route bullet sits, when it is not just outside the depot. */
+  bullet?: Point
+}
+
+/** A Junction marker, sized to the approach lanes that enter it. */
+export interface JunctionLayout {
+  id: string
+  point: Point
+  halfHeight: number
+}
+
+/** A Station that receiving Lines visit through a Crossing. Each receiver
+ * passes through on its own lane beside the source track, so the Lines meet
+ * only at the Station and diverge right after it. */
+export interface Interchange {
+  stationId: string
+  at: Point
+  /** `remote` marks a pickup whose route order cannot pass the Station
+   * itself; it sits on the receiver's own row, linked to the Station. */
+  lanes: { lineId: string; crossingId: string; point: Point; remote?: true }[]
+}
+
+export interface NetworkLayout {
+  width: number
+  height: number
+  hub: Point
+  hubHalfHeight: number
+  routes: RouteLayout[]
+  junctions: JunctionLayout[]
+  interchanges: Interchange[]
 }
 
 /** Lines enter Terminus as a parallel bundle: each side's upper Lines curve
  * down into it and lower Lines curve up, on concentric curves, so no Line
  * crosses another and none needs a short jog. A middle row runs straight in.
  * Extra Stations widen the canvas; extra Lines make it taller. */
-export function layoutNetwork(lines: Line[]) {
-  if (lines.some((l) => l.stops?.some((s) => s.kind === "crossing")))
-    return layoutCrossings(lines)
+export function layoutNetwork(lines: Line[]): NetworkLayout {
+  if (
+    lines.some(
+      (l) =>
+        l.destination?.kind === "junction" ||
+        l.origin?.kind === "junction" ||
+        l.stops?.some((s) => s.kind === "crossing")
+    )
+  )
+    return layoutGraph(lines)
   let availableShapes: RouteShape[] = [...routeShapes]
   const shapes = lines.map((line) => {
     if (availableShapes.length === 0) availableShapes = [...routeShapes]
@@ -353,7 +390,562 @@ export function layoutNetwork(lines: Line[]) {
         depot: points[0]!,
       }
     })
-  return { width, height, hub, hubHalfHeight, routes }
+  return {
+    width,
+    height,
+    hub,
+    hubHalfHeight,
+    routes,
+    junctions: [],
+    interchanges: [],
+  }
+}
+
+// Graph layout: Crossings and Junctions. Columns come from route order, rows
+// from Lines. Each Line keeps to its own row and leaves it only to visit a
+// Crossing Station or to take its own lane into a Junction or Terminus.
+const JUNCTION_HALF = 28
+/** Approach lanes turn this far before a node, clear of its label. */
+const JUNCTION_CLEAR = 80
+const HUB_CLEAR = 104
+/** Room after a Junction for the outgoing Line's bullet and name. */
+const JUNCTION_EXIT = 140
+const OUTGOING_BULLET = 150
+/** Straight track a Line needs between its last stop and its approach lane. */
+const APPROACH_ROOM = 150
+/** How far before a Crossing Station a receiver leaves its row. The wider
+ * offset keeps a vertical clear of the Station labels it passes. */
+const VISIT_OFFSET = 50
+const VISIT_OFFSET_WIDE = 80
+const STATION_LABEL_TOP = 100
+
+type Fan = {
+  y: number
+  half: number
+  /** Port offset; approach lane (-1 = straight in), counted from the lane
+   * that turns closest to the node; and concentric curve index. */
+  feeds: Map<number, { port: number; lane: number; curve: number }>
+  lanes: number
+}
+
+/** Ports on a node in row order, so approach lanes never cross. Lines above
+ * curve down into it and Lines below curve up, on concentric curves; the
+ * lower group turns further out, so the two never share a vertical. The node
+ * sits level with `center`, or with the feeder nearest the middle. */
+function fanIn(feeders: { index: number; y: number }[], center?: number): Fan {
+  const sorted = [...feeders].sort((a, b) => a.y - b.y || a.index - b.index)
+  const mean = sorted.reduce((sum, f) => sum + f.y, 0) / (sorted.length || 1)
+  const found = sorted.findIndex((f) => f.index === center)
+  const mid =
+    found >= 0
+      ? found
+      : sorted.reduce(
+          (best, f, i) =>
+            Math.abs(f.y - mean) < Math.abs(sorted[best]!.y - mean) ? i : best,
+          0
+        )
+  const below = sorted.length - 1 - mid
+  const feeds = new Map(
+    sorted.map((f, i) => [
+      f.index,
+      {
+        port: (i - mid) * LANE_GAP,
+        lane: i < mid ? i : i > mid ? mid + sorted.length - 1 - i : -1,
+        curve: i < mid ? i : sorted.length - 1 - i,
+      },
+    ])
+  )
+  return {
+    y: sorted[mid]?.y ?? 0,
+    half: Math.max(mid, below) * LANE_GAP,
+    feeds,
+    lanes: Math.max(0, sorted.length - 1),
+  }
+}
+
+function layoutGraph(lines: Line[]): NetworkLayout {
+  const stopsOf = (line: Line) =>
+    line.stops ??
+    line.stationIds.map((stationId) => ({
+      kind: "station" as const,
+      stationId,
+    }))
+  const into = (l: Line) =>
+    l.destination?.kind === "junction" ? l.destination.junctionId : undefined
+  const outOf = (l: Line) =>
+    l.origin?.kind === "junction" ? l.origin.junctionId : undefined
+  const owner = new Map<string, number>()
+  lines.forEach((l, i) => l.stationIds.forEach((id) => owner.set(id, i)))
+  const foreign = (i: number, stop: ReturnType<typeof stopsOf>[number]) =>
+    stop.kind === "crossing" &&
+    owner.has(stop.stationId) &&
+    owner.get(stop.stationId) !== i
+  const startOf = (l: Line) =>
+    outOf(l) ? `junction:${outOf(l)}` : `depot:${l.id}`
+  const endOf = (l: Line) => (into(l) ? `junction:${into(l)}` : "terminus")
+
+  // Columns: the longest route to each stop, so every route runs left to
+  // right. Each Line's own stops come first. A Crossing visit whose order
+  // contradicts another route's (one receiver visits A then B, another B then
+  // A) cannot share the source Station's column, so it becomes a remote
+  // pickup on the receiver's own row instead.
+  const successors = new Map<string, Set<string>>()
+  const link = (from: string, to: string) =>
+    successors.set(from, (successors.get(from) ?? new Set()).add(to))
+  const reaches = (from: string, to: string) => {
+    const seen = new Set<string>()
+    const walk = (id: string): boolean =>
+      id === to ||
+      (!seen.has(id) &&
+        (seen.add(id), [...(successors.get(id) ?? [])].some(walk)))
+    return walk(from)
+  }
+  lines.forEach((l, i) => {
+    let previous = startOf(l)
+    for (const stop of stopsOf(l))
+      if (!foreign(i, stop)) {
+        link(previous, stop.stationId)
+        previous = stop.stationId
+      }
+    link(previous, endOf(l))
+  })
+  const remote = new Set<string>()
+  const nodeOf = (i: number, stop: ReturnType<typeof stopsOf>[number]) =>
+    stop.kind === "crossing" && remote.has(`${i}|${stop.crossingId}`)
+      ? `visit:${i}|${stop.crossingId}`
+      : stop.stationId
+  lines.forEach((l, i) => {
+    const stops = stopsOf(l)
+    let previous = startOf(l)
+    stops.forEach((stop, k) => {
+      if (!foreign(i, stop) || stop.kind !== "crossing") {
+        previous = stop.stationId
+        return
+      }
+      const next =
+        stops.slice(k + 1).find((s) => !foreign(i, s))?.stationId ?? endOf(l)
+      if (reaches(stop.stationId, previous) || reaches(next, stop.stationId))
+        remote.add(`${i}|${stop.crossingId}`)
+      const node = nodeOf(i, stop)
+      link(previous, node)
+      link(node, next)
+      previous = node
+    })
+  })
+  const visits = (i: number) =>
+    stopsOf(lines[i]!).flatMap((stop) =>
+      stop.kind === "crossing" &&
+      foreign(i, stop) &&
+      !remote.has(`${i}|${stop.crossingId}`)
+        ? [{ stationId: stop.stationId, crossingId: stop.crossingId }]
+        : []
+    )
+  const predecessors = new Map<string, string[]>()
+  for (const [from, tos] of successors)
+    for (const to of tos)
+      predecessors.set(to, [...(predecessors.get(to) ?? []), from])
+  const ranks = new Map<string, number>()
+  const rank = (id: string): number => {
+    if (!ranks.has(id))
+      ranks.set(
+        id,
+        Math.max(0, ...(predecessors.get(id) ?? []).map((p) => rank(p) + 1))
+      )
+    return ranks.get(id)!
+  }
+
+  // Rows: a Junction's incoming Lines sit together, the middle one as its
+  // trunk; the outgoing Line continues on the trunk row. Rows are then
+  // reordered to keep Crossing receivers near their sources.
+  const members = new Map<string, number[]>()
+  lines.forEach((l, i) => {
+    const id = into(l)
+    if (id) members.set(id, [...(members.get(id) ?? []), i])
+  })
+  const blocks: number[][] = []
+  lines.forEach((l, i) => {
+    const id = into(l)
+    if (id) {
+      if (members.get(id)![0] === i) blocks.push(members.get(id)!)
+    } else if (!(outOf(l) && members.has(outOf(l)!))) blocks.push([i])
+  })
+  const trunkIn = (order: number[][], id: string) => {
+    const block = order.find((b) => into(lines[b[0]!]!) === id) ?? []
+    return block[Math.floor((block.length - 1) / 2)]
+  }
+  const rowsFor = (order: number[][]) => {
+    const row = new Map(order.flat().map((i, r) => [i, r] as const))
+    lines.forEach((l, i) => {
+      if (!row.has(i)) row.set(i, row.get(trunkIn(order, outOf(l)!)!)!)
+    })
+    return row
+  }
+  const cost = (order: number[][]) => {
+    const row = rowsFor(order)
+    let total = 0
+    lines.forEach((_, i) => {
+      for (const v of visits(i))
+        total += Math.abs(row.get(i)! - row.get(owner.get(v.stationId)!)!)
+    })
+    return total
+  }
+  // Swap neighbouring blocks, and neighbouring Lines within a Junction block,
+  // while that brings receivers closer to their sources.
+  const swaps = (order: number[][]) => [
+    ...order.slice(1).map((_, b) => {
+      const next = [...order]
+      ;[next[b], next[b + 1]] = [next[b + 1]!, next[b]!]
+      return next
+    }),
+    ...order.flatMap((block, b) =>
+      block.slice(1).map((_, m) => {
+        const swapped = [...block]
+        ;[swapped[m], swapped[m + 1]] = [swapped[m + 1]!, swapped[m]!]
+        return order.map((other, c) => (c === b ? swapped : other))
+      })
+    ),
+  ]
+  let order = blocks
+  for (let improved = true; improved;) {
+    improved = false
+    for (const next of swaps(order))
+      if (cost(next) < cost(order)) {
+        order = next
+        improved = true
+      }
+  }
+  const row = rowsFor(order)
+  const trunk = (id: string) => trunkIn(order, id)
+  const homeY = (i: number) => row.get(i)! * ROW_CLEARANCE
+
+  // Approach lanes into each Junction and into Terminus.
+  const junctionIds = [
+    ...new Set(lines.flatMap((l) => [into(l), outOf(l)].filter((id) => id))),
+  ] as string[]
+  const fans = new Map<string, Fan>()
+  for (const id of junctionIds) {
+    const incoming = members.get(id) ?? []
+    const outgoing = lines.findIndex((l) => outOf(l) === id)
+    fans.set(
+      `junction:${id}`,
+      incoming.length
+        ? fanIn(
+            incoming.map((i) => ({ index: i, y: homeY(i) })),
+            trunk(id)
+          )
+        : fanIn([{ index: outgoing, y: homeY(outgoing) }])
+    )
+  }
+  const hubFeeds = lines.flatMap((l, i) =>
+    into(l) ? [] : [{ index: i, y: homeY(i) }]
+  )
+  fans.set("terminus", fanIn(hubFeeds))
+
+  // Receivers pass a Crossing Station on lanes beside the source track: the
+  // closest receiver on the inside, each turning on concentric curves.
+  // Visits in one column whose verticals would share height step further out.
+  type Visit = { y: number; offset: number; radius: number }
+  type Group = {
+    stationId: string
+    column: number
+    y: number
+    side: number
+    receivers: { r: number; crossingId: string; from: number }[]
+    top: number
+    bottom: number
+    offset: number
+  }
+  const groups: Group[] = []
+  for (const [stationId, i] of owner) {
+    const y = homeY(i)
+    const receivers = lines.flatMap((_, r) =>
+      visits(r)
+        .filter((v) => v.stationId === stationId)
+        .map((v) => ({ r, crossingId: v.crossingId, from: homeY(r) - y }))
+    )
+    for (const side of [-1, 1]) {
+      const group = receivers
+        .filter((v) => (v.from > 0 ? 1 : -1) === side)
+        .sort((a, b) => Math.abs(a.from) - Math.abs(b.from) || a.r - b.r)
+      if (group.length === 0) continue
+      const ends = group.map((v) => y + v.from)
+      groups.push({
+        stationId,
+        column: rank(stationId),
+        y,
+        side,
+        receivers: group,
+        top: Math.min(y, ...ends),
+        bottom: Math.max(y, ...ends),
+        offset: group.some((v) => side < 0 || Math.abs(v.from) > ROW_CLEARANCE)
+          ? VISIT_OFFSET_WIDE
+          : VISIT_OFFSET,
+      })
+    }
+  }
+  groups.sort(
+    (a, b) => a.column - b.column || a.bottom - a.top - (b.bottom - b.top)
+  )
+  const span = (g: Group) => g.offset + (g.receivers.length - 1) * LANE_GAP
+  groups.forEach((g, k) => {
+    for (let moved = true; moved;) {
+      moved = false
+      for (const other of groups.slice(0, k))
+        if (
+          other.column === g.column &&
+          other.top < g.bottom &&
+          g.top < other.bottom &&
+          g.offset <= span(other) + LANE_GAP &&
+          other.offset <= span(g) + LANE_GAP
+        ) {
+          g.offset = span(other) + 2 * LANE_GAP
+          moved = true
+        }
+    }
+  })
+
+  // Column positions, widened where approach lanes, visits and outgoing
+  // bullets need room.
+  const columns = Math.max(0, ...[...predecessors.keys()].map(rank)) + 1
+  const gaps = Array.from({ length: columns }, () => STATION_SPACING)
+  for (const [node, fan] of fans) {
+    const c = rank(node)
+    const clear = node === "terminus" ? HUB_CLEAR : JUNCTION_CLEAR
+    if (c > 0)
+      gaps[c - 1] = Math.max(
+        gaps[c - 1]!,
+        clear + fan.lanes * LANE_GAP + APPROACH_ROOM
+      )
+    if (node !== "terminus" && c + 1 < columns)
+      gaps[c] = gaps[c]! + JUNCTION_EXIT
+  }
+  for (const g of groups) {
+    const room = span(g) + CORNER_RADIUS + STATION_CLEARANCE + 10
+    if (g.column > 0) gaps[g.column - 1] = Math.max(gaps[g.column - 1]!, room)
+    if (g.column + 1 < columns) gaps[g.column] = Math.max(gaps[g.column]!, room)
+  }
+  const columnX = [0]
+  for (let c = 1; c < columns; c++) columnX.push(columnX[c - 1]! + gaps[c - 1]!)
+  const nodePoint = (node: string) => ({
+    x: columnX[rank(node)]!,
+    y: fans.get(node)!.y,
+  })
+
+  const lanes = new Map<string, Visit>()
+  const interchanges: Interchange[] = []
+  for (const g of groups) {
+    const x = columnX[g.column]!
+    let interchange = interchanges.find((c) => c.stationId === g.stationId)
+    if (!interchange) {
+      interchange = { stationId: g.stationId, at: { x, y: g.y }, lanes: [] }
+      interchanges.push(interchange)
+    }
+    g.receivers.forEach((v, k) => {
+      const outer = g.receivers.length - 1 - k
+      const visit = {
+        y: g.y + g.side * (k + 1) * LANE_GAP,
+        offset: g.offset + outer * LANE_GAP,
+        radius: CORNER_RADIUS + outer * LANE_GAP,
+      }
+      lanes.set(`${v.r}|${g.stationId}`, visit)
+      interchange.lanes.push({
+        lineId: lines[v.r]!.id,
+        crossingId: v.crossingId,
+        point: { x, y: visit.y },
+      })
+    })
+  }
+
+  lines.forEach((l, i) => {
+    for (const stop of stopsOf(l)) {
+      if (stop.kind !== "crossing" || !remote.has(`${i}|${stop.crossingId}`))
+        continue
+      const source = owner.get(stop.stationId)!
+      let interchange = interchanges.find((c) => c.stationId === stop.stationId)
+      if (!interchange) {
+        interchange = {
+          stationId: stop.stationId,
+          at: { x: columnX[rank(stop.stationId)]!, y: homeY(source) },
+          lanes: [],
+        }
+        interchanges.push(interchange)
+      }
+      interchange.lanes.push({
+        lineId: l.id,
+        crossingId: stop.crossingId,
+        point: { x: columnX[rank(nodeOf(i, stop))]!, y: homeY(i) },
+        remote: true,
+      })
+    }
+  })
+
+  type Draft = {
+    points: Point[]
+    radii: number[]
+    stationVertices: number[]
+    approach: number | null
+    bullet: Point
+  }
+  const drafts: Draft[] = lines.map((line, index) => {
+    const home = homeY(index)
+    const origin = outOf(line)
+    const start = origin
+      ? nodePoint(`junction:${origin}`)
+      : { x: columnX[0]!, y: home }
+    const points: Point[] = [start],
+      radii: number[] = [0],
+      stationVertices: number[] = []
+    const push = (p: Point, radius = CORNER_RADIUS) => {
+      points.push(p)
+      radii.push(radius)
+    }
+    let at: (Visit & { x: number; stationId: string }) | null = null
+    // A receiver stays beside the source only between neighbouring Stations.
+    const neighbours = (a: string, b: string) => {
+      const ids = lines[owner.get(a)!]!.stationIds
+      return (
+        owner.get(a) === owner.get(b) &&
+        Math.abs(ids.indexOf(a) - ids.indexOf(b)) === 1
+      )
+    }
+    const goHome = () => {
+      if (!at) return
+      push({ x: at.x + at.offset, y: at.y }, at.radius)
+      push({ x: at.x + at.offset, y: home })
+      at = null
+    }
+    for (const stop of stopsOf(line)) {
+      const x = columnX[rank(nodeOf(index, stop))]!
+      const visit = lanes.get(`${index}|${stop.stationId}`)
+      if (!visit) {
+        goHome()
+        push({ x, y: home }, 0)
+      } else {
+        const cramped =
+          at !== null &&
+          x - visit.offset - (at.x + at.offset) < 2 * CORNER_RADIUS + 8
+        if (
+          at?.y === visit.y &&
+          (cramped || neighbours(at.stationId, stop.stationId))
+        ) {
+          // Neighbouring Stations on the same lane: stay on it.
+        } else if (at && cramped) {
+          const mid = (at.x + x) / 2
+          push({ x: mid, y: at.y })
+          push({ x: mid, y: visit.y })
+        } else {
+          goHome()
+          push({ x: x - visit.offset, y: home })
+          push({ x: x - visit.offset, y: visit.y }, visit.radius)
+        }
+        push({ x, y: visit.y }, 0)
+        at = { ...visit, x, stationId: stop.stationId }
+      }
+      stationVertices.push(points.length - 1)
+    }
+    goHome()
+    const node = into(line) ? `junction:${into(line)}` : "terminus"
+    const fan = fans.get(node)!
+    const target = nodePoint(node)
+    const feed = fan.feeds.get(index) ?? { port: 0, lane: -1, curve: 0 }
+    const end = { x: target.x, y: target.y + feed.port }
+    const clear = node === "terminus" ? HUB_CLEAR : JUNCTION_CLEAR
+    const turn = target.x - clear - Math.max(0, feed.lane) * LANE_GAP
+    let approach: number | null = null
+    const marker = feed.lane < 0 ? target.x - clear : turn - CORNER_RADIUS - 2
+    if (marker > points.at(-1)!.x + 1) {
+      push({ x: marker, y: home }, 0)
+      approach = points.length - 1
+    }
+    if (feed.lane >= 0) {
+      push({ x: turn, y: home })
+      push({ x: turn, y: end.y }, CORNER_RADIUS + feed.curve * LANE_GAP)
+    }
+    push(end, 0)
+    const bullet = origin
+      ? { x: start.x + OUTGOING_BULLET, y: start.y }
+      : { x: start.x - BULLET_OFFSET, y: start.y }
+    return { points, radii, stationVertices, approach, bullet }
+  })
+
+  // Fit the canvas to what is drawn, labels included.
+  const hub = nodePoint("terminus")
+  const hubHalfHeight = Math.max(HUB_RADIUS, fans.get("terminus")!.half + 24)
+  const junctions: JunctionLayout[] = junctionIds.map((id) => ({
+    id,
+    point: nodePoint(`junction:${id}`),
+    halfHeight: Math.max(JUNCTION_HALF, fans.get(`junction:${id}`)!.half + 20),
+  }))
+  let left = hub.x - HUB_LABEL_HALF_WIDTH,
+    right = hub.x + HUB_LABEL_HALF_WIDTH,
+    top = hub.y - hubHalfHeight,
+    bottom = hub.y + hubHalfHeight + 64
+  const include = (x0: number, x1: number, y0: number, y1: number) => {
+    left = Math.min(left, x0)
+    right = Math.max(right, x1)
+    top = Math.min(top, y0)
+    bottom = Math.max(bottom, y1)
+  }
+  for (const d of drafts) {
+    const reach = BULLET_LABEL_HALF_WIDTH
+    include(d.bullet.x - reach, d.bullet.x + reach, d.bullet.y - 70, d.bullet.y)
+    for (const p of d.points) include(p.x, p.x, p.y, p.y + TRAIN_ROOM - 20)
+    for (const v of d.stationVertices) {
+      const p = d.points[v]!
+      include(p.x - 80, p.x + 80, p.y - STATION_LABEL_TOP - 2 * LANE_GAP, p.y)
+    }
+  }
+  for (const j of junctions)
+    include(
+      j.point.x - 80,
+      j.point.x + 80,
+      j.point.y - j.halfHeight - 56,
+      j.point.y + j.halfHeight + TRAIN_ROOM - 20
+    )
+  const dx = PADDING - left,
+    dy = PADDING - top
+  const shift = (p: Point) => ({ x: p.x + dx, y: p.y + dy })
+
+  const routes: RouteLayout[] = lines.map((line, index) => {
+    const d = drafts[index]!
+    const points = d.points.map(shift)
+    const track = roundTrack(points, (i) => d.radii[i] ?? CORNER_RADIUS)
+    const distances = d.stationVertices.map((v) => track.vertexDistance[v]!)
+    const last = distances.at(-1) ?? 0
+    const approach =
+      d.approach === null ? last : track.vertexDistance[d.approach]!
+    const stations = d.stationVertices.map((v) => points[v]!)
+    return {
+      line,
+      number: index + 1,
+      color: lineColor(line, index),
+      shape: "direct",
+      side: "left",
+      points,
+      stationTrack: stations,
+      track,
+      // Returning Trains wait halfway between the last stop and the approach.
+      trackEnd: (last + approach) / 2 + TRACK_TAIL * 0.45,
+      stations,
+      stationDistances: distances,
+      stopStationIds: stopsOf(line).map((s) => s.stationId),
+      depot: points[0]!,
+      bullet: shift(d.bullet),
+    }
+  })
+  return {
+    width: right - left + 2 * PADDING,
+    height: bottom - top + 2 * PADDING,
+    hub: shift(hub),
+    hubHalfHeight,
+    routes,
+    junctions: junctions.map((j) => ({ ...j, point: shift(j.point) })),
+    interchanges: interchanges.map((c) => ({
+      ...c,
+      at: shift(c.at),
+      lanes: c.lanes.map((l) => ({ ...l, point: shift(l.point) })),
+    })),
+  }
 }
 
 /** Seconds for a Train in transit to cover half the distance to where it
@@ -403,7 +995,7 @@ function restingDistance(state: TrainState, route: RouteLayout): number | null {
     case "blocked":
       return restingDistance(state.resume, route)
     case "ready":
-      return state.at.kind === "depot" ? 0 : station(state.at.stationId)
+      return state.at.kind === "station" ? station(state.at.stationId) : 0
     case "docked":
     case "reviewing":
       return station(state.at)
@@ -456,99 +1048,4 @@ export function trainDistance(
 /** True while a Train's target position changes over time. */
 export function isMoving(motion: TrainMotion): boolean {
   return motion.state.status === "in_transit"
-}
-
-/** Shared Station vertices provide deterministic topology; positions never decide movement. */
-function layoutCrossings(lines: Line[]) {
-  const stops = (line: Line) =>
-    line.stops ??
-    line.stationIds.map((stationId) => ({
-      kind: "station" as const,
-      stationId,
-    }))
-  const predecessors = new Map<string, Set<string>>()
-  const owners = new Map<string, number>()
-  for (const [row, line] of lines.entries()) {
-    let previous = `depot:${line.id}`
-    for (const stop of stops(line)) {
-      if (stop.kind === "station") owners.set(stop.stationId, row)
-      const before = predecessors.get(stop.stationId) ?? new Set<string>()
-      before.add(previous)
-      predecessors.set(stop.stationId, before)
-      previous = stop.stationId
-    }
-  }
-  const ranks = new Map<string, number>(),
-    visiting = new Set<string>()
-  const rank = (id: string): number => {
-    if (ranks.has(id)) return ranks.get(id)!
-    if (visiting.has(id)) return 1 // Invalid topology is rejected by the backend.
-    visiting.add(id)
-    const value = Math.max(
-      0,
-      ...[...(predecessors.get(id) ?? [])].map((p) => rank(p) + 1)
-    )
-    visiting.delete(id)
-    ranks.set(id, value)
-    return value
-  }
-  for (const id of predecessors.keys()) rank(id)
-  const maxRank = Math.max(1, ...ranks.values())
-  const hub = {
-    x: MARGIN_X + (maxRank + 1) * STATION_SPACING,
-    y: LABEL_ROOM + (Math.max(0, lines.length - 1) * ROW_CLEARANCE) / 2,
-  }
-  const rowY = (row: number) => LABEL_ROOM + row * ROW_CLEARANCE
-  const routes: RouteLayout[] = lines.map((line, index) => {
-    const ids = stops(line).map((s) => s.stationId)
-    const depot = { x: MARGIN_X - STATION_SPACING / 2, y: rowY(index) }
-    const stations = ids.map((id) => ({
-      x: MARGIN_X + (ranks.get(id) ?? 1) * STATION_SPACING,
-      y: rowY(owners.get(id) ?? index),
-    }))
-    const points: Point[] = [depot]
-    const stationVertices: number[] = []
-    for (const target of stations) {
-      const prev = points.at(-1)!
-      if (prev.y !== target.y)
-        points.push(
-          { x: (prev.x + target.x) / 2, y: prev.y },
-          { x: (prev.x + target.x) / 2, y: target.y }
-        )
-      points.push(target)
-      stationVertices.push(points.length - 1)
-    }
-    const end = points.at(-1)!
-    points.push(
-      { x: hub.x - STATION_SPACING / 2, y: end.y },
-      { x: hub.x - STATION_SPACING / 2, y: hub.y },
-      { x: hub.x, y: hub.y }
-    )
-    const track = roundTrack(points, (i) =>
-      stationVertices.includes(i) ? 0 : CORNER_RADIUS
-    )
-    const distances = stationVertices.map((v) => track.vertexDistance[v] ?? 0)
-    return {
-      line,
-      number: index + 1,
-      color: lineColor(line, index),
-      shape: "direct",
-      side: "left",
-      points,
-      stationTrack: stations,
-      track,
-      trackEnd: track.length,
-      stations,
-      stationDistances: distances,
-      stopStationIds: ids,
-      depot,
-    }
-  })
-  return {
-    width: hub.x + HUB_LABEL_HALF_WIDTH + PADDING,
-    height: rowY(Math.max(0, lines.length - 1)) + TRAIN_ROOM + PADDING,
-    hub,
-    hubHalfHeight: HUB_RADIUS,
-    routes,
-  }
 }

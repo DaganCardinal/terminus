@@ -13,6 +13,7 @@ export interface RepairGitInput {
   id: string
   source: RepairSource
   scope: string[]
+  problem?: { kind: "conflict" | "checks" | "review"; id: string }
 }
 
 /** Orchestration owns the merge parents; the harness supplies only a resolved tree. */
@@ -81,11 +82,35 @@ export class TechnicianGit {
       ["checkout", "--detach", source.terminusCommit],
       technicianDirectory
     )
+    if (this.input.source.kind === "junction_feature") {
+      this.baselineTree = requireCommit(
+        (
+          await git(
+            this.workspace,
+            ["rev-parse", `${source.terminusCommit}^{tree}`],
+            technicianDirectory
+          )
+        ).trim()
+      )
+      if (saved !== source.terminusCommit) {
+        await git(
+          this.workspace,
+          ["checkout", "--detach", saved],
+          technicianDirectory
+        )
+        await this.snapshot(saved)
+        return saved
+      }
+      return null
+    }
     await this.merge()
     // Build a reference tree that contains every clean automatic merge result.
     // Only the conflicted files use Terminus's version, so scope comparisons
     // do not mistake clean incoming Train work for Technician edits.
-    for (const path of scope) {
+    for (const path of this.input.problem?.kind &&
+    this.input.problem.kind !== "conflict"
+      ? []
+      : scope) {
       const stages = await git(
         this.workspace,
         ["ls-files", "-u", "--", path],
@@ -108,7 +133,11 @@ export class TechnicianGit {
     this.baselineTree = requireCommit(
       (await git(this.workspace, ["write-tree"], technicianDirectory)).trim()
     )
-    await git(this.workspace, ["merge", "--abort"], technicianDirectory)
+    await git(
+      this.workspace,
+      ["reset", "--hard", source.terminusCommit],
+      technicianDirectory
+    )
     if (saved !== source.terminusCommit) {
       await git(
         this.workspace,
@@ -146,6 +175,13 @@ export class TechnicianGit {
     )
       .split("\0")
       .filter(Boolean)
+    if (this.input.problem?.kind && this.input.problem.kind !== "conflict") {
+      if (merged.exitCode !== 0 || paths.length)
+        throw new RepositoryMovedError(
+          "Check/review repair encountered an unrecorded conflict"
+        )
+      return
+    }
     if (
       merged.exitCode === 0 ||
       !paths.length ||
@@ -180,8 +216,9 @@ export class TechnicianGit {
             tree,
             "-p",
             this.input.source.terminusCommit,
-            "-p",
-            this.input.source.trainCommit,
+            ...(this.input.source.kind === "junction_feature"
+              ? []
+              : ["-p", this.input.source.trainCommit]),
             "-m",
             this.message(),
           ],
@@ -213,7 +250,9 @@ export class TechnicianGit {
     ).trim()
     if (
       parents !==
-        `${this.input.source.terminusCommit} ${this.input.source.trainCommit}` ||
+        (this.input.source.kind === "junction_feature"
+          ? this.input.source.terminusCommit
+          : `${this.input.source.terminusCommit} ${this.input.source.trainCommit}`) ||
       message !== this.message()
     )
       throw new RepositoryMovedError(

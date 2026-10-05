@@ -6,7 +6,9 @@ import { accept, reject, type Transition } from "./transition"
 
 /** Where a stopped Train is on the map. */
 export type TrainLocation =
-  { kind: "depot" } | { kind: "station"; stationId: StationId }
+  | { kind: "depot" }
+  | { kind: "station"; stationId: StationId }
+  | { kind: "junction"; junctionId: string }
 
 export interface TrainReady {
   status: "ready"
@@ -65,6 +67,7 @@ export interface TrainBlocked {
 
 export interface TrainUnloaded {
   status: "unloaded"
+  destination?: import("./junction").LineDestination
   mergeCommit: CommitId
 }
 
@@ -88,6 +91,10 @@ export type TrainState =
 export type TrainStatus = TrainState["status"]
 
 export interface Train {
+  destination?: import("./junction").LineDestination
+  junctionId?: string
+  integrationIds?: string[]
+  repairIds?: string[]
   id: TrainId
   lineId: LineId
   repoId: RepoId
@@ -105,6 +112,7 @@ export interface CreateTrainInput {
   line: Line
   repoId: RepoId
   terminusCommit: CommitId
+  headCommit?: CommitId
 }
 
 /** Creates a Train at its Line's depot, forked from the given Terminus state. */
@@ -114,9 +122,10 @@ export function createTrain(input: CreateTrainInput): Transition<Train> {
     lineId: input.line.id,
     repoId: input.repoId,
     terminusBaseline: input.terminusCommit,
-    headCommit: input.terminusCommit,
+    headCommit: input.headCommit ?? input.terminusCommit,
+    ...(input.line.destination ? { destination: input.line.destination } : {}),
     carIds: [],
-    state: { status: "ready", at: { kind: "depot" } },
+    state: { status: "ready", at: input.line.origin ?? { kind: "depot" } },
   }
   return accept(train, [
     {

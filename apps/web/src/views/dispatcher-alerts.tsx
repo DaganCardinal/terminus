@@ -54,6 +54,31 @@ export function AttentionMessages({
   )
   return (
     <>
+      {(snapshot.junctions ?? [])
+        .filter(
+          (j) => j.state.status === "ready" || j.state.status === "blocked"
+        )
+        .map((j) => (
+          <DispatcherMessage
+            card
+            key={j.id}
+            tone={j.state.status === "ready" ? "review" : "attention"}
+            meta="Junction"
+          >
+            <p>
+              <strong>{j.name}</strong>{" "}
+              {j.state.status === "ready"
+                ? "is accepted and waiting for feature release."
+                : "needs intervention."}
+            </p>
+            {j.state.status === "blocked" && (
+              <p className="dmsg-quote">{describeIssues(j.state.issues)}</p>
+            )}
+            <div className="dmsg-actions">
+              {open(j.outgoingLineId, "Review Junction")}
+            </div>
+          </DispatcherMessage>
+        ))}
       {blocked.map(({ train }) => {
         if (train.state.status !== "blocked") return null
         const exhausted = train.state.issues.filter(

@@ -11,7 +11,7 @@ export interface RepoRef {
 }
 
 export interface IntegrationMergeInput {
-  purpose?: "terminus" | "crossing"
+  purpose?: "terminus" | "crossing" | "junction"
   id: string
   terminusRepoId: RepoId
   terminusCommit: CommitId

@@ -8,6 +8,8 @@ Terminus is an orchestration platform that coordinates many coding agents workin
 
 ## Project context
 
+Junction convergence, feature acceptance, human release, downstream routes, repairs and map/details are implemented and verified offline. Live Artifacts/Sandbox Junction verification remains maintainer-owned; see `docs/junctions.md`.
+
 - Terminus is being built as an entry for Cloudflare's "next Git platform" competition. **The submission deadline is October 14, 2026.** The project must use **Cloudflare Workers** and **Cloudflare Artifacts**. The minimum bar is a demo of multiple agents working on changes concurrently.
 - The submission must include a 5–10 minute demo video, source code under a permissive open-source license (MIT; see `license.md`), and instructions for running the project. Prioritize work that makes the end-to-end concurrent-agent flow real and demonstrable.
 - The Terminus source code is hosted on GitHub. The *projects Terminus manages* live in Artifacts.
@@ -54,7 +56,7 @@ Use these terms precisely. They are not aliases for Git concepts.
 | **Line** | An ordered workstream that runs from a distant **depot**, through its Stations, to Terminus. It is not a branch. Lines do not branch. A configured one-way Crossing visits another Line's Station to merge its accepted checkpoint, copy missing Cars with provenance, and continue on the receiving Line. |
 | **Station** | One clearly defined task, defined by a Work Manifest. It is not an issue. |
 | **Work Manifest** | The structured definition of a Station: goal, scope, expected areas, areas to avoid, contracts, invariants, dependencies, acceptance criteria, and expected evidence. It is a first-class domain object stored in D1, never just a prompt. |
-| **Train** | The evolving integration snapshot for a Line. It is not a branch. Its repository is forked from Terminus when the Train is created, and it accumulates accepted work in order. Each Train owns its own state. |
+| **Train** | The evolving integration snapshot for a Line. It is not a branch. Incoming and ordinary Train repositories fork Terminus; outgoing Junction Trains fork the approved feature head and retain the frozen Terminus baseline. Each Train accumulates accepted work in order and owns its own state. |
 | **Car** | One accepted unit of work on a Train. It is not a commit. A Car is a D1 domain record with provenance (manifest, agent config, source and accepted commits, diff, evidence, review) that references the Train repository. It has no repository of its own. |
 | **Depot** | The far end of a Line, where its Train is created. |
 | **Review yard** | A map area for completed Trains held for human unloading approval. They remain resumable and do not reserve Terminus clearance. |
@@ -84,7 +86,7 @@ Canonical definitions are in `docs/outline-updated.md` (see "Train States" and "
 - There is no "departing" state. `train.departed` is the event that moves a Train from `ready` to `in_transit`.
 - A `held` Train is stopped by an expected condition (a user hold, sequencing, or an unmet dependency) and resumes on its own when the condition clears. A `blocked` Train has hit a problem and needs intervention.
 - During a revision, the Train stays `docked`.
-- The two terminal states: `unloaded` means the Train's work was integrated into Terminus and the Train is removed from the map (its Cars stay in history). `siding` means the Train was abandoned and parked on the siding.
+- The two terminal states: `unloaded` means the Train's work was accepted into its configured destination and it is removed from the map (its Cars stay in history). A Junction destination is feature convergence, not canonical integration; legacy unload records mean Terminus. `siding` means the Train was abandoned and parked on the siding.
 
 **Station states:** `waiting` · `signaled` · `active` · `ready_for_pickup` · `in_review` · `revising` · `blocked` · `complete` · `cancelled`
 
@@ -125,7 +127,8 @@ These decisions are settled. The details are in `docs/technology-architecture.md
 - **Workflows:**
   - **One Train Workflow per Train.** It runs the whole lifecycle from the depot to `unloaded` or `siding`, and it is the **only writer** of that Train's state. The Dispatcher, the user, and Station Workflows send events to it and never write the Train's state directly.
   - **One Station Workflow per Station run.**
-  - **One Terminus integration Workflow per integration attempt.**
+  - **One shared Integration Workflow per integration attempt**, with explicit Terminus, Crossing or Junction purpose and exact source/target snapshots.
+  - **One Junction Workflow per Junction**, owning its lifecycle and serializing convergence. Train Workflows remain their Trains' only state writers.
   - **One Dispatch Workflow per planning request.** It prepares a persisted proposal, waits for an explicit launch command, lays all planned Lines atomically, and starts their Train Workflows with stable identities.
 - **Station execution:**
   1. Fork the Station repo from the Train.
@@ -293,3 +296,15 @@ Workspace-specific commands:
 - Crossing merges use the shared candidate/validation/promotion machinery. They are an explicit exception to the pre-Terminus merge rule; ordinary Station acceptance remains a fast-forward. Only Terminus integration writes canonical project state.
 - Line exchange must be an acyclic one-way flow. No reciprocal exchanges, source manifest reruns, cherry-picking, rebasing, or squashing. Failed handoffs block and alert the Dispatcher; retry is explicit and Crossing Technician repair is deferred.
 - Integration reservations are per target repository. Uncertain promotions retain their reservation and must be reconciled before retry or siding. The receiving Train Workflow alone changes its Train state and completes pickup.
+
+## Junctions
+
+- A Junction is a first-class feature convergence repository, never canonical Terminus. Its feature brief is a D1 domain object, not an implementation Station. `docs/junctions.md` covers ownership, API, recovery and verification.
+- One Junction Workflow alone writes its lifecycle (`collecting`, `reviewing`, `ready`, `released`, `blocked`, `abandoned`) and serializes input scheduling. Train Workflows remain their Trains' only state writers.
+- Incoming Lines end at a Junction; its outgoing Line originates there and may have zero Stations. Membership, routes and the Terminus baseline freeze at launch. V1 supports independent Junctions, with no nesting or baseline refresh.
+- Every input Train and the Junction fork the same frozen Terminus commit. Input acceptance is automatic independent validation plus Conductor compatibility review. After all inputs, complete feature validation/review precede commit-bound human release. Incoming unloads have a Junction destination and must never appear in canonical history or Terminus-only clearance/repair paths. Legacy unloads mean Terminus.
+- Junction input merges are another explicit pre-Terminus merge boundary. Preserve merge history and accepted Car commits. Target reservations stay active until the Junction head, accepted ledger, receipt and events are durably acknowledged; reconcile uncertain writes before retry or abandonment.
+- Release creates exactly one outgoing Train from the approved head, retaining the frozen baseline. Copy Cars in integration order, deduplicate original identities, preserve accepted history/evidence/reviews/timestamps and record immediate source/Junction provenance. Integration reviews and Technician changes remain referenced records rather than Station Cars. Final Terminus integration handles newer canonical work.
+- Crossings within one Junction are allowed; transfers across feature boundaries are refused. Released outgoing Lines participate in ordinary main-Network Crossing rules. Include feature-release edges when checking dependency cycles.
+- Junction Technician repair uses typed conflict/check/review failure references. Conflict scope is recorded files; check/review scope is an explicit bounded file list. Verify actual edits and ancestry independently, validate/review, require exact-candidate human approval, and rerun feature acceptance. Repair approval does not authorize release.
+- Siding a required unfinished member blocks fixed membership. Abandonment resolves promotions first and sides unfinished members through their workflows at safe gates. Preserve already accepted work; never partially release or roll it back.

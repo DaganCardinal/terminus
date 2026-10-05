@@ -9,6 +9,8 @@ import { hasConcreteRepositoryChange, type WorkManifest } from "./manifest"
 import { accept, reject, type Transition } from "./transition"
 
 export interface PlannedLine {
+  origin?: import("./junction").LineOrigin
+  destination?: import("./junction").LineDestination
   key: string
   name: string
   /** Absent only on legacy persisted proposals. */
@@ -19,7 +21,24 @@ export interface PlannedLine {
   stations: { key: string; name: string; manifest: WorkManifest }[]
 }
 
+export interface PlannedJunction {
+  key: string
+  name: string
+  brief: import("./junction").FeatureBrief
+  incoming: {
+    name: string
+    stations: PlannedLine["stations"]
+    route?: PlannedLine["route"]
+  }[]
+  outgoing: {
+    name: string
+    stations: PlannedLine["stations"]
+    route?: PlannedLine["route"]
+    unloadMode?: import("./unload-policy").UnloadMode
+  }
+}
 export interface DispatchProposal {
+  junctions?: PlannedJunction[]
   summary: string
   lines: PlannedLine[]
 }
@@ -40,6 +59,7 @@ export interface PlanningContext {
   validationNames: string[]
   lines?: Line[]
   stations?: Station[]
+  junctions?: import("./junction").Junction[]
   crossings?: import("./crossing").Crossing[]
   activeLines: { name: string; manifests: WorkManifest[] }[]
 }
@@ -82,6 +102,38 @@ export function assessDispatchProposal(
   context: PlanningContext
 ): PlanAssessment {
   const errors: string[] = []
+  if (proposal.junctions?.length) {
+    const keys = proposal.junctions.map((j) => j.key)
+    if (new Set(keys).size !== keys.length)
+      errors.push("Junction keys must be unique")
+    const expanded: DispatchProposal = {
+      summary: proposal.summary,
+      lines: [...proposal.lines],
+    }
+    for (const j of proposal.junctions) {
+      if (j.incoming.length < 2)
+        errors.push("A Junction needs at least two incoming Lines")
+      expanded.lines.push(
+        ...j.incoming.map((l, i) => ({
+          ...l,
+          key: `${j.key}-l${i}`,
+          destination: { kind: "junction" as const, junctionId: j.key },
+        })),
+        {
+          ...j.outgoing,
+          key: `${j.key}-outgoing`,
+          origin: { kind: "junction" as const, junctionId: j.key },
+        }
+      )
+    }
+    const assessed = assessDispatchProposal(expanded, context)
+    return {
+      ...assessed,
+      errors: [...new Set([...errors, ...assessed.errors])],
+    }
+  }
+  if (!proposal.lines.length)
+    errors.push("A plan needs at least one Line or Junction")
   const collisions: CollisionForecast[] = []
   let resolvedLines: Line[] = context.lines ?? []
   let resolvedStations: Station[] = context.stations ?? []
@@ -104,7 +156,21 @@ export function assessDispatchProposal(
         errors.push(`Duplicate Station key: ${station.key}`)
       stationKeys.add(station.key)
       for (const dependency of station.manifest.dependencies) {
-        if (!seen.has(dependency) && !line.route)
+        if (
+          !seen.has(dependency) &&
+          !line.route &&
+          !(
+            line.origin?.kind === "junction" &&
+            proposal.lines.some(
+              (l) =>
+                l.destination?.kind === "junction" &&
+                l.destination.junctionId ===
+                  (line.origin as { kind: "junction"; junctionId: string })
+                    .junctionId &&
+                l.stations.some((s) => s.key === dependency)
+            )
+          )
+        )
           errors.push(
             `${label}: dependency ${dependency} must be an earlier Station on the same Line${plannedKeys.has(dependency) ? "" : " (unknown key)"}.`
           )
@@ -149,6 +215,8 @@ export function assessDispatchProposal(
             id: l.key,
             networkId: context.lines?.[0]?.networkId ?? "plan",
             name: l.name,
+            ...(l.origin ? { origin: l.origin } : {}),
+            ...(l.destination ? { destination: l.destination } : {}),
             stationIds: l.stations.map((s) => s.key),
           },
           l.route,
@@ -175,6 +243,18 @@ export function assessDispatchProposal(
     const station = resolvedStations.find((s) => s.manifest === consumer)
     const line = resolvedLines.find((l) => l.id === station?.lineId)
     if (!station || !line) return false
+    const providerStation = resolvedStations.find(
+      (s) => s.manifest === provider
+    )
+    const providerLine = resolvedLines.find(
+      (l) => l.id === providerStation?.lineId
+    )
+    if (
+      line.origin?.kind === "junction" &&
+      providerLine?.destination?.kind === "junction" &&
+      line.origin.junctionId === providerLine.destination.junctionId
+    )
+      return true
     const includesProvider = (
       checkpointId: string,
       seen = new Set<string>()
@@ -253,7 +333,10 @@ export function assessDispatchProposal(
         })
     }
   }
-  return { errors: [...new Set(errors)], collisions }
+  return {
+    errors: [...new Set(errors)],
+    collisions,
+  }
 }
 
 function pathsOverlap(a: string, b: string): boolean {
@@ -316,8 +399,18 @@ export function launchDispatchPlan(
   if (plan.state.status !== "launching")
     return reject("invalid_state", "Plan launch was not requested")
   if (
-    lineIds.length !== plan.state.proposal.lines.length ||
-    trainIds.length !== lineIds.length
+    lineIds.length !==
+      plan.state.proposal.lines.length +
+        (plan.state.proposal.junctions ?? []).reduce(
+          (n, j) => n + j.incoming.length + 1,
+          0
+        ) ||
+    trainIds.length !==
+      plan.state.proposal.lines.length +
+        (plan.state.proposal.junctions ?? []).reduce(
+          (n, j) => n + j.incoming.length,
+          0
+        )
   )
     return reject("invalid_input", "Every planned Line must have one Train")
   return accept(
@@ -374,6 +467,37 @@ export function selectPlannedUnloadMode(
   if (plan.state.status !== "ready")
     return reject("invalid_state", "Unload selections require a ready proposal")
   const line = plan.state.proposal.lines.find((line) => line.key === lineKey)
+  if (!line) {
+    const junction = plan.state.proposal.junctions?.find(
+      (j) => `${j.key}-outgoing` === lineKey
+    )
+    if (!junction) return reject("invalid_input", "Unknown planned Line")
+    if (junction.outgoing.unloadMode === mode) return accept(plan, [])
+    return accept(
+      {
+        ...plan,
+        state: {
+          ...plan.state,
+          proposal: {
+            ...plan.state.proposal,
+            junctions: plan.state.proposal.junctions!.map((j) =>
+              j.key === junction.key
+                ? { ...j, outgoing: { ...j.outgoing, unloadMode: mode } }
+                : j
+            ),
+          },
+        },
+      },
+      [
+        {
+          type: "dispatcher.unload_mode_changed",
+          planId: plan.id,
+          lineKey,
+          mode,
+        },
+      ]
+    )
+  }
   if (!line) return reject("invalid_input", "Unknown planned Line")
   if (line.unloadMode === mode) return accept(plan, [])
   return accept(

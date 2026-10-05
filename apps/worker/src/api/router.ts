@@ -1,3 +1,9 @@
+import { layJunction } from "../agents/junctions"
+import {
+  dispatchJunctionRepair,
+  approveJunctionRepair,
+} from "../agents/junction-repairs"
+import { junctionDispatchPorts } from "../agents/ports"
 import {
   selectPlanUnloadMode,
   updateTrainUnload,
@@ -5,6 +11,9 @@ import {
 import { dispatchTechnician, approveTechnician } from "../agents/technician"
 import { networkModels, technicianPorts } from "../agents/ports"
 import {
+  createJunctionRequestSchema,
+  releaseJunctionRequestSchema,
+  junctionRepairRequestSchema,
   terminusPreviewRequestSchema,
   setUnloadModeRequestSchema,
   approveUnloadRequestSchema,
@@ -22,7 +31,11 @@ import {
 import type { z } from "zod"
 import { launchTrainPreview, PreviewError } from "../integrations/train-preview"
 import { launchTerminusPreview } from "../integrations/terminus-preview"
-import { layCrossingDemoLines, layDemoLines } from "../agents/demo-network"
+import {
+  layCrossingDemoLines,
+  layDemoLines,
+  layJunctionDemo,
+} from "../agents/demo-network"
 import {
   clearTrain,
   createNetwork,
@@ -48,6 +61,199 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/demo/junctions" }),
+    async (request, env, { networkId }) => {
+      const query = new URL(request.url).searchParams
+      return json(
+        await layJunctionDemo(
+          junctionDispatchPorts(env),
+          networkId!,
+          (await networkModels(env, networkId!)).conductor,
+          {
+            direct: query.get("direct") === "true",
+            crossing: query.get("crossing") === "true",
+          }
+        ),
+        201
+      )
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/junctions" }),
+    async (request, env, { networkId }) =>
+      json(
+        await layJunction(
+          junctionDispatchPorts(env),
+          networkId!,
+          await parse(request, createJunctionRequestSchema),
+          (await networkModels(env, networkId!)).conductor
+        ),
+        201
+      ),
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/junctions/:junctionId" }),
+    async (_, env, { junctionId }) => {
+      const store = dispatcherPorts(env).store,
+        j = await store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      const snapshot = await store.snapshot(j.networkId)
+      return json({
+        junction: j.value,
+        attempts: (await store.integrations(j.networkId)).filter(
+          (a) => a.input.junctionId === junctionId
+        ),
+        repairs: (await store.repairs(j.networkId)).filter(
+          (r) => r.source.junctionId === junctionId
+        ),
+        cars:
+          snapshot?.cars.filter(
+            (c) =>
+              j.value.inputs.some((i) => i.carIds.includes(c.id)) ||
+              c.junctionId === junctionId
+          ) ?? [],
+      })
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/junctions/:junctionId/release" }),
+    async (request, env, { junctionId }) => {
+      const ports = junctionDispatchPorts(env),
+        body = await parse(request, releaseJunctionRequestSchema)
+      const j = await ports.store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      try {
+        await ports.store.commandJunction(junctionId!, body)
+      } catch {
+        throw new DispatchError(
+          409,
+          "Release requires the exact accepted Junction commit"
+        )
+      }
+      await ports.wakeJunction(junctionId!).catch(() => {})
+      return json({ ok: true }, 202)
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/junctions/:junctionId/retry" }),
+    async (_, env, { junctionId }) => {
+      const ports = junctionDispatchPorts(env),
+        j = await ports.store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      if (j.value.state.status === "abandoned")
+        throw new DispatchError(409, "Junction is abandoned")
+      if (j.value.state.status !== "blocked") return json({ ok: true }, 202)
+      for (const a of await ports.store.integrations(j.networkId))
+        if (
+          a.input.junctionId === junctionId &&
+          ["cleared", "prepared"].includes(a.status) &&
+          a.result
+        ) {
+          const workflow = await env.INTEGRATION_WORKFLOW.get(a.input.id)
+          if ((await workflow.status()).status !== "errored")
+            throw new DispatchError(
+              409,
+              "Wait for the interrupted integration to stop before retrying"
+            )
+          await ports.store.retryIntegration(a.input.id)
+        }
+      await ports.store.commandJunction(junctionId!, { retry: true })
+      await ports.wakeJunction(junctionId!).catch(() => {})
+      return json({ ok: true }, 202)
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/junctions/:junctionId/abandon" }),
+    async (request, env, { junctionId }) => {
+      const ports = junctionDispatchPorts(env),
+        j = await ports.store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      if (j.value.state.status === "released")
+        throw new DispatchError(409, "Junction already released")
+      const { reason } = await parse(request, removeStationRequestSchema)
+      await ports.store.commandJunction(junctionId!, { reason })
+      await ports.wakeJunction(junctionId!).catch(() => {})
+      return json({ ok: true }, 202)
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/junctions/:junctionId/repairs" }),
+    async (request, env, { junctionId }) => {
+      const j = await dispatcherPorts(env).store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      return json(
+        await dispatchJunctionRepair(
+          technicianPorts(env, await networkModels(env, j.networkId)),
+          junctionId!,
+          await parse(request, junctionRepairRequestSchema)
+        ),
+        202
+      )
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname: "/api/junctions/:junctionId/repairs/:repairId/approve",
+    }),
+    async (request, env, { junctionId, repairId }) => {
+      const j = await dispatcherPorts(env).store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      const repair = await approveJunctionRepair(
+        technicianPorts(env, await networkModels(env, j.networkId)),
+        repairId!,
+        junctionId!,
+        (await parse(request, releaseJunctionRequestSchema)).commit
+      )
+      await junctionDispatchPorts(env)
+        .wakeJunction(junctionId!)
+        .catch(() => {})
+      return json(repair, 202)
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/junctions/:junctionId/repository" }),
+    async (_, env, { junctionId }) => {
+      const ports = dispatcherPorts(env),
+        j = await ports.store.junction(junctionId!)
+      return j
+        ? json(
+            await ports.repositories.readOverview(
+              j.value.repoId,
+              j.value.headCommit
+            )
+          )
+        : notFound("Unknown Junction")
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/junctions/:junctionId/repository/file" }),
+    async (request, env, { junctionId }) => {
+      const ports = dispatcherPorts(env),
+        j = await ports.store.junction(junctionId!)
+      if (!j) return notFound("Unknown Junction")
+      const query = repositoryFileQuerySchema.safeParse(
+        Object.fromEntries(new URL(request.url).searchParams)
+      )
+      if (!query.success) return error(400, "commit and path are required")
+      const file = await ports.repositories.readFile(
+        j.value.repoId,
+        query.data.commit,
+        query.data.path
+      )
+      return file ? commitAddressed(file, true) : notFound("No such file")
+    },
+  ],
   [
     "POST",
     new URLPattern({ pathname: "/api/networks/:networkId/demo/crossings" }),

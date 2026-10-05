@@ -34,6 +34,7 @@ import {
   shortCommit,
 } from "./detail-parts"
 import { describeEvent, describeLocation, namesFor } from "./describe"
+import { JunctionDetails } from "./junctions"
 import { UnloadModeSelect } from "./unload-mode-select"
 import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
@@ -413,6 +414,9 @@ export function TrainDetails({
   pending: boolean
   run: Run
 }) {
+  const junction = snapshot.junctions?.find(
+    (j) => j.incomingLineIds.includes(line.id) || j.outgoingLineId === line.id
+  )
   const views = snapshot.trains.filter((v) => v.train.lineId === line.id)
   const name = namesFor(snapshot)
   const color = lineColor(line, snapshot.lines.indexOf(line))
@@ -424,6 +428,20 @@ export function TrainDetails({
   )
   return (
     <>
+      {junction && (
+        <details>
+          <summary>
+            Junction · {junction.name} · {junction.state.status}
+          </summary>
+          <JunctionDetails
+            junction={junction}
+            snapshot={snapshot}
+            run={run}
+            pending={pending}
+            onSource={(lineId) => onSelect({ lineId })}
+          />
+        </details>
+      )}
       {views.length === 0 && (
         <p className="detail-lead">No Train is running on this Line.</p>
       )}
@@ -450,52 +468,58 @@ export function TrainDetails({
                 {signal ? `Signal ${signal}` : "No current Engineer decision"}
               </span>
             </div>
-            <p className="detail-lead">{describeLocation(train.state, name)}</p>
+            <p className="detail-lead">
+              {describeLocation(train.state, name, train.destination)}
+            </p>
             <TrainPreviewButton trainId={train.id} commit={train.headCommit} />
-            <UnloadModeSelect
-              mode={policy?.mode ?? "auto"}
-              recommendation={policy?.recommendation}
-              disabled={pending || closed}
-              onChange={(mode) =>
-                void run(() => api.setTrainUnloadMode(train.id, mode))
-              }
-            />
-            {policy?.mode === "human_approval" && atEntry && (
-              <Callout
-                tone="review"
-                icon={<ClipboardCheck size={15} />}
-                title={
-                  approved
-                    ? "Approved for unloading"
-                    : "Review before unloading"
+            {train.destination?.kind !== "junction" && (
+              <UnloadModeSelect
+                mode={policy?.mode ?? "auto"}
+                recommendation={policy?.recommendation}
+                disabled={pending || closed}
+                onChange={(mode) =>
+                  void run(() => api.setTrainUnloadMode(train.id, mode))
                 }
-              >
-                <p>
-                  {approved
-                    ? "Waiting for the remaining Terminus gates to clear."
-                    : "Review the accepted Cars and preview the Train before approving unloading."}
-                </p>
-                <p>
-                  Approval covers Train commit{" "}
-                  <code>{shortCommit(train.headCommit)}</code>. The merge with
-                  current Terminus will be validated afterward.
-                </p>
-                {!approved && (
-                  <Button
-                    className="callout-action"
-                    size="sm"
-                    disabled={pending}
-                    onClick={() =>
-                      void run(() =>
-                        api.approveTrainUnload(train.id, train.headCommit)
-                      )
-                    }
-                  >
-                    Approve unloading
-                  </Button>
-                )}
-              </Callout>
+              />
             )}
+            {train.destination?.kind !== "junction" &&
+              policy?.mode === "human_approval" &&
+              atEntry && (
+                <Callout
+                  tone="review"
+                  icon={<ClipboardCheck size={15} />}
+                  title={
+                    approved
+                      ? "Approved for unloading"
+                      : "Review before unloading"
+                  }
+                >
+                  <p>
+                    {approved
+                      ? "Waiting for the remaining Terminus gates to clear."
+                      : "Review the accepted Cars and preview the Train before approving unloading."}
+                  </p>
+                  <p>
+                    Approval covers Train commit{" "}
+                    <code>{shortCommit(train.headCommit)}</code>. The merge with
+                    current Terminus will be validated afterward.
+                  </p>
+                  {!approved && (
+                    <Button
+                      className="callout-action"
+                      size="sm"
+                      disabled={pending}
+                      onClick={() =>
+                        void run(() =>
+                          api.approveTrainUnload(train.id, train.headCommit)
+                        )
+                      }
+                    >
+                      Approve unloading
+                    </Button>
+                  )}
+                </Callout>
+              )}
             {train.state.status === "blocked" && (
               <Callout
                 tone="attention"

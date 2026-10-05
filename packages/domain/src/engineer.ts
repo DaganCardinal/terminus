@@ -93,7 +93,10 @@ export function evaluateTerminusEntry(
   context: GateContext
 ): GateDecision {
   const reasons = holdReasons(train, context)
-  if (!hasUnloadPermission(train, context.unloadPolicy))
+  if (
+    train.destination?.kind !== "junction" &&
+    !hasUnloadPermission(train, context.unloadPolicy)
+  )
     reasons.push({
       kind: "awaiting_user_approval",
       trainCommit: train.headCommit,

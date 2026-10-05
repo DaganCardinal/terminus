@@ -3,9 +3,47 @@ import { evidenceSchema } from "./agents"
 import { holdReasonSchema, issueSchema } from "./events"
 import { validationCommandsSchema } from "./execution"
 
-export const integrationInputSchema = z
+const repositoryRef = { repoId: z.string().min(1), commit: z.string().min(1) }
+export const integrationSourceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("train"),
+    trainId: z.string().min(1),
+    ...repositoryRef,
+  }),
+  z.object({
+    kind: z.literal("checkpoint"),
+    crossingId: z.string().min(1),
+    ...repositoryRef,
+  }),
+  z.object({
+    kind: z.literal("junction"),
+    junctionId: z.string().min(1),
+    ...repositoryRef,
+  }),
+])
+export const integrationTargetSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("terminus"),
+    networkId: z.string().min(1),
+    ...repositoryRef,
+  }),
+  z.object({
+    kind: z.literal("train"),
+    trainId: z.string().min(1),
+    ...repositoryRef,
+  }),
+  z.object({
+    kind: z.literal("junction"),
+    junctionId: z.string().min(1),
+    ...repositoryRef,
+  }),
+])
+const legacyIntegrationInputSchema = z
   .object({
-    purpose: z.enum(["terminus", "crossing"]).optional(),
+    source: integrationSourceSchema.optional(),
+    target: integrationTargetSchema.optional(),
+    purpose: z.enum(["terminus", "crossing", "junction"]).optional(),
+    junctionId: z.string().optional(),
     crossingId: z.string().optional(),
     conductorModel: z.string().optional(),
     repairId: z.string().min(1).optional(),
@@ -21,9 +59,87 @@ export const integrationInputSchema = z
     validation: validationCommandsSchema,
   })
   .refine(
-    (i) => i.purpose !== "crossing" || (!!i.crossingId && !i.repairId),
+    (i) =>
+      (i.purpose !== "crossing" || (!!i.crossingId && !i.repairId)) &&
+      (i.purpose !== "junction" || !!i.junctionId),
     "Crossing requires a Crossing identity and cannot use a Terminus repair"
   )
+/** Normalize legacy field names once at the boundary; explicit refs are persisted for every purpose. */
+export const integrationInputSchema = legacyIntegrationInputSchema.transform(
+  (i, ctx) => {
+    const purpose = i.purpose ?? "terminus"
+    let source: z.infer<typeof integrationSourceSchema>,
+      target: z.infer<typeof integrationTargetSchema>
+    switch (purpose) {
+      case "terminus":
+        source = {
+          kind: "train",
+          trainId: i.trainId,
+          repoId: i.trainRepoId,
+          commit: i.trainCommit,
+        }
+        target = {
+          kind: "terminus",
+          networkId: i.networkId,
+          repoId: i.terminusRepoId,
+          commit: i.terminusCommit,
+        }
+        break
+      case "crossing":
+        source = {
+          kind: "checkpoint",
+          crossingId: i.crossingId!,
+          repoId: i.trainRepoId,
+          commit: i.trainCommit,
+        }
+        target = {
+          kind: "train",
+          trainId: i.trainId,
+          repoId: i.terminusRepoId,
+          commit: i.terminusCommit,
+        }
+        break
+      case "junction":
+        source =
+          i.repairId && i.trainRepoId === i.terminusRepoId
+            ? {
+                kind: "junction",
+                junctionId: i.junctionId!,
+                repoId: i.trainRepoId,
+                commit: i.trainCommit,
+              }
+            : {
+                kind: "train",
+                trainId: i.trainId,
+                repoId: i.trainRepoId,
+                commit: i.trainCommit,
+              }
+        target = {
+          kind: "junction",
+          junctionId: i.junctionId!,
+          repoId: i.terminusRepoId,
+          commit: i.terminusCommit,
+        }
+        break
+      default: {
+        const never: never = purpose
+        throw new Error(`Unknown integration purpose ${never}`)
+      }
+    }
+    if (
+      (i.source && JSON.stringify(i.source) !== JSON.stringify(source)) ||
+      (i.target && JSON.stringify(i.target) !== JSON.stringify(target))
+    )
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Integration source/target references disagree with purpose or snapshots",
+      })
+    return { ...i, source, target } as z.infer<
+      typeof legacyIntegrationInputSchema
+    >
+  }
+)
 export type IntegrationInput = z.infer<typeof integrationInputSchema>
 
 export const integrationCandidateSchema = z.object({

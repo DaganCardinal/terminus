@@ -28,6 +28,7 @@ import {
   gatewayTransport,
   stationMaxRetries,
 } from "../integrations/execution-config"
+import type { JunctionDispatchPorts } from "./junctions"
 import { TRAIN_EVENTS } from "../workflows/events"
 import {
   FakeIntegrationValidator,
@@ -114,6 +115,7 @@ export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
         })
       }
     },
+    wakeJunction: (id) => junctionDispatchPorts(env).wakeJunction(id),
     wakeTrain: (trainId) => wakeTrain(env, trainId),
     newId,
     now: () => new Date().toISOString(),
@@ -242,6 +244,7 @@ export function dispatchPlanningPorts(
 ): DispatchPlanningPorts {
   return {
     ...dispatcherPorts(env),
+    startJunction: (id) => junctionDispatchPorts(env).startJunction(id),
     planner:
       env.DISPATCHER_MODEL === FAKE
         ? new FakeDispatchPlanner()
@@ -356,4 +359,50 @@ async function wakeTrain(env: Env, trainId: string): Promise<void> {
 
 function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`
+}
+
+export function junctionDispatchPorts(env: Env): JunctionDispatchPorts {
+  return {
+    ...dispatcherPorts(env),
+    startJunction: async (id) => {
+      try {
+        await env.JUNCTION_WORKFLOW.create({ id, params: { junctionId: id } })
+      } catch (error) {
+        await env.JUNCTION_WORKFLOW.get(id).catch(() => {
+          throw error
+        })
+      }
+    },
+    wakeJunction: async (id) => {
+      const workflow = await env.JUNCTION_WORKFLOW.get(id)
+      await workflow.sendEvent({ type: "junction-wake", payload: {} })
+    },
+  }
+}
+export function junctionExecutionPorts(env: Env, model: string) {
+  return {
+    ...junctionDispatchPorts(env),
+    ...integrationPorts(env),
+    conductor: conductor(env, model),
+    startIntegration: async (id: string) => {
+      try {
+        await env.INTEGRATION_WORKFLOW.create({
+          id,
+          params: { integrationId: id },
+        })
+      } catch (error) {
+        const workflow = await env.INTEGRATION_WORKFLOW.get(id).catch(() => {
+          throw error
+        })
+        const attempt = await new NetworkStore(env.DB).integration(id)
+        if (
+          (await workflow.status()).status === "errored" &&
+          attempt &&
+          !attempt.result &&
+          ["cleared", "prepared"].includes(attempt.status)
+        )
+          await workflow.restart()
+      }
+    },
+  }
 }

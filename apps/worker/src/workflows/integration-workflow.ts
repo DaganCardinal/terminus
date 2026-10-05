@@ -75,6 +75,13 @@ export class IntegrationWorkflow extends WorkflowEntrypoint<
     await step.do("report to train", { retries }, async () => {
       const attempt = await ports.store.integration(id)
       if (!attempt) throw new Error("Unknown integration attempt")
+      if (attempt.input.purpose === "junction") {
+        const junction = await this.env.JUNCTION_WORKFLOW.get(
+          attempt.input.junctionId!
+        )
+        await junction.sendEvent({ type: "junction-wake", payload: {} })
+        return
+      }
       const train = await this.env.TRAIN_WORKFLOW.get(attempt.input.trainId)
       await train.sendEvent({
         type: TRAIN_EVENTS.integrationOutcome,

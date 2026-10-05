@@ -1,4 +1,8 @@
 import {
+  junctionDetailsSchema,
+  junctionSchema,
+  type CreateJunctionRequest,
+  type Junction,
   crossingDetailsSchema,
   technicianRepairSchema,
   eventsResponseSchema,
@@ -24,6 +28,57 @@ import {
 
 /** Application-level commands and queries against the Worker API. */
 export const api = {
+  layJunctionDemo: (id: string) =>
+    request(`/networks/${id}/demo/junctions`, { method: "POST" }),
+  createJunction: async (
+    networkId: string,
+    body: CreateJunctionRequest
+  ): Promise<Junction> =>
+    junctionSchema.parse(
+      await request(`/networks/${networkId}/junctions`, {
+        method: "POST",
+        body,
+      })
+    ),
+  junction: async (id: string) =>
+    junctionDetailsSchema.parse(
+      await request(`/junctions/${encodeURIComponent(id)}`)
+    ),
+  releaseJunction: (id: string, commit: string) =>
+    request(`/junctions/${encodeURIComponent(id)}/release`, {
+      method: "POST",
+      body: { commit },
+    }),
+  retryJunction: (id: string) =>
+    request(`/junctions/${encodeURIComponent(id)}/retry`, { method: "POST" }),
+  abandonJunction: (id: string, reason: string) =>
+    request(`/junctions/${encodeURIComponent(id)}/abandon`, {
+      method: "POST",
+      body: { reason },
+    }),
+  dispatchJunctionRepair: (
+    id: string,
+    body: { failureId: string; scope?: string[] }
+  ) =>
+    request(`/junctions/${encodeURIComponent(id)}/repairs`, {
+      method: "POST",
+      body,
+    }),
+  approveJunctionRepair: (id: string, repairId: string, commit: string) =>
+    request(
+      `/junctions/${encodeURIComponent(id)}/repairs/${encodeURIComponent(repairId)}/approve`,
+      { method: "POST", body: { commit } }
+    ),
+  junctionRepository: async (id: string) =>
+    repositoryOverviewSchema.parse(
+      await request(`/junctions/${encodeURIComponent(id)}/repository`)
+    ),
+  junctionFile: async (id: string, commit: string, path: string) =>
+    repositoryFileSchema.parse(
+      await request(
+        `/junctions/${encodeURIComponent(id)}/repository/file?${new URLSearchParams({ commit, path })}`
+      )
+    ),
   sideTrain: (id: string, reason: string) =>
     request(`/trains/${encodeURIComponent(id)}/siding`, {
       method: "POST",

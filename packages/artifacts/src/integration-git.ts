@@ -19,7 +19,7 @@ export async function prepareRepositoryMerge(
 ): Promise<IntegrationMerge> {
   const input: IntegrationMergeInput = {
     id: spec.id,
-    purpose: spec.sourceMustMatchHead ? "terminus" : "crossing",
+
     terminusRepoId: spec.targetRepoId,
     terminusCommit: spec.targetCommit,
     trainRepoId: spec.sourceRepoId,
@@ -28,7 +28,7 @@ export async function prepareRepositoryMerge(
     acceptedCommits: spec.acceptedCommits,
   }
   if (
-    input.purpose !== "crossing" &&
+    spec.sourceMustMatchHead &&
     (await remoteHead(workspace, train)) !== input.trainCommit
   )
     throw new RepositoryMovedError("Train moved after Dispatcher clearance")
@@ -54,14 +54,14 @@ export async function prepareRepositoryMerge(
     return result.exitCode === 0
   }
   if (
-    input.purpose !== "crossing" &&
+    spec.sourceMustMatchHead &&
     (!(await ancestor(input.trainBaseline, input.terminusCommit)) ||
       !(await ancestor(input.trainBaseline, input.trainCommit)))
   )
     throw new RepositoryMovedError(
       "Integration no longer shares the Train's Terminus baseline"
     )
-  if (input.purpose === "crossing") {
+  if (!spec.sourceMustMatchHead) {
     const current = await remoteHead(workspace, train)
     if (!current)
       throw new RepositoryMovedError(

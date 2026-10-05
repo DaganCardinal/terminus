@@ -1,4 +1,5 @@
 import {
+  isCanonicalUnload,
   dispatchTechnician as dispatchRepair,
   approveRepair as approveTransition,
   staleRepair,
@@ -121,7 +122,7 @@ export async function dispatchTechnician(
               snapshot.trains.some(
                 (view) =>
                   view.train.carIds.includes(car.id) &&
-                  view.train.state.status === "unloaded"
+                  isCanonicalUnload(view.train)
               )
           )
           .map((car) => car.manifest),

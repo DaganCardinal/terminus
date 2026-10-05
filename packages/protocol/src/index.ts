@@ -13,3 +13,7 @@ export * from "./repository"
 export * from "./unload"
 
 export * from "./technician"
+
+export * from "./junction"
+
+export * from "./junction-details"

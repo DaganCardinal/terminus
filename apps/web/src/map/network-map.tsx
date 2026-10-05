@@ -11,7 +11,11 @@ import type { NetworkSnapshot } from "@terminus/protocol"
 import { BULLET_OFFSET, HUB_RADIUS, TRACK_WIDTH, layoutNetwork } from "./layout"
 import { useTrainMotion } from "./use-train-motion"
 
-export type MapSelection = { lineId: string; stationId?: string }
+export type MapSelection = {
+  lineId: string
+  stationId?: string
+  junctionId?: string
+}
 /** Screen space kept clear of floating UI when fitting the network. */
 export type MapInsets = {
   top: number
@@ -109,8 +113,19 @@ export function NetworkMap({
   const gesture = useRef({ startX: 0, startY: 0, moved: false })
   const suppressClick = useRef(false)
 
-  const { width, height, hub, hubHalfHeight, routes } = layoutNetwork(
-    snapshot.lines
+  const { width, height, hub, hubHalfHeight, routes, junctions, interchanges } =
+    layoutNetwork(snapshot.lines)
+  /** Labels rise above receivers' lanes that pass over their Station. */
+  const labelLift = new Map(
+    interchanges.map((c) => [
+      c.stationId,
+      Math.max(
+        0,
+        ...c.lanes
+          .filter((lane) => !lane.remote)
+          .map((lane) => c.at.y - lane.point.y)
+      ),
+    ])
   )
   const fitted = manual === null
   const view = manual ?? fitView(size, { width, height }, insets)
@@ -354,6 +369,129 @@ export function NetworkMap({
                 />
               </g>
             ))}
+            {interchanges.map((c) => {
+              const ys = [
+                c.at.y,
+                ...c.lanes
+                  .filter((lane) => !lane.remote)
+                  .map((lane) => lane.point.y),
+              ]
+              const top = Math.min(...ys)
+              return (
+                <g key={`interchange-${c.stationId}`} aria-hidden="true">
+                  {c.lanes
+                    .filter((lane) => lane.remote)
+                    .map((lane) => (
+                      <path
+                        key={`link-${lane.crossingId}`}
+                        d={`M${c.at.x},${c.at.y} L${lane.point.x},${lane.point.y}`}
+                        stroke="var(--map-ink)"
+                        strokeWidth={2}
+                        strokeDasharray="4 5"
+                        fill="none"
+                      />
+                    ))}
+                  <rect
+                    x={c.at.x - 10}
+                    y={top - 10}
+                    width={20}
+                    height={Math.max(...ys) - top + 20}
+                    rx={10}
+                    fill="var(--map-paper)"
+                    stroke="var(--map-ink)"
+                    strokeWidth={2.5}
+                  />
+                  {c.lanes.map((lane) => {
+                    const route = routes.find((r) => r.line.id === lane.lineId)
+                    const status = (snapshot.crossings ?? []).find(
+                      (x) => x.id === lane.crossingId
+                    )?.state.status
+                    const tone =
+                      status === "blocked"
+                        ? "var(--map-danger)"
+                        : (route?.color ?? "var(--map-ink)")
+                    return (
+                      <circle
+                        key={lane.crossingId}
+                        cx={lane.point.x}
+                        cy={lane.point.y}
+                        r={5}
+                        fill={status === "complete" ? tone : "var(--map-paper)"}
+                        stroke={tone}
+                        strokeWidth={3}
+                      />
+                    )
+                  })}
+                </g>
+              )
+            })}
+            {junctions.map(({ id, point, halfHeight }) => {
+              const j = (snapshot.junctions ?? []).find((x) => x.id === id)
+              if (!j) return null
+              const name = wrap(j.name, 16, 2)
+              return (
+                <g
+                  key={j.id}
+                  role="button"
+                  tabIndex={0}
+                  className="map-target"
+                  aria-label={`Select Junction ${j.name}, ${j.state.status}`}
+                  onClick={() =>
+                    onSelect({ lineId: j.outgoingLineId, junctionId: j.id })
+                  }
+                  onKeyDown={(e) =>
+                    keyboard(e, () =>
+                      onSelect({ lineId: j.outgoingLineId, junctionId: j.id })
+                    )
+                  }
+                >
+                  <title>{j.name}</title>
+                  <rect
+                    x={point.x - 28}
+                    y={point.y - halfHeight}
+                    width={56}
+                    height={halfHeight * 2}
+                    rx={12}
+                    fill="var(--map-paper)"
+                    stroke="var(--map-ink)"
+                    strokeWidth={3}
+                  />
+                  <text
+                    x={point.x}
+                    y={point.y + 10}
+                    textAnchor="middle"
+                    className="hub-letter"
+                    style={{ fill: "var(--map-ink)" }}
+                  >
+                    J
+                  </text>
+                  {/* Above the marker: below it is where the outgoing Train waits. */}
+                  <text
+                    x={point.x}
+                    y={point.y - halfHeight - 30 - (name.length - 1) * 18}
+                    textAnchor="middle"
+                    className="route-name"
+                  >
+                    {name.map((text, k) => (
+                      <tspan key={k} x={point.x} dy={k === 0 ? 0 : 18}>
+                        {text}
+                      </tspan>
+                    ))}
+                  </text>
+                  <text
+                    x={point.x}
+                    y={point.y - halfHeight - 12}
+                    textAnchor="middle"
+                    className="station-state"
+                  >
+                    {j.state.status === "ready"
+                      ? "Awaiting release"
+                      : words(j.state.status)}{" "}
+                    · {j.inputs.length}/{j.incomingTrainIds.length}
+                  </text>
+                </g>
+              )
+            })}
             {routes.map((route) => {
               const { line, color, depot, side } = route
               const views = snapshot.trains.filter(
@@ -361,7 +499,7 @@ export function NetworkMap({
               )
               const dimmed = selection !== null && selection.lineId !== line.id
               const outward = side === "left" ? -1 : 1
-              const bullet = {
+              const bullet = route.bullet ?? {
                 x: depot.x + outward * BULLET_OFFSET,
                 y: depot.y,
               }
@@ -384,14 +522,14 @@ export function NetworkMap({
                   >
                     <rect
                       x={bullet.x - 70}
-                      y={depot.y - 70}
+                      y={bullet.y - 70}
                       width="140"
                       height="90"
                       fill="transparent"
                     />
                     <text
                       x={bullet.x}
-                      y={depot.y - 26 - (name.length - 1) * 18}
+                      y={bullet.y - 26 - (name.length - 1) * 18}
                       textAnchor="middle"
                       className="route-name"
                     >
@@ -403,7 +541,7 @@ export function NetworkMap({
                     </text>
                     <rect
                       x={bullet.x - 21}
-                      y={depot.y - 14}
+                      y={bullet.y - 14}
                       width="42"
                       height="28"
                       rx="14"
@@ -411,21 +549,23 @@ export function NetworkMap({
                     />
                     <text
                       x={bullet.x}
-                      y={depot.y + 5.5}
+                      y={bullet.y + 5.5}
                       className="route-number"
                     >
                       {route.number.toString().padStart(2, "0")}
                     </text>
-                    <rect
-                      x={depot.x - 7}
-                      y={depot.y - 7}
-                      width="14"
-                      height="14"
-                      rx="2"
-                      fill="var(--map-paper)"
-                      stroke={color}
-                      strokeWidth="3"
-                    />
+                    {line.origin?.kind !== "junction" && (
+                      <rect
+                        x={depot.x - 7}
+                        y={depot.y - 7}
+                        width="14"
+                        height="14"
+                        rx="2"
+                        fill="var(--map-paper)"
+                        stroke={color}
+                        strokeWidth="3"
+                      />
+                    )}
                   </g>
                   {line.stationIds.map((id, i) => {
                     const station = snapshot.stations.find((s) => s.id === id)
@@ -448,15 +588,23 @@ export function NetworkMap({
                     // The dot, spinner and check show every other state.
                     const showStatus = blocked
                     const label = wrap(station.name, 16, 3)
+                    const pickups = (snapshot.crossings ?? [])
+                      .filter((c) => c.sourceStationId === id)
+                      .map(
+                        (c) =>
+                          `, pickup by ${snapshot.lines.find((l) => l.id === c.lineId)?.name ?? "Line"} ${words(c.state.status)}`
+                      )
+                      .join("")
+                    const lift = labelLift.get(id) ?? 0
                     const nameBaseline =
-                      p.y - LABEL_GAP - (showStatus ? STATUS_LEADING : 0)
+                      p.y - lift - LABEL_GAP - (showStatus ? STATUS_LEADING : 0)
                     return (
                       <g
                         key={id}
                         role="button"
                         tabIndex={0}
                         className="map-target station"
-                        aria-label={`${station.name}, ${words(status)}`}
+                        aria-label={`${station.name}, ${words(status)}${pickups}`}
                         aria-pressed={chosen}
                         onClick={() =>
                           onSelect({ lineId: line.id, stationId: id })
@@ -515,23 +663,6 @@ export function NetworkMap({
                           stroke={blocked ? "var(--map-danger)" : color}
                           strokeWidth="3"
                         />
-                        {(snapshot.crossings ?? []).some(
-                          (c) => c.sourceStationId === id
-                        ) && (
-                          <text
-                            x={p.x + 18}
-                            y={p.y + 32}
-                            className="station-state"
-                          >
-                            {(snapshot.crossings ?? [])
-                              .filter((c) => c.sourceStationId === id)
-                              .map(
-                                (c) =>
-                                  `→ ${snapshot.lines.find((l) => l.id === c.lineId)?.name ?? "Line"}: ${c.state.status}`
-                              )
-                              .join(" · ")}
-                          </text>
-                        )}
                         {status === "complete" && (
                           <path
                             d={`M${p.x - 3},${p.y} l2,2 l4,-4`}
@@ -559,7 +690,7 @@ export function NetworkMap({
                         {showStatus && (
                           <text
                             x={p.x}
-                            y={p.y - LABEL_GAP}
+                            y={p.y - lift - LABEL_GAP}
                             textAnchor="middle"
                             className="station-state state-blocked"
                           >

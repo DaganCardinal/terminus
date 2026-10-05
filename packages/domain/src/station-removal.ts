@@ -18,6 +18,11 @@ export function removeStation(
   input: StationRemovalInput
 ): Transition<{ train: Train; station: Station }> {
   const { train, line, station, stations, reason } = input
+  if (line.origin?.kind === "junction" || line.destination?.kind === "junction")
+    return reject(
+      "invalid_input",
+      "Junction routes are fixed at launch; abandon the feature instead of removing its Stations"
+    )
   if (isTerminal(train))
     return reject("invalid_state", "A terminal Train cannot remove Stations")
   if (

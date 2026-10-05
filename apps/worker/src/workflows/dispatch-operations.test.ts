@@ -386,3 +386,51 @@ it("launches planned Crossing references atomically across Lines", async () => {
     snapshot.lines.find((l) => l.id === c.lineId)?.stops?.[0]
   ).toMatchObject({ kind: "crossing", stationId: source.id })
 })
+
+it("atomically launches Junction proposals with stable membership and a deferred outgoing Train", async () => {
+  const f = await fixture(),
+    p = proposal(),
+    a = p.lines[0]!,
+    b = p.lines[1]!
+  f.ports.planner.plan = async () => ({
+    summary: "Feature",
+    lines: [],
+    junctions: [
+      {
+        key: "feature",
+        name: "Feature",
+        brief: {
+          goal: "Feature",
+          scope: ["src/"],
+          contracts: [],
+          invariants: [],
+          acceptanceCriteria: ["works"],
+          validation: [{ name: "test", command: ["npm", "test"] }],
+        },
+        incoming: [
+          { name: a.name, stations: a.stations },
+          { name: b.name, stations: b.stations },
+        ],
+        outgoing: { name: "Deliver", stations: [] },
+      },
+    ],
+  })
+  f.ports.startJunction = vi.fn(async () => {})
+  await prepareDispatchPlan(f.ports, f.plan.id)
+  await launchPlannedLines(f.ports, f.network.id, f.plan.id)
+  await layDispatchLines(f.ports, f.plan.id)
+  const snapshot = (await f.base.store.snapshot(f.network.id))!
+  expect(snapshot.junctions).toHaveLength(1)
+  expect(snapshot.lines).toHaveLength(3)
+  expect(snapshot.trains).toHaveLength(2)
+  const j = snapshot.junctions![0]!
+  expect(await f.base.store.train(j.outgoingTrainId)).toBeNull()
+  const forks = vi.spyOn(f.ports.repositories, "fork")
+  await layDispatchLines(f.ports, f.plan.id)
+  expect(forks).not.toHaveBeenCalled()
+  await startDispatchTrains(f.ports, f.plan.id)
+  expect(f.ports.startJunction).toHaveBeenCalledWith(j.id)
+  expect((await f.base.store.dispatchPlan(f.plan.id))!.value.state.status).toBe(
+    "launched"
+  )
+})

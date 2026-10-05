@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { createJunctionRequestSchema } from "./junction"
 import { plannedStopSchema } from "./crossing"
 import {
   concreteRepositoryChangeSchema,
@@ -51,6 +52,12 @@ const manifest = workManifestSchema
 
 export const dispatchProposalSchema = z
   .object({
+    junctions: z
+      .array(
+        createJunctionRequestSchema.omit({ requestId: true }).extend({ key })
+      )
+      .max(4)
+      .optional(),
     summary: text,
     lines: z
       .array(
@@ -75,13 +82,22 @@ export const dispatchProposalSchema = z
           })
           .strict()
       )
-      .min(1)
+      .min(0)
       .max(8),
   })
   .strict()
   .refine(
     (proposal) =>
-      proposal.lines.reduce((n, l) => n + l.stations.length, 0) <= 24,
+      proposal.lines.reduce((n, l) => n + l.stations.length, 0) +
+        (proposal.junctions ?? []).reduce(
+          (n, j) =>
+            n +
+            j.incoming.reduce((m, l) => m + l.stations.length, 0) +
+            j.outgoing.stations.length,
+          0
+        ) <=
+        24 &&
+      (proposal.lines.length > 0 || !!proposal.junctions?.length),
     "Plan at most twenty-four Stations"
   )
 
@@ -125,12 +141,21 @@ const storedProposal = z
           stations: z.array(storedStation).min(1).max(6),
         })
       )
-      .min(1)
+      .min(0)
       .max(8),
   })
   .refine(
     (proposal) =>
-      proposal.lines.reduce((n, line) => n + line.stations.length, 0) <= 24,
+      (proposal.lines.length > 0 || !!proposal.junctions?.length) &&
+      proposal.lines.reduce((n, line) => n + line.stations.length, 0) +
+        (proposal.junctions ?? []).reduce(
+          (n, j) =>
+            n +
+            j.incoming.reduce((m, l) => m + l.stations.length, 0) +
+            j.outgoing.stations.length,
+          0
+        ) <=
+        24,
     "Plan at most twenty-four Stations"
   )
 const reviewed = { proposal: storedProposal, assessment }

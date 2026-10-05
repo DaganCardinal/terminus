@@ -103,6 +103,7 @@ describe("Terminus integration orchestration", () => {
         ...first.input,
         id: "stale-clearance",
         trainId: two.id,
+        source: undefined,
       })
     ).toBeNull()
     const secondId = await clear(ports, two.id)
@@ -148,11 +149,13 @@ describe("Terminus integration orchestration", () => {
         ...input,
         id: "competing-one",
         trainId: two.id,
+        source: undefined,
       }),
       ports.store.claimIntegration({
         ...input,
         id: "competing-two",
         trainId: two.id,
+        source: undefined,
       }),
     ])
     expect(claims).toEqual([null, null])
@@ -172,6 +175,7 @@ describe("Terminus integration orchestration", () => {
         ...input,
         id: "race-two",
         trainId: two.id,
+        source: undefined,
       }),
     ])
     expect(competing.filter(Boolean)).toHaveLength(1)

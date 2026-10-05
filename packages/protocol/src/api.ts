@@ -93,6 +93,9 @@ export interface NetworkSummary {
 
 /** What the networks list shows about each network, without its full snapshot. */
 export interface NetworkActivity {
+  junctions?: Partial<
+    Record<import("@terminus/domain").Junction["state"]["status"], number>
+  >
   lines: number
   /** Trains per status. Statuses with no Trains are omitted. */
   trains: Partial<Record<TrainState["status"], number>>
@@ -128,6 +131,7 @@ export interface TrainView {
 
 /** Everything needed to draw a network, as of event `lastSeq`. */
 export interface NetworkSnapshot {
+  junctionApprovals?: { junctionId: string; commit: string }[]
   network: NetworkSummary
   lines: Line[]
   stations: Station[]
@@ -138,6 +142,7 @@ export interface NetworkSnapshot {
   repairs?: import("@terminus/domain").TechnicianRepair[]
   unloadPolicies?: import("@terminus/domain").TrainUnloadPolicy[]
   plans: DispatchPlan[]
+  junctions?: import("@terminus/domain").Junction[]
   crossings?: import("@terminus/domain").Crossing[]
   lastSeq: number
 }

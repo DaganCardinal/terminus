@@ -39,6 +39,7 @@ export interface Car {
   acceptedAt: string
   originCarId?: string
   sourceCarId?: string
+  junctionId?: string
   crossingId?: string
   copiedAt?: string
 }

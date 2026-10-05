@@ -275,7 +275,7 @@ export function validateCrossingTopology(
       .filter((s) => s.kind === "station")
       .map((s) => s.stationId)
     if (
-      !owned.length ||
+      (!owned.length && line.origin?.kind !== "junction") ||
       owned.length !== line.stationIds.length ||
       new Set(owned).size !== owned.length ||
       owned.some((id) => byStation.get(id)?.lineId !== line.id) ||
@@ -299,14 +299,67 @@ export function validateCrossingTopology(
           )
         )
           errors.push(`Unavailable Crossing source ${stop.stationId}`)
+        else if (
+          JSON.stringify(
+            lines.find((l) => l.id === source.lineId)?.destination ?? {
+              kind: "terminus",
+            }
+          ) !== JSON.stringify(line.destination ?? { kind: "terminus" })
+        )
+          errors.push(
+            "Crossings cannot transfer code across Junction boundaries"
+          )
         else {
           link(lineEdges, source.lineId, line.id)
           link(edges, source.id, node)
         }
       } else
         for (const dependency of byStation.get(stop.stationId)?.manifest
-          .dependencies ?? [])
+          .dependencies ?? []) {
+          const owner = lines.find(
+            (l) => l.id === byStation.get(dependency)?.lineId
+          )
+          if (
+            owner &&
+            JSON.stringify(owner.destination ?? { kind: "terminus" }) !==
+              JSON.stringify(line.destination ?? { kind: "terminus" }) &&
+            !(
+              line.origin?.kind === "junction" &&
+              owner.destination?.kind === "junction" &&
+              line.origin.junctionId === owner.destination.junctionId
+            )
+          )
+            errors.push("Station dependencies cannot cross Junction boundaries")
           link(edges, dependency, node)
+        }
+    }
+  }
+  // A feature's complete membership precedes every stop on its outgoing Line.
+  for (const outgoing of lines.filter((l) => l.origin?.kind === "junction")) {
+    const junctionId = (
+      outgoing.origin as { kind: "junction"; junctionId: string }
+    ).junctionId
+    const junctionNode = `junction:${junctionId}`
+    const first = lineStops(outgoing)[0]
+    if (first)
+      link(
+        edges,
+        junctionNode,
+        first.kind === "station" ? first.stationId : first.crossingId
+      )
+    for (const input of lines.filter(
+      (l) =>
+        l.destination?.kind === "junction" &&
+        l.destination.junctionId === junctionId
+    )) {
+      const last = lineStops(input).at(-1)
+      if (last)
+        link(
+          edges,
+          last.kind === "station" ? last.stationId : last.crossingId,
+          junctionNode
+        )
+      link(lineEdges, input.id, outgoing.id)
     }
   }
   const cyclic = (graph: Map<string, Set<string>>) => {

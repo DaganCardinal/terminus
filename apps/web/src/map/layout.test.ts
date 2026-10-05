@@ -343,7 +343,7 @@ describe("network map projection", () => {
   })
 })
 
-it("routes both Lines through the source Station and places pickup visits in order", () => {
+it("routes a receiver through the source Station on its own lane and places pickup visits in order", () => {
   const source = line("source"),
     receiver = line("receiver", 2)
   receiver.stops = [
@@ -353,7 +353,16 @@ it("routes both Lines through the source Station and places pickup visits in ord
   ]
   const result = layoutNetwork([source, receiver]),
     [a, b] = result.routes
-  expect(a!.stations[1]).toEqual(b!.stations[1])
+  const visit = b!.stations[1]!
+  expect(visit.x).toBe(a!.stations[1]!.x)
+  expect(Math.abs(visit.y - a!.stations[1]!.y)).toBe(16)
+  expect(result.interchanges).toEqual([
+    {
+      stationId: source.stationIds[1],
+      at: a!.stations[1],
+      lanes: [{ lineId: "receiver", crossingId: "x", point: visit }],
+    },
+  ])
   expect(b!.stationDistances[0]).toBeLessThan(b!.stationDistances[1]!)
   expect(b!.stationDistances[1]).toBeLessThan(b!.stationDistances[2]!)
   const d = trainDistance(
@@ -366,6 +375,264 @@ it("routes both Lines through the source Station and places pickup visits in ord
     b!,
     T0
   )
-  expect(pointOnTrack(b!.track, d!)).toEqual(a!.stations[1])
+  expect(pointOnTrack(b!.track, d!)).toEqual(visit)
   expect(layoutNetwork(structuredClone([source, receiver]))).toEqual(result)
+})
+
+it("projects independent Junctions with their own approach lanes and outgoing routes on the trunk", () => {
+  const lines: Line[] = []
+  for (const id of ["j1", "j2"]) {
+    lines.push(
+      {
+        ...line(`${id}-a`, 2),
+        destination: { kind: "junction", junctionId: id },
+      },
+      {
+        ...line(`${id}-b`, 1),
+        destination: { kind: "junction", junctionId: id },
+      },
+      {
+        ...line(`${id}-out`, id === "j1" ? 1 : 0),
+        origin: { kind: "junction", junctionId: id },
+      }
+    )
+  }
+  const layout = layoutNetwork(lines)
+  for (const id of ["j1", "j2"]) {
+    const routes = layout.routes.filter((r) => r.line.id.startsWith(id)),
+      [a, b, out] = routes
+    const junction = layout.junctions.find((j) => j.id === id)!
+    for (const input of [a!, b!]) {
+      const end = input.points.at(-1)!
+      expect(end.x).toBe(junction.point.x)
+      expect(Math.abs(end.y - junction.point.y)).toBeLessThan(
+        junction.halfHeight
+      )
+    }
+    expect(a!.points.at(-1)).not.toEqual(b!.points.at(-1))
+    expect(out!.points[0]).toEqual(junction.point)
+    // The outgoing Line continues straight on from its trunk input.
+    expect(a!.points.at(-1)!.y).toBe(junction.point.y)
+    expect(out!.points.at(-1)!.x).toBe(layout.hub.x)
+    expect(
+      trainDistance(
+        motion({ status: "ready", at: { kind: "junction", junctionId: id } }),
+        out!,
+        T0
+      )
+    ).toBe(0)
+  }
+  expect(layoutNetwork(structuredClone(lines))).toEqual(layout)
+})
+
+describe("Crossing and Junction map projection", () => {
+  const junction = (id: string) => ({
+    kind: "junction" as const,
+    junctionId: id,
+  })
+  const cross = (lineId: string, i: number, k = 0) => ({
+    kind: "crossing" as const,
+    crossingId: `x-${lineId}-${i}-${k}`,
+    stationId: `${lineId}-s${i}`,
+  })
+  const own = (l: Line, i: number) => ({
+    kind: "station" as const,
+    stationId: l.stationIds[i]!,
+  })
+  /** Networks that previously drew Lines along each other's track. */
+  const networks: Record<string, () => Line[]> = {
+    "receiver below": () => {
+      const a = line("a"),
+        b = line("b", 2)
+      b.stops = [own(b, 0), cross("a", 1), own(b, 1)]
+      return [a, b]
+    },
+    "receiver above, two rows away": () => {
+      const b = line("b", 2),
+        m = line("m"),
+        a = line("a")
+      b.stops = [own(b, 0), cross("a", 1), own(b, 1)]
+      return [b, m, a]
+    },
+    "crossing as last and first stop": () => {
+      const a = line("a"),
+        b = line("b", 2),
+        c = line("c", 1)
+      b.stops = [own(b, 0), own(b, 1), cross("a", 2)]
+      c.stops = [cross("a", 0), own(c, 0)]
+      return [a, b, c]
+    },
+    "one source Station, several receivers": () => {
+      const a = line("a"),
+        b = line("b", 2),
+        c = line("c", 2),
+        d = line("d", 2)
+      b.stops = [own(b, 0), cross("a", 1), own(b, 1)]
+      c.stops = [own(c, 0), cross("a", 1), own(c, 1)]
+      d.stops = [cross("a", 1), own(d, 0), own(d, 1)]
+      return [b, a, c, d]
+    },
+    "late pickup past unvisited Stations": () => {
+      const a = line("a", 6),
+        b = line("b", 2)
+      b.stops = [own(b, 0), cross("a", 4), own(b, 1)]
+      return [a, b]
+    },
+    "chained and stacked visits in one column": () => {
+      const l = Array.from({ length: 8 }, (_, i) => line(`l${i}`, 3))
+      l[1]!.stops = [
+        own(l[1]!, 0),
+        cross("l0", 1),
+        own(l[1]!, 1),
+        own(l[1]!, 2),
+      ]
+      l[3]!.stops = [
+        own(l[3]!, 0),
+        cross("l2", 1),
+        own(l[3]!, 1),
+        own(l[3]!, 2),
+      ]
+      l[6]!.stops = [
+        own(l[6]!, 0),
+        cross("l1", 0),
+        own(l[6]!, 1),
+        own(l[6]!, 2),
+      ]
+      l[7]!.stops = [
+        own(l[7]!, 0),
+        cross("l6", 1),
+        cross("l5", 2),
+        own(l[7]!, 1),
+        own(l[7]!, 2),
+      ]
+      return l
+    },
+    "contradictory pickup orders": () => {
+      const a = line("a", 2),
+        b = line("b", 2),
+        c = line("c", 1),
+        d = line("d", 1)
+      c.stops = [own(c, 0), cross("a", 1), cross("b", 1)]
+      d.stops = [own(d, 0), cross("b", 1), cross("a", 1)]
+      return [a, b, c, d]
+    },
+    "Junctions with plain Lines between their inputs": () => [
+      { ...line("a", 2), destination: junction("j") },
+      line("p", 3),
+      { ...line("b", 1), destination: junction("j") },
+      { ...line("c", 4), destination: junction("j") },
+      { ...line("o", 2), origin: junction("j") },
+      { ...line("k", 1), destination: junction("k") },
+      { ...line("ko", 0), origin: junction("k") },
+      line("q", 2),
+    ],
+    "Crossings inside a Junction and from its outgoing Line": () => {
+      const a = { ...line("a", 3), destination: junction("j") }
+      const b = { ...line("b", 2), destination: junction("j") }
+      const o = { ...line("o", 3), origin: junction("j") }
+      const p = line("p", 2)
+      b.stops = [own(b, 0), cross("a", 1), own(b, 1)]
+      p.stops = [own(p, 0), cross("o", 1), own(p, 1)]
+      return [o, p, a, b]
+    },
+  }
+
+  for (const [name, build] of Object.entries(networks))
+    it(`keeps Lines apart except where they meet: ${name}`, () => {
+      const layout = layoutNetwork(build())
+      const samples = layout.routes.map((route) =>
+        Array.from({ length: Math.ceil(route.track.length / 4) + 1 }, (_, i) =>
+          pointOnTrack(route.track, i * 4)
+        )
+      )
+      const inside = (p: Point) =>
+        (Math.abs(p.x - layout.hub.x) <= 42 &&
+          Math.abs(p.y - layout.hub.y) <= layout.hubHalfHeight + 2) ||
+        layout.junctions.some(
+          (j) =>
+            Math.abs(p.x - j.point.x) <= 30 &&
+            Math.abs(p.y - j.point.y) <= j.halfHeight + 2
+        )
+      for (let r = 0; r < samples.length; r++)
+        for (let s = r + 1; s < samples.length; s++) {
+          // Strokes may only touch where two Lines cross: a short contact.
+          let run = 0
+          for (const p of samples[r]!) {
+            const touching =
+              !inside(p) &&
+              samples[s]!.some(
+                (q) => Math.hypot(p.x - q.x, p.y - q.y) < TRACK_WIDTH
+              )
+            run = touching ? run + 4 : 0
+            expect(
+              run,
+              `${layout.routes[r]!.line.id} on ${layout.routes[s]!.line.id} at ${p.x},${p.y}`
+            ).toBeLessThanOrEqual(20)
+          }
+        }
+      for (const [r, route] of layout.routes.entries()) {
+        const visited = new Set(route.stopStationIds)
+        for (const other of layout.routes)
+          other.line.stationIds.forEach((id) => {
+            if (visited.has(id)) return
+            const station = other.stations[other.stopStationIds!.indexOf(id)]!
+            expect(
+              samples[r]!.every(
+                (p) => Math.hypot(p.x - station.x, p.y - station.y) > 14
+              ),
+              `${route.line.id} through ${id}`
+            ).toBe(true)
+          })
+        // Always toward Terminus, through Stations on straight level track.
+        for (let i = 1; i < route.points.length; i++)
+          expect(route.points[i]!.x).toBeGreaterThanOrEqual(
+            route.points[i - 1]!.x
+          )
+        for (const piece of route.track.pieces)
+          if (piece.kind === "arc")
+            expect(piece.radius).toBeGreaterThanOrEqual(20)
+        for (const distance of route.stationDistances) {
+          const piece = route.track.pieces.find(
+            (p) => distance >= p.start && distance <= p.start + p.length
+          )!
+          expect(piece.kind).toBe("line")
+          if (piece.kind === "line")
+            expect(piece.from.y).toBeCloseTo(piece.to.y, 6)
+        }
+        for (const p of [...route.points, route.bullet!])
+          expect(
+            p.x >= 0 && p.y >= 0 && p.x <= layout.width && p.y <= layout.height
+          ).toBe(true)
+      }
+    })
+})
+
+it("turns a pickup that contradicts another route's order into a remote pickup on the receiver's row", () => {
+  const a = line("a", 2),
+    b = line("b", 2),
+    c = line("c", 1),
+    d = line("d", 1)
+  const visit = (lineId: string, i: number) => ({
+    kind: "crossing" as const,
+    crossingId: `${lineId}-${i}`,
+    stationId: `${lineId}-s${i}`,
+  })
+  c.stops = [
+    { kind: "station", stationId: "c-s0" },
+    visit("a", 1),
+    visit("b", 1),
+  ]
+  d.stops = [
+    { kind: "station", stationId: "d-s0" },
+    visit("b", 1),
+    visit("a", 1),
+  ]
+  const layout = layoutNetwork([a, b, c, d])
+  const remote = layout.interchanges.flatMap((i) =>
+    i.lanes.filter((lane) => lane.remote)
+  )
+  expect(remote).toHaveLength(1)
+  const receiver = layout.routes.find((r) => r.line.id === remote[0]!.lineId)!
+  expect(remote[0]!.point.y).toBe(receiver.depot.y)
+  expect(receiver.stations).toContainEqual(remote[0]!.point)
 })

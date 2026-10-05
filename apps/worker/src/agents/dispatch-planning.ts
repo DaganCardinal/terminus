@@ -18,6 +18,7 @@ export interface DispatchPlanningPorts extends Pick<
   DispatcherPorts,
   "store" | "repositories" | "startTrain" | "now"
 > {
+  startJunction?(id: string): Promise<void>
   planner: DispatchPlanner
   startPlanning(planId: string): Promise<void>
   wakePlan(planId: string): Promise<void>
@@ -27,6 +28,7 @@ export interface DispatchPlanningPorts extends Pick<
 /** Existing Lines still own unintegrated code, even when individual Stations are complete. */
 export function planningContext(snapshot: NetworkSnapshot): PlanningContext {
   return {
+    junctions: snapshot.junctions ?? [],
     lines: snapshot.lines,
     stations: snapshot.stations,
     crossings: snapshot.crossings ?? [],

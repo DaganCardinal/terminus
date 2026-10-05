@@ -6,6 +6,8 @@ import { unmetRequiredChecks } from "./evidence"
 import { accept, reject, type Transition } from "./transition"
 
 export interface RepairSource {
+  junctionId?: string
+  kind?: "junction_input" | "junction_feature"
   integrationId: string
   trainId: string
   trainRepoId: string
@@ -43,6 +45,9 @@ export type RepairState =
 export interface TechnicianRepair {
   id: string
   networkId: string
+  problem?: { kind: "conflict" | "checks" | "review"; id: string }
+  validation?: { name: string; command: string[] }[]
+  featureBrief?: import("./junction").FeatureBrief
   conflictId: string
   source: RepairSource
   scope: string[]

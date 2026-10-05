@@ -12,7 +12,11 @@ export function TerminusDetails({
 }) {
   const { network } = snapshot
   const unloaded = snapshot.trains
-    .filter(({ train }) => train.state.status === "unloaded")
+    .filter(
+      ({ train }) =>
+        train.state.status === "unloaded" &&
+        train.state.destination?.kind !== "junction"
+    )
     .sort((a, b) => b.stateEnteredAt.localeCompare(a.stateEnteredAt))
   const integratedIds = new Set(unloaded.map(({ train }) => train.id))
   const cars = snapshot.cars.filter((car) => integratedIds.has(car.trainId))

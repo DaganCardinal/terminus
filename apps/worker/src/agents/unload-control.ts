@@ -52,6 +52,11 @@ export async function updateTrainUnload(
 ) {
   const train = await ports.store.train(trainId)
   if (!train) throw new DispatchError(404, "Unknown Train")
+  if (train.value.destination?.kind === "junction")
+    throw new DispatchError(
+      409,
+      "Incoming Junction Trains use automatic acceptance; approve the complete feature release"
+    )
   const loaded = await ports.store.unloadPolicy(trainId)
   if (!loaded) throw new DispatchError(409, "Train has no unload policy")
   // The D1 trigger closes the concurrent-clearance race for changed writes.

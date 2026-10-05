@@ -562,3 +562,79 @@ it("runs the Crossing demo through real Workflows and unloads both Trains", asyn
   expect(body.attempts[0]!.review.verdict).toBe("accept")
   expect((await post(`/crossings/${c.id}/retry`)).status).toBe(409)
 })
+
+it.each([
+  { direct: false, crossing: false },
+  { direct: true, crossing: false },
+  { direct: false, crossing: true },
+])(
+  "runs Junction convergence, human release, and final integration with direct=$direct, crossing=$crossing",
+  async ({ direct, crossing }) => {
+    const junctionIntrospector = await introspectWorkflow(env.JUNCTION_WORKFLOW)
+    introspectors.push(junctionIntrospector)
+    const network = await createNetwork()
+    const response = await post(
+      `/networks/${network.id}/demo/junctions?direct=${direct}&crossing=${crossing}`
+    )
+    expect(response.status).toBe(201)
+    const j: {
+      id: string
+      outgoingTrainId: string
+      incomingTrainIds: string[]
+      terminusBaseline: string
+    } = await response.json()
+    await waitUntil(async () => {
+      const s = await snapshot(network.id)
+      return (
+        s.junctions?.[0]?.state.status === "ready" &&
+        s.trains.every((t) => t.train.state.status === "unloaded")
+      )
+    }, 30000)
+    const before = await snapshot(network.id)
+    expect(before.network.terminusCommit).not.toBe(j.terminusBaseline)
+    expect(before.trains.some((t) => t.train.id === j.outgoingTrainId)).toBe(
+      false
+    )
+    for (const id of j.incomingTrainIds)
+      expect(
+        before.trains.find((t) => t.train.id === id)?.train.state
+      ).toMatchObject({
+        status: "unloaded",
+        destination: { kind: "junction", junctionId: j.id },
+      })
+    const head = before.junctions![0]!.headCommit
+    expect(
+      (await post(`/junctions/${j.id}/release`, { commit: "stale" })).status
+    ).toBe(409)
+    expect(
+      (await post(`/junctions/${j.id}/release`, { commit: head })).status
+    ).toBe(202)
+    expect(
+      (await post(`/junctions/${j.id}/release`, { commit: head })).status
+    ).toBe(202)
+    await waitUntil(
+      async () =>
+        (await snapshot(network.id)).trains.find(
+          (t) => t.train.id === j.outgoingTrainId
+        )?.train.state.status === "unloaded",
+      30000
+    )
+    const after = await snapshot(network.id)
+    expect(
+      after.trains.filter((t) => t.train.id === j.outgoingTrainId)
+    ).toHaveLength(1)
+    expect(
+      after.cars.filter((c) => c.trainId === j.outgoingTrainId && c.junctionId)
+    ).toHaveLength(crossing ? 4 : 3)
+    const events = eventsResponseSchema.parse(
+      await (await api(`/networks/${network.id}/events?after=0`)).json()
+    ).events
+    expect(
+      events.filter((e) => e.event.type === "terminus.promoted")
+    ).toHaveLength(2)
+    expect(
+      events.filter((e) => e.event.type === "junction.released")
+    ).toHaveLength(1)
+    expect((await api(`/junctions/${j.id}`)).status).toBe(200)
+  }
+)

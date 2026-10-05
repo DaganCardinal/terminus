@@ -9,6 +9,7 @@ import type {
 /** Display names for the ids in a snapshot. */
 export function namesFor(snapshot: NetworkSnapshot): (id: string) => string {
   const names = new Map<string, string>()
+  for (const j of snapshot.junctions ?? []) names.set(j.id, j.name)
   for (const line of snapshot.lines) names.set(line.id, line.name)
   for (const station of snapshot.stations) names.set(station.id, station.name)
   for (const { train } of snapshot.trains) {
@@ -19,13 +20,16 @@ export function namesFor(snapshot: NetworkSnapshot): (id: string) => string {
 
 export function describeLocation(
   state: TrainState,
-  name: (id: string) => string
+  name: (id: string) => string,
+  destination?: import("@terminus/protocol").Train["destination"]
 ): string {
   switch (state.status) {
     case "ready":
       return state.at.kind === "depot"
         ? "At the depot"
-        : `At ${name(state.at.stationId)}`
+        : state.at.kind === "junction"
+          ? `At ${name(state.at.junctionId)}`
+          : `At ${name(state.at.stationId)}`
     case "in_transit":
       return `Working toward ${name(state.toward)}`
     case "approaching":
@@ -40,10 +44,12 @@ export function describeLocation(
       return `Blocked: ${describeIssues(state.issues)}`
     case "returning":
       return state.phase === "integrating"
-        ? "Integrating into Terminus"
-        : "Waiting for clearance into Terminus"
+        ? `Integrating into ${destination?.kind === "junction" ? name(destination.junctionId) : "Terminus"}`
+        : `Waiting for clearance into ${destination?.kind === "junction" ? name(destination.junctionId) : "Terminus"}`
     case "unloaded":
-      return "Unloaded into Terminus"
+      return state.destination?.kind === "junction"
+        ? `Unloaded into ${name(state.destination.junctionId)}`
+        : "Unloaded into Terminus"
     case "siding":
       return `On the siding: ${state.reason}`
   }
@@ -53,6 +59,8 @@ export function describeEvent(
   event: DomainEvent,
   name: (id: string) => string
 ): string {
+  if ("junctionId" in event)
+    return `${name(event.junctionId)} · ${event.type.replace("junction.", "").replaceAll("_", " ")}${"issues" in event ? `: ${describeIssues(event.issues)}` : ""}`
   switch (event.type) {
     case "crossing.created":
       return `Crossing laid at ${name(event.stationId)}`

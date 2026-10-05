@@ -56,7 +56,13 @@ export function beginReturn(input: {
     },
     [
       { type: "train.returning", trainId: train.id },
-      { type: "terminus.integration_requested", trainId: train.id },
+      train.destination?.kind === "junction"
+        ? {
+            type: "junction.integration_requested",
+            junctionId: train.destination.junctionId,
+            trainId: train.id,
+          }
+        : { type: "terminus.integration_requested", trainId: train.id },
     ]
   )
 }
@@ -85,7 +91,15 @@ export function clearForTerminus(input: {
   }
   return accept(
     { ...train, state: { status: "returning", phase: "integrating" } },
-    [{ type: "terminus.integration_started", trainId: train.id }]
+    [
+      train.destination?.kind === "junction"
+        ? {
+            type: "junction.integration_started",
+            junctionId: train.destination.junctionId,
+            trainId: train.id,
+          }
+        : { type: "terminus.integration_started", trainId: train.id },
+    ]
   )
 }
 
@@ -121,10 +135,31 @@ export function completeIntegration(input: {
       `Train ${train.id} cannot unload with open conflicts: ${open.map((conflict) => conflict.id).join(", ")}`
     )
   }
-  return accept({ ...train, state: { status: "unloaded", mergeCommit } }, [
-    { type: "terminus.integration_completed", trainId: train.id, mergeCommit },
-    { type: "train.unloaded", trainId: train.id },
-  ])
+  return accept(
+    {
+      ...train,
+      state: {
+        status: "unloaded",
+        mergeCommit,
+        ...(train.destination ? { destination: train.destination } : {}),
+      },
+    },
+    [
+      train.destination?.kind === "junction"
+        ? {
+            type: "junction.train_unloaded",
+            junctionId: train.destination.junctionId,
+            trainId: train.id,
+            mergeCommit,
+          }
+        : {
+            type: "terminus.integration_completed",
+            trainId: train.id,
+            mergeCommit,
+          },
+      { type: "train.unloaded", trainId: train.id },
+    ]
+  )
 }
 
 /** Returns an unpromoted candidate to the entry gate when a new hold applies. */

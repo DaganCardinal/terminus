@@ -26,9 +26,11 @@ import {
   TrainDetails,
 } from "./details"
 import { DispatcherButton, DispatcherPanel } from "./dispatcher"
+import { JunctionDetails } from "./junctions"
 import { TerminusDetails } from "./terminus-details"
 
 type Panel =
+  | { kind: "junction"; junctionId: string }
   | { kind: "station"; lineId: string; stationId: string }
   | { kind: "train"; lineId: string }
   | { kind: "activity" }
@@ -92,13 +94,15 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
 
   const select = (selection: MapSelection) =>
     setPanel(
-      selection.stationId
-        ? {
-            kind: "station",
-            lineId: selection.lineId,
-            stationId: selection.stationId,
-          }
-        : { kind: "train", lineId: selection.lineId }
+      selection.junctionId
+        ? { kind: "junction", junctionId: selection.junctionId }
+        : selection.stationId
+          ? {
+              kind: "station",
+              lineId: selection.lineId,
+              stationId: selection.stationId,
+            }
+          : { kind: "train", lineId: selection.lineId }
     )
   const selection: MapSelection | null =
     panel?.kind === "station"
@@ -138,6 +142,10 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
   const line =
     panel && (panel.kind === "train" || panel.kind === "station")
       ? snapshot.lines.find((l) => l.id === panel.lineId)
+      : undefined
+  const junction =
+    panel?.kind === "junction"
+      ? snapshot.junctions?.find((j) => j.id === panel.junctionId)
       : undefined
   const station =
     panel?.kind === "station"
@@ -253,16 +261,23 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
       {panel && (
         <Drawer
           label={
-            panel.kind === "activity"
-              ? "Network activity"
-              : panel.kind === "terminus"
-                ? "Terminus details"
-                : station
-                  ? `Station ${station.name}`
-                  : `Train on ${line?.name ?? "this Line"}`
+            panel.kind === "junction"
+              ? `Junction ${junction?.name}`
+              : panel.kind === "activity"
+                ? "Network activity"
+                : panel.kind === "terminus"
+                  ? "Terminus details"
+                  : station
+                    ? `Station ${station.name}`
+                    : `Train on ${line?.name ?? "this Line"}`
           }
           heading={
-            panel.kind === "activity" ? (
+            panel.kind === "junction" ? (
+              <>
+                <span className="drawer-eyebrow">Feature convergence</span>
+                <h2>{junction?.name ?? "Junction"}</h2>
+              </>
+            ) : panel.kind === "activity" ? (
               <>
                 <span className="drawer-eyebrow">Newest first</span>
                 <h2>Activity</h2>
@@ -286,7 +301,15 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           onExpandedChange={setExpanded}
           onClose={closePanel}
         >
-          {panel.kind === "activity" ? (
+          {panel.kind === "junction" && junction ? (
+            <JunctionDetails
+              junction={junction}
+              snapshot={snapshot}
+              run={run}
+              pending={pending}
+              onSource={(lineId) => setPanel({ kind: "train", lineId })}
+            />
+          ) : panel.kind === "activity" ? (
             <ActivityFeed events={events} snapshot={snapshot} />
           ) : panel.kind === "terminus" ? (
             <TerminusDetails

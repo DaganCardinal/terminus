@@ -1,3 +1,4 @@
+import { prepareJunctionTopology } from "../agents/junctions"
 import {
   resolveLineRoute,
   validateCrossingTopology,
@@ -97,11 +98,70 @@ export async function layDispatchLines(
   const events: DomainEvent[] = []
   const lineIds: string[] = []
   const trainIds: string[] = []
-  const allIds = new Map(
+  const allIds = new Map<string, string>(
     plan.state.proposal.lines.flatMap((l, index) =>
       l.stations.map((s, i) => [s.key, `${plan.id}-l${index}-s${i}`] as const)
     )
   )
+  const allPlanned = [
+    ...plan.state.proposal.lines.map((l, index) => ({
+      ...l,
+      id: `${plan.id}-l${index}`,
+    })),
+    ...(plan.state.proposal.junctions ?? []).flatMap((j, index) => {
+      const id = `${plan.id}-junction-${index}`
+      return [
+        ...j.incoming.map((l, i) => ({
+          ...l,
+          id: `${id}-l${i}`,
+          destination: { kind: "junction" as const, junctionId: id },
+        })),
+        {
+          ...j.outgoing,
+          id: `${id}-l${j.incoming.length}`,
+          origin: { kind: "junction" as const, junctionId: id },
+        },
+      ]
+    }),
+  ]
+  for (const l of allPlanned)
+    for (const [n, station] of l.stations.entries())
+      allIds.set(station.key, `${l.id}-s${n}`)
+  const resolved = allPlanned.map((l) => {
+    const made = applied(
+      createLine({
+        id: l.id,
+        name: l.name,
+        networkId: plan.networkId,
+        ...("origin" in l ? { origin: l.origin } : {}),
+        ...("destination" in l ? { destination: l.destination } : {}),
+        stations: orderedPlans(l.stations, l.route).map((s) => ({
+          id: allIds.get(s.key)!,
+          name: s.name,
+          manifest: {
+            ...s.manifest,
+            dependencies: s.manifest.dependencies.map(
+              (d) => allIds.get(d) ?? d
+            ),
+          },
+        })),
+      })
+    )
+    return {
+      ...made.value,
+      ...resolveLineRoute(made.value.line, l.route, allIds),
+    }
+  })
+  const topologyContext = {
+    keys: allIds,
+    lines: [...snapshot.lines, ...resolved.map((t) => t.line)],
+    stations: [...snapshot.stations, ...resolved.flatMap((t) => t.stations)],
+  }
+  const topologyErrors = validateCrossingTopology(
+    topologyContext.lines,
+    topologyContext.stations
+  )
+  if (topologyErrors.length) throw new Error(topologyErrors.join("; "))
   for (const [index, planned] of plan.state.proposal.lines.entries()) {
     const lineId = `${plan.id}-l${index}`
     const trainId = `${plan.id}-t${index}`
@@ -179,6 +239,31 @@ export async function layDispatchLines(
     lineIds.push(lineId)
     trainIds.push(trainId)
   }
+  for (const [index, planned] of (
+    plan.state.proposal.junctions ?? []
+  ).entries()) {
+    const feature = await prepareJunctionTopology(
+      ports,
+      plan.networkId,
+      {
+        name: planned.name,
+        brief: planned.brief,
+        incoming: planned.incoming,
+        outgoing: planned.outgoing,
+        requestId: "00000000-0000-4000-8000-000000000000",
+      },
+      (await ports.store.roleModels(plan.networkId)).conductor,
+      `${plan.id}-junction-${index}`,
+      topologyContext
+    )
+    writes.push(...feature.writes)
+    events.push(...feature.events)
+    lineIds.push(
+      ...feature.junction.incomingLineIds,
+      feature.junction.outgoingLineId
+    )
+    trainIds.push(...feature.junction.incomingTrainIds)
+  }
   const started = applied(
     launchDispatchPlan(
       { ...plan, state: { ...plan.state, assessment } },
@@ -225,6 +310,12 @@ export async function startDispatchTrains(
   const loaded = await load(ports, planId)
   const plan = loaded.value
   if (plan.state.status !== "starting") return
+  for (const j of await ports.store.junctions(plan.networkId))
+    if (j.id.startsWith(`${plan.id}-junction-`)) {
+      if (!ports.startJunction)
+        throw new Error("Junction workflow starter unavailable")
+      await ports.startJunction(j.id)
+    }
   await Promise.all(plan.state.trainIds.map((id) => ports.startTrain(id)))
   const finished = applied(finishPlanLaunch(plan))
   await ports.store.commit(

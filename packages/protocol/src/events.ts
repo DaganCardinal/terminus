@@ -54,6 +54,83 @@ const stationEvent = <T extends string>(type: T) =>
 const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("junction.release_approved"),
+    junctionId: z.string(),
+    mergeCommit: z.string(),
+  }),
+
+  ...(
+    ["junction.candidate_prepared", "junction.promotion_confirmed"] as const
+  ).map((type) =>
+    z.object({
+      type: z.literal(type),
+      junctionId: z.string(),
+      trainId: z.string(),
+      integrationId: z.string(),
+      mergeCommit: z.string(),
+    })
+  ),
+  ...(
+    ["junction.integration_failed", "junction.integration_interrupted"] as const
+  ).map((type) =>
+    z.object({
+      type: z.literal(type),
+      junctionId: z.string(),
+      trainId: z.string(),
+      integrationId: z.string(),
+      issues,
+    })
+  ),
+  ...(
+    ["junction.integration_retried", "junction.integration_reviewed"] as const
+  ).map((type) =>
+    z.object({
+      type: z.literal(type),
+      junctionId: z.string(),
+      trainId: z.string(),
+      integrationId: z.string(),
+    })
+  ),
+  ...(
+    [
+      "junction.created",
+      "junction.review_started",
+      "junction.ready",
+      "junction.retried",
+      "junction.abandoned",
+    ] as const
+  ).map((type) => z.object({ type: z.literal(type), junctionId: z.string() })),
+
+  ...(["junction.released", "junction.train_unloaded"] as const).map((type) =>
+    z.object({
+      type: z.literal(type),
+      junctionId: z.string(),
+      trainId: z.string(),
+      mergeCommit: z.string(),
+    })
+  ),
+  z.object({
+    type: z.literal("junction.input_accepted"),
+    junctionId: z.string(),
+    trainId: z.string(),
+    integrationId: z.string(),
+    mergeCommit: z.string(),
+  }),
+  ...(
+    ["junction.blocked", "dispatcher.junction_attention_requested"] as const
+  ).map((type) =>
+    z.object({ type: z.literal(type), junctionId: z.string(), issues })
+  ),
+  ...(
+    ["junction.integration_requested", "junction.integration_started"] as const
+  ).map((type) =>
+    z.object({
+      type: z.literal(type),
+      junctionId: z.string(),
+      trainId: z.string(),
+    })
+  ),
   trainAtStationEvent("crossing.created").extend({ crossingId: z.string() }),
   trainAtStationEvent("crossing.approaching").extend({
     crossingId: z.string(),

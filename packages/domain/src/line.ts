@@ -9,6 +9,8 @@ export interface Line {
   networkId: NetworkId
   name: string
   /** Stations in travel order, depot first. */
+  origin?: import("./junction").LineOrigin
+  destination?: import("./junction").LineDestination
   stationIds: StationId[]
   /** Authoritative route when present; stationIds is its compatibility projection. */
   stops?: import("./crossing").LineStop[]
@@ -25,13 +27,20 @@ export interface CreateLineInput {
   networkId: NetworkId
   name: string
   /** In travel order, depot first. */
+  origin?: import("./junction").LineOrigin
+  destination?: import("./junction").LineDestination
   stations: StationPlan[]
 }
 
 export function createLine(
   input: CreateLineInput
 ): Transition<{ line: Line; stations: Station[] }> {
-  if (input.stations.length === 0) {
+  if (
+    input.origin?.kind === "junction" &&
+    input.destination?.kind === "junction"
+  )
+    return reject("invalid_input", "Nested Junctions are not supported")
+  if (input.stations.length === 0 && input.origin?.kind !== "junction") {
     return reject(
       "invalid_input",
       `Line ${input.id} needs at least one Station`
@@ -61,6 +70,8 @@ export function createLine(
     id: input.id,
     networkId: input.networkId,
     name: input.name,
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.destination ? { destination: input.destination } : {}),
     stationIds: input.stations.map((plan) => plan.id),
     stops: input.stations.map((plan) => ({
       kind: "station",

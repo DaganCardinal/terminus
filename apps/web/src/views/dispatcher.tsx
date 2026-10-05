@@ -314,6 +314,15 @@ export function DispatcherPanel({
                 >
                   Lay Crossing demo
                 </Button>
+                <Button
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() =>
+                    void command(() => api.layJunctionDemo(networkId))
+                  }
+                >
+                  Lay Junction demo
+                </Button>
               </div>
             </div>
           )}

@@ -17,6 +17,7 @@ import type {
 import { Button } from "@terminus/ui/components/button"
 import { lineColor } from "@/map/layout"
 import { crossingScope } from "./crossing-scope"
+import { UnloadModeSelect } from "./unload-mode-select"
 import { api } from "@/state/api"
 import {
   ManifestView,
@@ -263,6 +264,57 @@ function Proposal({
       ) : (
         <>
           <Prose text={proposal.summary} />
+          {(proposal.junctions ?? []).map((j) => (
+            <details className="plan-card" key={j.key}>
+              <summary>
+                {j.name} · Junction · {j.incoming.length} incoming Lines
+              </summary>
+              <p>{j.brief.goal}</p>
+              <p>
+                Frozen baseline {shortCommit(plan.terminusCommit)}. All inputs
+                must be accepted; human approval releases the complete feature.
+              </p>
+              <ul>
+                {j.incoming.map((l, i) => (
+                  <li key={i}>
+                    {l.name}: {l.stations.map((s) => s.name).join(" → ")} →{" "}
+                    {j.name}
+                    {l.route?.some((s) => s.kind === "crossing")
+                      ? " · internal Crossings"
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+              <p>
+                {j.name} → {j.outgoing.stations.map((s) => s.name).join(" → ")}
+                {j.outgoing.stations.length ? " → " : ""}Terminus
+              </p>
+              <UnloadModeSelect
+                mode={j.outgoing.unloadMode ?? "auto"}
+                disabled={pending || state.status !== "ready"}
+                onChange={(mode) => void selectMode(`${j.key}-outgoing`, mode)}
+              />
+              <ul>
+                {j.brief.acceptanceCriteria.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+              <details>
+                <summary>Feature checks and manifests</summary>
+                <pre className="unload-diff">
+                  {JSON.stringify(
+                    {
+                      brief: j.brief,
+                      incoming: j.incoming,
+                      outgoing: j.outgoing,
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              </details>
+            </details>
+          ))}
           <section
             className="plan-card"
             aria-label={`Plan for: ${plan.goal.slice(0, 80)}`}

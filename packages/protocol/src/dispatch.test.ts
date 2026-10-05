@@ -231,3 +231,48 @@ describe("planning boundaries", () => {
     }
   })
 })
+
+it("accepts Junction-only proposals, counts all feature Stations, and retains legacy default Lines", () => {
+  const station = proposal.lines[0]!.stations[0]!
+  const feature = {
+    key: "feature",
+    name: "Feature",
+    brief: {
+      goal: "Assemble feature",
+      scope: ["src/"],
+      contracts: [],
+      invariants: ["preserve existing behavior"],
+      acceptanceCriteria: ["works together"],
+      validation: [{ name: "test", command: ["npm", "test"] }],
+    },
+    incoming: [
+      { name: "A", stations: [station] },
+      { name: "B", stations: [{ ...station, key: "other" }] },
+    ],
+    outgoing: { name: "Deliver", stations: [] },
+  }
+  const p = { summary: "Feature", lines: [], junctions: [feature] }
+  expect(dispatchProposalSchema.safeParse(p).success).toBe(true)
+  expect(
+    dispatchProposalSchema.safeParse({
+      ...p,
+      junctions: [{ ...feature, incoming: [feature.incoming[0]] }],
+    }).success
+  ).toBe(false)
+  expect(
+    dispatchProposalSchema.safeParse({
+      ...p,
+      junctions: Array.from({ length: 4 }, (_, i) => ({
+        ...feature,
+        key: `feature-${i}`,
+        incoming: feature.incoming.map((l) => ({
+          ...l,
+          stations: Array.from({ length: 4 }, (_, n) => ({
+            ...station,
+            key: `station-${n}`,
+          })),
+        })),
+      })),
+    }).success
+  ).toBe(false)
+})

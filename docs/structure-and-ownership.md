@@ -1,5 +1,13 @@
 # Application Structure and Ownership
 
+## Junction ownership
+
+Junctions add a convergence boundary before canonical Terminus integration. The domain owns frozen feature membership, endpoint rules, acceptance and release transitions. One Junction Workflow owns its lifecycle and serializes promotions into its repository; each incoming and outgoing Train Workflow remains the only writer of its Train state. Dispatcher commands persist commit-bound release approval and explicit retry, repair and abandonment requests.
+
+The shared Integration Workflow handles explicit Terminus, Crossing and Junction purposes. Destination-aware unloading into a Junction does not enter canonical history. D1 acknowledges a reviewed promotion and its accepted-input ledger atomically before releasing the target reservation. Artifacts owns accepted history, and only orchestration receives credentials to promote into a Junction.
+
+The UI projects convergence topology, feature checks, blockers, approval waits and release controls from backend state. See [Junctions](junctions.md) for implementation, recovery and verification instructions.
+
 ## Purpose
 
 The application should be structured so that the orchestration logic, domain model, persistence, AI agents, and UI are clearly separated.

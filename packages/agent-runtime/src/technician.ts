@@ -19,6 +19,8 @@ export interface RepairConductor {
 }
 
 export function technicianPrompt(repair: TechnicianRepair): string {
+  if (repair.source.junctionId)
+    return `You are the Technician for an isolated Junction repair. Address only the recorded failure and explicit file scope. Preserve accepted histories, manifests, contracts, invariants and the feature brief. Never weaken checks or change files outside scope. Orchestration constructs and verifies the candidate, collects independent evidence and requires Conductor review and human approval. Do not manipulate Git history. If safe repair needs broader scope, report the blocker. Context: ${JSON.stringify(repair)}`
   return `You are the Technician for Terminus. Resolve this failed integration in the isolated workspace.
 The repository contains an unfinished merge of the exact Train into Terminus. Resolve all recorded conflicts while preserving both Lines' intended behavior and the accepted manifests.
 Edit only the listed conflicted files. Do not change unrelated code, weaken checks, discard one side wholesale, or manipulate Git history. Orchestration will stage your work, construct the merge commit with its original parents, independently validate it, and submit it to the Conductor. You cannot approve or promote your work.

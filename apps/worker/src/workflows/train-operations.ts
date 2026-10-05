@@ -1,3 +1,4 @@
+import { advanceJunctionTrain } from "./junction-train-operations"
 import { advanceCrossing, recordCrossingOutcome } from "./crossing-operations"
 import type { Conductor, ReviewInput } from "@terminus/agent-runtime"
 import { RepositoryMovedError, type RepositoryHost } from "@terminus/artifacts"
@@ -68,6 +69,7 @@ export interface TrainPorts {
   startStationRun(params: StationRunParams): Promise<void>
   startIntegration(integrationId: string): Promise<void>
   /** Asks a held Train to evaluate its gate again. */
+  wakeJunction?(id: string): Promise<void>
   wakeTrain(trainId: TrainId): Promise<void>
   newId(prefix: string): string
   now(): string
@@ -120,6 +122,8 @@ export async function advanceTrain(
     return { kind: "finished", status: "siding" }
   }
   if (await applyStationRemoval(ports, loaded)) return { kind: "moved" }
+  const junctionMove = await advanceJunctionTrain(ports, loaded)
+  if (junctionMove) return junctionMove
   const crossingMove = await advanceCrossing(ports, loaded)
   if (crossingMove) return crossingMove
   const { state } = loaded.value
@@ -309,6 +313,11 @@ export async function recordIntegrationOutcome(
   outcome: IntegrationOutcome
 ): Promise<void> {
   const saved = await ports.store.integration(outcome.integrationId)
+  if (saved?.input.purpose === "junction") {
+    const loaded = await loadTrain(ports, trainId)
+    await advanceJunctionTrain(ports, loaded)
+    return
+  }
   if (saved?.input.purpose === "crossing")
     return recordCrossingOutcome(ports, trainId, outcome)
   const train = await loadTrain(ports, trainId)

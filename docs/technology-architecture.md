@@ -1055,3 +1055,9 @@ Dispatcher-owned `train_unload_policies` records in D1 hold each Train's effecti
 ## Crossing integration boundary
 
 Crossings are first-class, one-way pickup visits in ordered Line routes. Source Stations retain one implementation owner and a frozen acceptance checkpoint. Cars copied onto receiving Trains preserve their origin and commit identities; compatibility review and merged-candidate evidence are recorded separately. The shared Integration Workflow reserves one target repository, prepares and validates an isolated candidate, and promotes the exact reviewed commit. Only the receiving Train Workflow records pickup completion and changes that Train's state. Terminus remains the sole canonical project state. See README and AGENTS.md for configuration, failure handling, and demonstration instructions.
+
+## Junction execution
+
+Junctions use the same Artifacts, D1 and Workflows boundaries. One Junction Workflow schedules serial input integrations and owns feature lifecycle state; each Train Workflow still owns Train state. Every feature input starts from one frozen Terminus baseline. The shared Integration Workflow has explicit Terminus, Crossing and Junction purposes with per-target reservations. It independently validates and reviews merge candidates before exact fast-forward promotion. Junction receipts retain target exclusion until head, membership ledger, provenance and events are acknowledged atomically.
+
+Complete feature checks/review and commit-bound human release create one outgoing Train with original Car provenance and the frozen baseline. Outgoing Stations fork that released head and final canonical integration merges any newer Terminus work. Technician repairs stay isolated, bounded, independently reviewed/validated and separately approved. See [Junctions](junctions.md) for full ownership, topology, failure recovery and verification.
