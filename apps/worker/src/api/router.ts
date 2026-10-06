@@ -705,7 +705,7 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
       if (caught instanceof RequestError)
         return error(400, caught.message, caught.details)
       if (caught instanceof DispatchError)
-        return error(caught.status, caught.message)
+        return error(caught.status, caught.message, caught.details)
       if (caught instanceof PreviewError)
         return error(caught.status, caught.message)
       throw caught

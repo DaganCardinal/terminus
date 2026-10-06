@@ -1,6 +1,7 @@
 export * from "./fake-repository-host"
 export * from "./repository-host"
 export * from "./artifacts-repository-host"
+export * from "./artifacts-rest"
 export * from "./git"
 export * from "./station-git"
 export * from "./integration-git"

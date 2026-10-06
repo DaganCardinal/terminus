@@ -48,12 +48,40 @@ export interface DispatcherPorts {
 /** A command the Dispatcher refused, with the HTTP status that fits it. */
 export class DispatchError extends Error {
   readonly status: 400 | 404 | 409
+  readonly details: unknown
 
-  constructor(status: 400 | 404 | 409, message: string) {
+  constructor(status: 400 | 404 | 409, message: string, details?: unknown) {
     super(message)
     this.name = "DispatchError"
     this.status = status
+    this.details = details
   }
+}
+
+/** Every repository a Network uses lives in its own Artifacts namespace. */
+export function projectNamespace(networkId: NetworkId): string {
+  return `terminus-${networkId}`
+}
+
+/**
+ * An imported project's identity: the same repository however its URL is
+ * spelled, ignoring host case, trailing slashes and a `.git` suffix.
+ */
+export function projectSource(sourceUrl: string): string {
+  const url = new URL(sourceUrl)
+  const path = url.pathname
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .replace(/\/+$/, "")
+  return `${url.protocol}//${url.host.toLowerCase()}${path}`
+}
+
+function projectExists(network: NetworkSummary): DispatchError {
+  return new DispatchError(
+    409,
+    `This project already has a network: ${network.name}`,
+    { networkId: network.id }
+  )
 }
 
 /** The deterministic Dispatcher forwards exhausted Station retries to the user.
@@ -88,9 +116,16 @@ export async function createNetwork(
   ports: DispatcherPorts,
   request: CreateNetworkRequest
 ): Promise<NetworkSummary> {
+  // One Network per Project: importing a project a second time would create
+  // a second, diverging canonical Terminus.
+  const source = request.sourceUrl && projectSource(request.sourceUrl)
+  if (source) {
+    const existing = await ports.store.networkForProject(source)
+    if (existing) throw projectExists(existing)
+  }
   const id = ports.newId("network")
   const terminus = await ports.repositories.createTerminus({
-    name: id,
+    namespace: projectNamespace(id),
     sourceUrl: request.sourceUrl,
   })
   const network: NetworkSummary = {
@@ -102,7 +137,24 @@ export async function createNetwork(
     validation: request.validation ?? defaultValidation,
     ...(request.sourceUrl ? { sourceUrl: request.sourceUrl } : {}),
   }
-  await ports.store.commit(id, [{ kind: "network", network }], [])
+  try {
+    await ports.store.commit(
+      id,
+      [
+        {
+          kind: "network",
+          network,
+          ...(source ? { projectSource: source } : {}),
+        },
+      ],
+      []
+    )
+  } catch (error) {
+    // A concurrent import of the same project won the unique index.
+    const existing = source && (await ports.store.networkForProject(source))
+    if (existing) throw projectExists(existing)
+    throw error
+  }
   return network
 }
 

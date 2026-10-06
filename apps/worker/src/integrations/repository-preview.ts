@@ -1,13 +1,10 @@
-import {
-  ArtifactsRepositoryHost,
-  type RepositoryAccess,
-} from "@terminus/artifacts"
+import type { RepositoryAccess } from "@terminus/artifacts"
 import {
   repositoryPreviewSchema,
   sandboxPreviewResultSchema,
   type SandboxPreviewRequest,
 } from "@terminus/protocol"
-import { SandboxWorkspaces } from "./sandbox-workspaces"
+import { artifactsRepositories } from "./artifacts-repositories"
 
 export class PreviewError extends Error {
   readonly status: number
@@ -111,17 +108,13 @@ export async function launchRepositoryPreview(
   snapshot: RepositoryPreviewSnapshot,
   label: "Train" | "Terminus"
 ) {
-  if (env.REPOSITORY_MODE !== "artifacts" || !env.ARTIFACTS || !env.SANDBOX)
+  if (env.REPOSITORY_MODE !== "artifacts" || !env.SANDBOX)
     throw new PreviewError(
       503,
       `${label} previews require real Artifacts repositories and Cloudflare Sandboxes; fake mode has no app to run`
     )
   const base = previewBaseUrl(request.url, env.PREVIEW_BASE_URL)
-  const repositories = new ArtifactsRepositoryHost(
-    env.ARTIFACTS,
-    new SandboxWorkspaces(env),
-    () => scheduler.wait(1000)
-  )
+  const repositories = artifactsRepositories(env)
   try {
     return await prepareRepositoryPreview(
       snapshot,

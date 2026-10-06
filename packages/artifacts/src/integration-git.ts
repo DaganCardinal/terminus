@@ -101,7 +101,10 @@ export async function prepareRepositoryMerge(
       throw new RepositoryMovedError(
         "Saved integration candidate has different provenance"
       )
-    return { ok: true, candidate: { repoId: input.id, headCommit: saved } }
+    return {
+      ok: true,
+      candidate: { repoId: candidate.repoId, headCommit: saved },
+    }
   }
   await git(
     workspace,
@@ -113,7 +116,7 @@ export async function prepareRepositoryMerge(
   if (await ancestor(input.trainCommit, input.terminusCommit))
     return {
       ok: true,
-      candidate: { repoId: input.id, headCommit: input.terminusCommit },
+      candidate: { repoId: candidate.repoId, headCommit: input.terminusCommit },
     }
   const merged = await workspace.run(
     [
@@ -162,7 +165,7 @@ export async function prepareRepositoryMerge(
   )
   if ((await remoteHead(workspace, candidate)) !== headCommit)
     throw new RepositoryMovedError("Integration candidate was not persisted")
-  return { ok: true, candidate: { repoId: input.id, headCommit } }
+  return { ok: true, candidate: { repoId: candidate.repoId, headCommit } }
 }
 
 /** Read-only checkout used for project-wide validation. */

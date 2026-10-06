@@ -94,7 +94,7 @@ export type Write =
       version: number | null
     }
   | { kind: "dispatch_plan"; plan: DispatchPlan; version: number | null }
-  | { kind: "network"; network: NetworkSummary }
+  | { kind: "network"; network: NetworkSummary; projectSource?: string }
   | { kind: "line"; line: Line }
   | { kind: "station"; station: Station; version: number | null }
   | { kind: "train"; train: Train; version: number | null }
@@ -1034,6 +1034,17 @@ export class NetworkStore {
     return row ? toNetwork(row) : null
   }
 
+  /** The Network for an imported project, by its normalized source URL. */
+  async networkForProject(
+    projectSource: string
+  ): Promise<NetworkSummary | null> {
+    const row = await this.#db
+      .prepare("SELECT * FROM networks WHERE project_source = ?")
+      .bind(projectSource)
+      .first<NetworkRow>()
+    return row ? toNetwork(row) : null
+  }
+
   async networks(): Promise<NetworkSummary[]> {
     const { results } = await this.#db
       .prepare("SELECT * FROM networks ORDER BY created_at DESC")
@@ -1501,7 +1512,7 @@ export class NetworkStore {
         const { network } = write
         return db
           .prepare(
-            "INSERT INTO networks (id, name, terminus_repo_id, terminus_commit, created_at, validation, source_url) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO networks (id, name, terminus_repo_id, terminus_commit, created_at, validation, source_url, project_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
           )
           .bind(
             network.id,
@@ -1510,7 +1521,8 @@ export class NetworkStore {
             network.terminusCommit,
             network.createdAt,
             JSON.stringify(network.validation ?? defaultValidation),
-            network.sourceUrl ?? null
+            network.sourceUrl ?? null,
+            write.projectSource ?? null
           )
       }
       case "line":

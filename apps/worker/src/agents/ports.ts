@@ -20,6 +20,7 @@ import {
 import type { ModelRole } from "@terminus/protocol"
 import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
+import { artifactsRepositories } from "../integrations/artifacts-repositories"
 import { SandboxTechnicianRunner } from "../integrations/technician-runner"
 import type { TechnicianPorts } from "./technician"
 import { SandboxStationRunner } from "../integrations/station-runner"
@@ -150,7 +151,7 @@ export function technicianPorts(
         : new SandboxTechnicianRunner(
             env,
             models.technician,
-            realRepositories(env)
+            artifactsRepositories(env)
           ),
     reviewer:
       env.CONDUCTOR_MODEL === FAKE
@@ -283,15 +284,6 @@ export function dispatchPlanningPorts(
   }
 }
 
-function realRepositories(env: Env): ArtifactsRepositoryHost {
-  if (!env.ARTIFACTS) throw new Error("Artifacts binding is missing")
-  return new ArtifactsRepositoryHost(
-    env.ARTIFACTS,
-    new SandboxWorkspaces(env),
-    () => scheduler.wait(1000)
-  )
-}
-
 function repositories(env: Env): RepositoryHost {
   if (env.REPOSITORY_MODE === "fake")
     return new FakeRepositoryHost(
@@ -301,7 +293,7 @@ function repositories(env: Env): RepositoryHost {
     )
   if (env.REPOSITORY_MODE !== "artifacts")
     throw new Error("Configure REPOSITORY_MODE as artifacts or fake")
-  return realRepositories(env)
+  return artifactsRepositories(env)
 }
 
 function stationRunner(env: Env, model: string): StationRunner {
@@ -311,7 +303,7 @@ function stationRunner(env: Env, model: string): StationRunner {
     return new SandboxStationRunner(
       env,
       model,
-      realRepositories(env),
+      artifactsRepositories(env),
       new NetworkStore(env.DB)
     )
   }

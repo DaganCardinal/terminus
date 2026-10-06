@@ -1,8 +1,11 @@
-import type {
-  IntegrationMerge,
-  IntegrationMergeInput,
-  RepositoryHost,
-  RepoRef,
+import {
+  repoId,
+  siblingRepoId,
+  TERMINUS_REPO_NAME,
+  type IntegrationMerge,
+  type IntegrationMergeInput,
+  type RepositoryHost,
+  type RepoRef,
 } from "./repository-host"
 import { fakeRepositoryFiles } from "./fake-repository-files"
 import { documentRank, isDocumentPath } from "./repository-browse"
@@ -15,8 +18,9 @@ const fakeEntries = Object.entries(fakeRepositoryFiles)
   .sort((a, b) => a.path.localeCompare(b.path))
 
 /**
- * A stateless stand-in for Artifacts. Repository ids are derived from names,
- * and forks start at the commit they were forked from. Use it for tests and
+ * A stateless stand-in for Artifacts. Repository ids follow the real
+ * `<namespace>/<name>` scheme, and forks start at the commit they were forked
+ * from. Use it for tests and
  * for running the network without touching real repositories.
  */
 export class FakeRepositoryHost implements RepositoryHost {
@@ -77,7 +81,7 @@ export class FakeRepositoryHost implements RepositoryHost {
     return {
       ok: true as const,
       candidate: {
-        repoId: `fake-${input.id}`,
+        repoId: siblingRepoId(input.terminusRepoId, input.id),
         headCommit: `fake-merge-${input.id}`,
       },
     }
@@ -85,12 +89,22 @@ export class FakeRepositoryHost implements RepositoryHost {
   async inspectIntegration() {
     return { diff: "Fake Crossing merge diff", changedPaths: ["src/"] }
   }
-  async createTerminus(input: { name: string }): Promise<RepoRef> {
-    return { repoId: `fake-terminus-${input.name}`, headCommit: "fake-root" }
+  async createTerminus(input: { namespace: string }): Promise<RepoRef> {
+    return {
+      repoId: repoId(input.namespace, TERMINUS_REPO_NAME),
+      headCommit: "fake-root",
+    }
   }
 
-  async fork(input: { commit: string; name: string }): Promise<RepoRef> {
-    return { repoId: `fake-${input.name}`, headCommit: input.commit }
+  async fork(input: {
+    sourceRepoId: string
+    commit: string
+    name: string
+  }): Promise<RepoRef> {
+    return {
+      repoId: siblingRepoId(input.sourceRepoId, input.name),
+      headCommit: input.commit,
+    }
   }
 
   async fastForward(): Promise<void> {}

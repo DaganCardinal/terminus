@@ -50,8 +50,8 @@ Use these terms precisely. They are not aliases for Git concepts.
 
 | Term | Meaning |
 | --- | --- |
-| **Project** | One managed codebase, backed by one canonical Terminus repository in Artifacts. |
-| **Network** | All the Lines, Trains, and Stations for a Project, coordinated by one Dispatcher. |
+| **Project** | One managed codebase, backed by one canonical Terminus repository in its own Artifacts namespace. |
+| **Network** | All the Lines, Trains, and Stations for a Project, coordinated by one Dispatcher. A Project has exactly one Network. |
 | **Terminus** | The canonical project state. It is **not** just `main`. Only a Train that passes integration checks is promoted into it. |
 | **Line** | An ordered workstream that runs from a distant **depot**, through its Stations, to Terminus. It is not a branch. Lines do not branch. A configured one-way Crossing visits another Line's Station to merge its accepted checkpoint, copy missing Cars with provenance, and continue on the receiving Line. |
 | **Station** | One clearly defined task, defined by a Work Manifest. It is not an issue. |
@@ -146,6 +146,8 @@ These decisions are settled. The details are in `docs/technology-architecture.md
   - Each state change and its domain event are written in the **same D1 batch**.
   - No WebSockets or Durable Objects without approval.
 - **Onboarding:**
+  - Each Network owns one Artifacts namespace (`terminus-<network id>`). Every repository it uses lives there, and repository ids are `<namespace>/<name>`. Forks never leave their namespace. Terminus reaches Artifacts through its REST API, because the Workers binding is fixed to one namespace.
+  - One Network per Project: a source URL already imported by another Network is refused (`409`, with that `networkId`).
   - A project's Terminus repo is created by importing a public Git URL, or by `create()` followed by an initial push.
   - Code is retrieved with `git clone`.
   - There is no GitHub sync, and importing private repos is out of scope.
@@ -230,7 +232,7 @@ Each kind of state has exactly one owner. Never create a second authoritative co
 
 ### Integration, provenance, and security
 
-- **Applying accepted Station work to a Train is always a fast-forward.** The Artifacts binding has no merge, so the push goes over the Git protocol from orchestration code, never from the Station Agent. If the Train has moved since the Station was forked, re-review the work. Never force it.
+- **Applying accepted Station work to a Train is always a fast-forward.** Artifacts has no merge API, so the push goes over the Git protocol from orchestration code, never from the Station Agent. If the Train has moved since the Station was forked, re-review the work. Never force it.
 - Unload policy and commit-bound human approvals are Dispatcher-owned D1 metadata, separate from Train state. The Engineer enforces human approval only at the final Terminus gate; the Train Workflow records the approval hold. Policy freezes once integration clearance is reserved. Approval never overrides other hard gates.
 - Only the final integration process writes to Terminus. Before promotion, check how far Terminus has moved since the Train was created and run project-wide validation.
 - **Terminus integration uses merge commits. Never rebase or squash,** because Cars reference accepted commit IDs. Never hide unresolved conflicts behind automatic merges. A conflict becomes an issue raised to the Dispatcher.

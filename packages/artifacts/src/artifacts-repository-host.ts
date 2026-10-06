@@ -1,8 +1,12 @@
-import type {
-  IntegrationMergeInput,
-  IntegrationMerge,
-  RepositoryHost,
-  RepoRef,
+import {
+  parseRepoId,
+  repoId as namespacedRepoId,
+  siblingRepoId,
+  TERMINUS_REPO_NAME,
+  type IntegrationMergeInput,
+  type IntegrationMerge,
+  type RepositoryHost,
+  type RepoRef,
 } from "./repository-host"
 import { TechnicianGit, type RepairGitInput } from "./technician-git"
 import { prepareMerge } from "./integration-git"
@@ -18,7 +22,7 @@ import {
   type GitWorkspace,
 } from "./git"
 
-/** Only the binding capabilities this adapter uses. No Cloudflare dependency leaks inward. */
+/** Only the Artifacts capabilities this adapter uses. No Cloudflare dependency leaks inward. */
 export interface ArtifactsRepositoryInfo {
   name: string
   remote: string
@@ -47,16 +51,23 @@ export interface ArtifactsService {
   ): Promise<{ token: string }>
   import(input: {
     source: { url: string }
-    target: { name: string; opts: { description: string } }
+    target: { name: string }
   }): Promise<{ token: string }>
 }
 
+/** Artifacts across namespaces: one per Project. */
+export interface ArtifactsNamespaces {
+  /** Creates the namespace, or succeeds if it already exists. */
+  ensure(namespace: string): Promise<void>
+  namespace(namespace: string): ArtifactsService
+}
+
 export class ArtifactsRepositoryHost implements RepositoryHost {
-  private readonly artifacts: ArtifactsService
+  private readonly artifacts: ArtifactsNamespaces
   private readonly workspaces: GitWorkspaceFactory
   private readonly pause: () => Promise<void>
   constructor(
-    artifacts: ArtifactsService,
+    artifacts: ArtifactsNamespaces,
     workspaces: GitWorkspaceFactory,
     pause: () => Promise<void>
   ) {
@@ -139,15 +150,16 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
       requireCommit(commit)
     // Unlike a Station fork, a candidate may already contain its completed
     // merge after a lost response. Check its identity and parents below.
+    const candidateId = siblingRepoId(input.terminusRepoId, input.id)
     try {
-      using candidate = await this.ready(input.id)
+      using candidate = await this.ready(candidateId)
       if (
         (await candidate.info()).description !==
         `Terminus fork: ${input.terminusRepoId}@${input.terminusCommit}`
       )
         throw new Error("Repository belongs to another integration attempt")
     } catch (error) {
-      if (!hasCode(error, "NOT_FOUND", input.id)) throw error
+      if (!hasCode(error, "NOT_FOUND")) throw error
       await this.fork({
         sourceRepoId: input.terminusRepoId,
         commit: input.terminusCommit,
@@ -156,7 +168,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     }
     return this.withWorkspace(
       [
-        { repoId: input.id, scope: "write" },
+        { repoId: candidateId, scope: "write" },
         { repoId: input.trainRepoId, scope: "read" },
       ],
       async (workspace, [candidate, train]) => {
@@ -212,35 +224,36 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
   async createTerminus(input: {
-    name: string
+    namespace: string
     sourceUrl?: string
   }): Promise<RepoRef> {
-    const description = `Terminus baseline: ${input.sourceUrl ?? "empty"}`
+    // The namespace belongs to one Project, so its Terminus name cannot
+    // collide with another onboarding operation.
+    const id = namespacedRepoId(input.namespace, TERMINUS_REPO_NAME)
+    await this.artifacts.ensure(input.namespace)
+    const artifacts = this.artifacts.namespace(input.namespace)
     let initialToken: string | undefined
     try {
       const created = input.sourceUrl
-        ? await this.artifacts.import({
+        ? await artifacts.import({
             source: { url: input.sourceUrl },
-            target: { name: input.name, opts: { description } },
+            target: { name: TERMINUS_REPO_NAME },
           })
-        : await this.artifacts.create(input.name, {
+        : await artifacts.create(TERMINUS_REPO_NAME, {
             setDefaultBranch: "main",
-            description,
+            description: "Terminus baseline: empty",
           })
       initialToken = created.token
     } catch (error) {
       if (!hasCode(error, "ALREADY_EXISTS")) throw error
     }
-    using repo = await this.ready(input.name)
-    if (initialToken) await repo.revokeToken(initialToken)
-    const info = await repo.info()
-    if (info.description !== description)
-      throw new Error(
-        "Repository name belongs to a different onboarding operation"
-      )
+    if (initialToken) {
+      using repo = await this.ready(id)
+      await repo.revokeToken(initialToken)
+    }
 
     return this.withWorkspace(
-      [{ repoId: input.name, scope: input.sourceUrl ? "read" : "write" }],
+      [{ repoId: id, scope: input.sourceUrl ? "read" : "write" }],
       async (workspace, [access]) => {
         if (!access) throw new Error("Missing repository access")
         let head = await remoteHead(workspace, access)
@@ -274,7 +287,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         }
         if (!head)
           throw new Error("The imported project has no default-branch commit")
-        return { repoId: info.name, headCommit: head }
+        return { repoId: id, headCommit: head }
       }
     )
   }
@@ -285,14 +298,15 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     name: string
   }): Promise<RepoRef> {
     requireCommit(input.commit)
+    const id = siblingRepoId(input.sourceRepoId, input.name)
     const description = `Terminus fork: ${input.sourceRepoId}@${input.commit}`
     // A completed fork is reusable even if its source has since advanced.
     let target: ArtifactsRepository | undefined
     try {
       try {
-        target = await this.ready(input.name)
+        target = await this.ready(id)
       } catch (error) {
-        if (!hasCode(error, "NOT_FOUND", input.name)) throw error
+        if (!hasCode(error, "NOT_FOUND")) throw error
       }
       if (!target) {
         using source = await this.ready(input.sourceRepoId)
@@ -321,16 +335,16 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           )
         } finally {
           if (initialToken) {
-            target = await this.ready(input.name)
+            target = await this.ready(id)
             await target.revokeToken(initialToken)
           }
         }
-        target ??= await this.ready(input.name)
+        target ??= await this.ready(id)
       }
       if ((await target.info()).description !== description)
         throw new Error("Repository name belongs to a different fork operation")
       return await this.withWorkspace(
-        [{ repoId: input.name, scope: "read" }],
+        [{ repoId: id, scope: "read" }],
         async (workspace, [access]) => {
           if (!access) throw new Error("Missing repository access")
           if ((await remoteHead(workspace, access)) !== input.commit) {
@@ -338,7 +352,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
               "Fork did not preserve the requested commit"
             )
           }
-          return { repoId: input.name, headCommit: input.commit }
+          return { repoId: id, headCommit: input.commit }
         }
       )
     } finally {
@@ -441,7 +455,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     const info = await repo.info()
     const token = await repo.createToken(scope, 3600)
     return {
-      repoId: info.name,
+      repoId,
       remote: info.remote,
       branch: info.defaultBranch,
       token: token.plaintext,
@@ -480,10 +494,11 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     return result
   }
 
-  private async ready(name: string): Promise<ArtifactsRepository> {
+  private async ready(id: string): Promise<ArtifactsRepository> {
+    const { namespace, name } = parseRepoId(id)
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.artifacts.get(name)
+        return await this.artifacts.namespace(namespace).get(name)
       } catch (error) {
         if (
           attempt >= 29 ||
@@ -497,17 +512,12 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 }
 
-function hasCode(error: unknown, code: string, repoName?: string): boolean {
-  if (typeof error === "object" && error !== null && "code" in error)
-    return error.code === code
-
-  // Wrangler's remote RPC transport preserves the Artifacts error message,
-  // but drops its custom code fields. Only accept the exact missing-target
-  // message here; unrelated failures must never trigger repository creation.
+/** Unrelated failures must never trigger repository creation. */
+function hasCode(error: unknown, code: string): boolean {
   return (
-    code === "NOT_FOUND" &&
-    repoName !== undefined &&
-    error instanceof Error &&
-    error.message === `ArtifactsError: Repository not found: ${repoName}.`
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
   )
 }

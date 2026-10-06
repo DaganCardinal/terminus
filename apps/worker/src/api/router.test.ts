@@ -500,6 +500,41 @@ describe("browsing networks", () => {
     expect((await api("/networks/network-missing/summary")).status).toBe(404)
   })
 
+  it("gives each network its own namespace and refuses a second network for the same project", async () => {
+    const first = await post("/networks", {
+      name: "App",
+      sourceUrl: "https://github.com/owner/app.git",
+    })
+    expect(first.status).toBe(201)
+    const network: NetworkSummary = await first.json()
+    expect(network.terminusRepoId).toBe(`terminus-${network.id}/terminus`)
+
+    for (const sourceUrl of [
+      "https://github.com/owner/app.git",
+      "https://GitHub.com/owner/app/",
+      "https://github.com/owner/app",
+    ]) {
+      const again = await post("/networks", { name: "App again", sourceUrl })
+      expect(again.status).toBe(409)
+      expect(await again.json()).toEqual({
+        error: "This project already has a network: App",
+        details: { networkId: network.id },
+      })
+    }
+
+    const other = await post("/networks", {
+      name: "Other",
+      sourceUrl: "https://github.com/owner/other.git",
+    })
+    expect(other.status).toBe(201)
+    const empty: NetworkSummary[] = await Promise.all(
+      [1, 2].map(async () =>
+        (await post("/networks", { name: "Empty" })).json()
+      )
+    )
+    expect(new Set(empty.map((entry) => entry.terminusRepoId)).size).toBe(2)
+  })
+
   it("reads Terminus documents and files, caching only commit-pinned reads", async () => {
     const network = await createNetwork()
     const latest = await api(`/networks/${network.id}/repository`)

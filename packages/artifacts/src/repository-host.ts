@@ -5,6 +5,30 @@ import type {
   RepositoryOverview,
 } from "@terminus/protocol"
 
+/**
+ * Each Project owns one Artifacts namespace, and every repository the Project
+ * uses (Terminus, Trains, Stations, candidates, Technician workspaces) lives
+ * in it. A repository id is `<namespace>/<name>`.
+ */
+export function repoId(namespace: string, name: string): RepoId {
+  return `${namespace}/${name}`
+}
+
+export function parseRepoId(id: RepoId): { namespace: string; name: string } {
+  const [namespace, name, ...rest] = id.split("/")
+  if (!namespace || !name || rest.length)
+    throw new Error(`Repository id is not <namespace>/<name>: ${id}`)
+  return { namespace, name }
+}
+
+/** A repository in the same namespace as `id`. Forks never leave their namespace. */
+export function siblingRepoId(id: RepoId, name: string): RepoId {
+  return repoId(parseRepoId(id).namespace, name)
+}
+
+/** Every Project's canonical repository has this name in its namespace. */
+export const TERMINUS_REPO_NAME = "terminus"
+
 export interface RepoRef {
   repoId: RepoId
   headCommit: CommitId
@@ -53,12 +77,18 @@ export interface RepositoryHost {
     input: IntegrationMergeInput,
     candidate: RepoRef
   ): Promise<{ diff: string; changedPaths: string[] }>
-  /** Persists a merge candidate separately from both Terminus and the Train. */
+  /**
+   * Persists a merge candidate separately from both Terminus and the Train,
+   * named `input.id` in the target's namespace.
+   */
   prepareIntegration(input: IntegrationMergeInput): Promise<IntegrationMerge>
-  /** Creates the canonical Terminus repository for a new project. */
-  createTerminus(input: { name: string; sourceUrl?: string }): Promise<RepoRef>
+  /** Creates the canonical Terminus repository in a new Project's namespace. */
+  createTerminus(input: {
+    namespace: string
+    sourceUrl?: string
+  }): Promise<RepoRef>
 
-  /** Forks `sourceRepoId` at `commit` into a new repository. */
+  /** Forks `sourceRepoId` at `commit` into `name` in the same namespace. */
   fork(input: {
     sourceRepoId: RepoId
     commit: CommitId

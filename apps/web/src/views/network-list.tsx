@@ -6,7 +6,7 @@ import { AppNav } from "@/components/app-nav"
 import { RepositoryIcon } from "@/components/repository-icon"
 import { useNow } from "@/components/use-now"
 import { lineColor } from "@/map/layout"
-import { api } from "@/state/api"
+import { api, ApiRequestError } from "@/state/api"
 import { routes } from "@/state/route"
 import {
   boardTime,
@@ -397,6 +397,7 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
   const [sourceUrl, setSourceUrl] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [existing, setExisting] = useState<string | null>(null)
   const nameInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -407,6 +408,7 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
     event.preventDefault()
     setPending(true)
     setError(null)
+    setExisting(null)
     try {
       const network = await api.createNetwork(
         name.trim() || "Demo network",
@@ -414,7 +416,9 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
       )
       window.location.hash = routes.overview(network.id)
     } catch (caught) {
-      setError(String(caught))
+      // One network per project: point at the network that already owns it.
+      setExisting(existingNetworkId(caught))
+      setError(caught instanceof Error ? caught.message : String(caught))
       setPending(false)
     }
   }
@@ -458,14 +462,31 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
         </Button>
       </div>
       <p className="create-network-hint">
-        Leave the URL blank to start from an empty repository. Importing can
-        take a minute for larger projects.
+        Each project gets one network. Leave the URL blank to start from an
+        empty repository. Importing can take a minute for larger projects.
       </p>
       {error && (
         <p className="form-error" role="alert">
           {error}
+          {existing && (
+            <>
+              {" "}
+              <a href={routes.overview(existing)}>Open it</a>
+            </>
+          )}
         </p>
       )}
     </form>
   )
+}
+
+function existingNetworkId(caught: unknown): string | null {
+  if (!(caught instanceof ApiRequestError) || caught.status !== 409) return null
+  const details = caught.details
+  return typeof details === "object" &&
+    details !== null &&
+    "networkId" in details &&
+    typeof details.networkId === "string"
+    ? details.networkId
+    : null
 }

@@ -224,6 +224,18 @@ export const api = {
     ),
 }
 
+/** A refused request, with the server's structured details when it sent any. */
+export class ApiRequestError extends Error {
+  readonly status: number
+  readonly details: unknown
+  constructor(status: number, message: string, details?: unknown) {
+    super(message)
+    this.name = "ApiRequestError"
+    this.status = status
+    this.details = details
+  }
+}
+
 async function request<T>(
   path: string,
   init: { method?: string; body?: unknown } = {}
@@ -238,7 +250,11 @@ async function request<T>(
   })
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as ApiError | null
-    throw new Error(body?.error ?? `Request failed (${response.status})`)
+    throw new ApiRequestError(
+      response.status,
+      body?.error ?? `Request failed (${response.status})`,
+      body?.details
+    )
   }
   if (response.status === 204) {
     return undefined as T

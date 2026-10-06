@@ -35,10 +35,13 @@ Worker tests run in workerd with D1 and Workflows. Repository transport tests us
 
 Prerequisites: Docker, Cloudflare access to Artifacts and Sandboxes/Containers, and a public HTTPS Git repository containing an npm project with a committed `package-lock.json`. The sibling `../terminus-demo-app` is the demo baseline; its changes must be committed and made available at a public Git URL by the maintainer before importing it.
 
-1. Authenticate Wrangler and select your Cloudflare account. In `apps/worker/wrangler.jsonc`, set `account_id` if necessary, confirm the Artifacts namespace (`default`), and set `AI_GATEWAY_ACCOUNT_ID` and `AI_GATEWAY_ID`.
-2. Configure the `AI_GATEWAY_TOKEN` Worker secret. Despite its name, it is a Cloudflare API token scoped to this account with **Workers AI > Read**, required by the [Cloudflare model REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/). A token with only AI Gateway permissions is insufficient. Model credentials stay in the Worker.
-3. For local development, put that secret and any local account/gateway overrides in the ignored `apps/worker/.dev.vars` file. Do not commit it. Start Docker, then run `npm run dev:worker` and `npm run dev:web`.
-4. Create a network using the public Git URL field. This imports the project into Artifacts. Choose **Lay demo Lines** to run the demo manifests against that baseline.
+1. Authenticate Wrangler and select your Cloudflare account. In `apps/worker/wrangler.jsonc`, set `account_id` if necessary, and set `ARTIFACTS_ACCOUNT_ID`, `AI_GATEWAY_ACCOUNT_ID` and `AI_GATEWAY_ID`.
+2. Configure the `ARTIFACTS_API_TOKEN` Worker secret: a Cloudflare API token scoped to this account with **Artifacts > Read** and **Artifacts > Edit**. Each Network gets its own Artifacts namespace (`terminus-<network id>`), which the Workers binding cannot address because it is fixed to one namespace at deploy time, so Terminus uses the [Artifacts REST API](https://developers.cloudflare.com/artifacts/api/rest-api/). The API token stays in the Worker; Sandboxes only ever receive short-lived, repo-scoped Git tokens.
+3. Configure the `AI_GATEWAY_TOKEN` Worker secret. Despite its name, it is a Cloudflare API token scoped to this account with **Workers AI > Read**, required by the [Cloudflare model REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/). A token with only AI Gateway permissions is insufficient. Model credentials stay in the Worker.
+4. For local development, put those secrets and any local account/gateway overrides in the ignored `apps/worker/.dev.vars` file. Do not commit it. Start Docker, then run `npm run dev:worker` and `npm run dev:web`.
+5. Create a network using the public Git URL field. This imports the project into the network's own Artifacts namespace. Choose **Lay demo Lines** to run the demo manifests against that baseline.
+
+Each project has exactly one network. Creating a network from a source URL that another network already imported (ignoring host case, trailing slashes and `.git`) returns `409` with the existing `networkId` in `details`. Networks created from an empty repository are separate projects. Every repository a network uses (Terminus, Trains, Station runs, integration candidates, Technician workspaces) lives in its namespace, and repository ids are stored as `<namespace>/<name>`.
 
 If local Wrangler 4.147.0 prints repeated `internal error; reference = ...` messages, enable `WRANGLER_LOG=debug` and check the stack. A known local failure points to Miniflare's `observability/collector.worker.js` with `Cannot perform I/O on behalf of a different request` and `I/O type: OutgoingFactory`. Restart with the local collector disabled:
 
@@ -51,6 +54,8 @@ This workaround uses Wrangler's local development switch; terminal command/model
 Local `.dev.vars` entries have this shape:
 
 ```dotenv
+ARTIFACTS_ACCOUNT_ID=YOUR_32_HEX_ACCOUNT_ID
+ARTIFACTS_API_TOKEN=YOUR_ACCOUNT_SCOPED_ARTIFACTS_TOKEN
 AI_GATEWAY_ACCOUNT_ID=YOUR_32_HEX_ACCOUNT_ID
 AI_GATEWAY_ID=default
 AI_GATEWAY_TOKEN=YOUR_ACCOUNT_SCOPED_WORKERS_AI_TOKEN
@@ -200,7 +205,7 @@ curl -X POST http://localhost:8787/api/networks \
   -d '{"name":"Demo","sourceUrl":"https://github.com/OWNER/DEMO.git"}'
 ```
 
-Omitting `sourceUrl` creates an initialized empty Artifacts repository. Push an npm baseline into that repository before starting real Station work.
+Omitting `sourceUrl` creates an initialized empty Artifacts repository in a new namespace. Push an npm baseline into that repository before starting real Station work.
 
 Validation commands are trusted project configuration stored in D1, separate from model-generated manifests. Creation optionally accepts `validation`; defaults are `typecheck` (`npm run typecheck`), `test` (`npm test`), and `build` (`npm run build`). Every configured command is required. Each manifest's `expectedEvidence` must name configured commands; missing names prevent execution. Commands execute as argument arrays, not shell strings.
 
