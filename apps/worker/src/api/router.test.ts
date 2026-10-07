@@ -189,6 +189,36 @@ describe("the API with real Workflows", () => {
       events.filter((e) => e.event.type === "dispatcher.plan_launched")
     ).toHaveLength(1)
   }, 20_000)
+  it("checks the baseline on request and lets the user reject the suggested fix before launch", async () => {
+    const network = await createNetwork()
+    const response = await post(`/networks/${network.id}/plans`, {
+      requestId: crypto.randomUUID(),
+      goal: "Add a footer",
+      checkBaseline: true,
+    })
+    const plan = dispatchPlanSchema.parse(await response.json())
+    expect(plan.checkBaseline).toBe(true)
+    await waitUntil(
+      async () =>
+        (await snapshot(network.id)).plans[0]?.state.status === "ready"
+    )
+    const ready = (await snapshot(network.id)).plans[0]!
+    if (ready.state.status !== "ready") throw new Error("Expected ready")
+    expect(ready.state.baseline?.checks.length).toBeGreaterThan(0)
+    expect(ready.state.proposal.baselineFix).toBeDefined()
+    const select = (selection: string) =>
+      api(`/networks/${network.id}/plans/${plan.id}/baseline-fix`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ selection }),
+      })
+    expect((await select("maybe")).status).toBe(400)
+    const rejected = dispatchPlanSchema.parse(
+      await (await select("reject")).json()
+    )
+    if (rejected.state.status !== "ready") throw new Error("Expected ready")
+    expect(rejected.state.proposal.baselineFix?.selection).toBe("reject")
+  }, 20_000)
   it("unloads one demo Train automatically and waits for explicit approval of the other", async () => {
     const network = await createNetwork()
     expect(

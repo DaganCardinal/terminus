@@ -2,7 +2,8 @@ import { prepareJunctionTopology } from "../agents/junctions"
 import {
   resolveLineRoute,
   validateCrossingTopology,
-  assessDispatchProposal,
+  assessPlan,
+  launchProposal,
   hasNewCollisionForecasts,
   createLine,
   createTrain,
@@ -11,12 +12,13 @@ import {
   launchDispatchPlan,
   readyDispatchPlan,
   type DomainEvent,
+  type BaselineReport,
   type DispatchPlan,
   type DispatchProposal,
 } from "@terminus/domain"
 import {
+  baselineReportSchema,
   dispatchProposalSchema,
-  repositoryContextSchema,
 } from "@terminus/protocol"
 import { DispatchProposalError } from "@terminus/agent-runtime"
 import { NonRetryableError } from "cloudflare:workflows"
@@ -27,6 +29,7 @@ import {
 import type { Write } from "../integrations/network-store"
 import { orderedPlans } from "../agents/dispatcher"
 import { applied } from "./transitions"
+import { defaultValidation } from "../integrations/execution-config"
 
 export async function prepareDispatchPlan(
   ports: DispatchPlanningPorts,
@@ -39,33 +42,35 @@ export async function prepareDispatchPlan(
     throw new Error("Dispatcher configuration changed; request a new plan")
   const snapshot = await ports.store.snapshot(plan.networkId)
   if (!snapshot) throw new Error("Unknown network")
-  const repository = repositoryContextSchema.parse(
-    await ports.repositories.readContext(
-      snapshot.network.terminusRepoId,
-      plan.terminusCommit
-    )
-  )
-  if (repository.commit !== plan.terminusCommit)
-    throw new Error("Planning context describes a different commit")
   let proposal: DispatchProposal
+  let baseline: BaselineReport | undefined
   try {
-    proposal = dispatchProposalSchema.parse(
-      await ports.planner.plan({
-        goal: plan.goal,
-        repository,
-        network: planningContext(snapshot),
-      })
-    )
+    const result = await ports.planner.plan({
+      goal: plan.goal,
+      network: planningContext(snapshot),
+      repository: {
+        repoId: snapshot.network.terminusRepoId,
+        commit: plan.terminusCommit,
+      },
+      checkBaseline: !!plan.checkBaseline,
+      validation: snapshot.network.validation ?? defaultValidation,
+    })
+    proposal = dispatchProposalSchema.parse(result.proposal)
+    if (result.baseline) {
+      baseline = baselineReportSchema.parse(result.baseline)
+      if (baseline.commit !== plan.terminusCommit)
+        throw new Error("Baseline checks describe a different commit")
+    }
   } catch (error) {
     if (error instanceof DispatchProposalError) {
-      // ModelDispatcher already used its bounded, corrective attempts. Do not repeat them blindly.
+      // The Dispatcher already used its bounded corrections in-session. Do not repeat them blindly.
       await recordDispatchFailure(ports, planId, "planning", error)
       throw new NonRetryableError(error.message)
     }
     throw error
   }
   const ready = applied(
-    readyDispatchPlan(plan, proposal, planningContext(snapshot))
+    readyDispatchPlan(plan, proposal, planningContext(snapshot), baseline)
   )
   await ports.store.commit(
     plan.networkId,
@@ -86,10 +91,13 @@ export async function layDispatchLines(
   if (!snapshot) throw new Error("Unknown network")
   if (snapshot.network.terminusCommit !== plan.terminusCommit)
     throw new Error("Terminus changed before launch")
-  const assessment = assessDispatchProposal(
+  const assessment = assessPlan(
     plan.state.proposal,
-    planningContext(snapshot)
+    planningContext(snapshot),
+    plan.state.baseline
   )
+  // An included baseline fix is laid as its own Line, with Crossings on the others.
+  const proposal = launchProposal(plan.state.proposal)
   if (assessment.errors.length)
     throw new Error("Network changes made the plan invalid")
   if (hasNewCollisionForecasts(plan.state.assessment, assessment))
@@ -99,16 +107,16 @@ export async function layDispatchLines(
   const lineIds: string[] = []
   const trainIds: string[] = []
   const allIds = new Map<string, string>(
-    plan.state.proposal.lines.flatMap((l, index) =>
+    proposal.lines.flatMap((l, index) =>
       l.stations.map((s, i) => [s.key, `${plan.id}-l${index}-s${i}`] as const)
     )
   )
   const allPlanned = [
-    ...plan.state.proposal.lines.map((l, index) => ({
+    ...proposal.lines.map((l, index) => ({
       ...l,
       id: `${plan.id}-l${index}`,
     })),
-    ...(plan.state.proposal.junctions ?? []).flatMap((j, index) => {
+    ...(proposal.junctions ?? []).flatMap((j, index) => {
       const id = `${plan.id}-junction-${index}`
       return [
         ...j.incoming.map((l, i) => ({
@@ -162,7 +170,7 @@ export async function layDispatchLines(
     topologyContext.stations
   )
   if (topologyErrors.length) throw new Error(topologyErrors.join("; "))
-  for (const [index, planned] of plan.state.proposal.lines.entries()) {
+  for (const [index, planned] of proposal.lines.entries()) {
     const lineId = `${plan.id}-l${index}`
     const trainId = `${plan.id}-t${index}`
     const ids = allIds
@@ -239,9 +247,7 @@ export async function layDispatchLines(
     lineIds.push(lineId)
     trainIds.push(trainId)
   }
-  for (const [index, planned] of (
-    plan.state.proposal.junctions ?? []
-  ).entries()) {
+  for (const [index, planned] of (proposal.junctions ?? []).entries()) {
     const feature = await prepareJunctionTopology(
       ports,
       plan.networkId,

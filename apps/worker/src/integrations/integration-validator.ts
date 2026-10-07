@@ -3,13 +3,13 @@ import {
   type ArtifactsRepositoryHost,
   type GitWorkspaceFactory,
 } from "@terminus/artifacts"
-import type { CheckResult, Evidence } from "@terminus/domain"
+import type { Evidence } from "@terminus/domain"
 import {
-  commandResultSchema,
   validationCommandsSchema,
   type IntegrationCandidate,
   type ValidationCommand,
 } from "@terminus/protocol"
+import { runProjectChecks } from "./project-checks"
 
 export interface IntegrationValidator {
   validate(
@@ -49,32 +49,7 @@ export class SandboxIntegrationValidator implements IntegrationValidator {
         candidate.headCommit
       )
       await repository.checkout()
-      const checks: CheckResult[] = []
-      const run = async (name: string, command: string[]) => {
-        const result = commandResultSchema.parse(
-          await workspace!.run(command, "/workspace/repo")
-        )
-        const passed = result.exitCode === 0 && !result.outputTruncated
-        checks.push({
-          name,
-          command,
-          required: true,
-          status: passed ? "passed" : "failed",
-          ...result,
-        })
-        return passed
-      }
-      const installed = await run("npm ci", ["npm", "ci"])
-      for (const check of validation) {
-        if (installed) await run(check.name, check.command)
-        else
-          checks.push({
-            name: check.name,
-            command: check.command,
-            required: true,
-            status: "skipped",
-          })
-      }
+      const checks = await runProjectChecks(workspace, validation)
       await repository.assertUnchanged()
       return { checks }
     } finally {

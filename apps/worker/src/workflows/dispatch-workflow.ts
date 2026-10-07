@@ -35,9 +35,10 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
     let phase: "planning" | "launching" = "planning"
     try {
       // Model output is saved before this step returns; retries reuse a saved proposal.
+      // Each attempt is a full exploration session, so it gets one retry.
       await step.do(
         "prepare proposal",
-        { retries, timeout: "10 minutes" },
+        { retries: { ...retries, limit: 1 }, timeout: "30 minutes" },
         () => prepareDispatchPlan(ports, planId)
       )
       for (let gate = 0; ; gate++) {

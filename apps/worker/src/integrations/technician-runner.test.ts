@@ -35,12 +35,16 @@ function fixture(exitCode = 0) {
     configure: vi.fn(async () => {}),
     write: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
-    run: vi.fn(async () => ({
-      exitCode,
-      stdout:
-        '{"type":"text","part":{"text":"Tests passed according to the agent"}}',
-      stderr: "",
-    })),
+    run: vi.fn(async (command: string[]) =>
+      command[0] === "node"
+        ? { exitCode: 0, stdout: "", stderr: "" }
+        : {
+            exitCode,
+            stdout:
+              '{"type":"text","part":{"text":"Tests passed according to the agent"}}',
+            stderr: "",
+          }
+    ),
   }
   const repositories = {
     access: vi.fn(
@@ -98,11 +102,25 @@ describe("Sandbox Technician capabilities and completion", () => {
       expect.arrayContaining([
         "opencode",
         "--auto",
+        "--agent",
+        "technician",
         "--model",
         `terminus/${model}`,
       ]),
       "/workspace/repo",
-      expect.objectContaining({ OPENCODE_CONFIG: "/workspace/opencode.json" })
+      expect.objectContaining({
+        OPENCODE_CONFIG: "/workspace/opencode.json",
+        OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+        OPENCODE_DISABLE_CLAUDE_CODE: "1",
+      })
+    )
+    const config = JSON.parse(
+      vi
+        .mocked(f.sandbox.write)
+        .mock.calls.find(([path]) => path === "/workspace/opencode.json")![1]
+    )
+    expect(config.agent.technician.prompt).toContain(
+      "Edit only the listed conflicted files"
     )
     expect(JSON.stringify(vi.mocked(f.sandbox.write).mock.calls)).not.toContain(
       "worker-only-secret"

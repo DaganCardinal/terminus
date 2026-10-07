@@ -172,14 +172,15 @@ export class ExecutionSandbox extends DurableObject<Env> {
   async run(
     command: string[],
     cwd = "/workspace",
-    env: Record<string, string> = {}
+    env: Record<string, string> = {},
+    timeoutMs = 20 * 60_000
   ): Promise<CommandResult> {
     await this.ready()
     const process = await this.container().exec(command, {
       cwd,
       stdin: new ReadableStream({ start: (controller) => controller.close() }),
       env: { ...trustEnv, ...env },
-      signal: AbortSignal.timeout(20 * 60_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     const [stdout, stderr, exitCode] = await Promise.all([
       capture(process.stdout),

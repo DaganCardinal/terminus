@@ -177,6 +177,11 @@ export const domainEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("dispatcher.plan_failed"), planId: z.string() }),
   z.object({
+    type: z.literal("dispatcher.baseline_fix_selected"),
+    planId: z.string(),
+    selection: z.enum(["include", "reject"]),
+  }),
+  z.object({
     type: z.literal("dispatcher.lines_laid"),
     planId: z.string(),
     lineIds: z.array(z.string()),

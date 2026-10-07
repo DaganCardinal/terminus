@@ -50,6 +50,71 @@ const manifest = workManifestSchema
   })
   .strict()
 
+const plannedLineSchema = z
+  .object({
+    key,
+    name: z.string().trim().min(1).max(120),
+    unloadRecommendation: unloadRecommendationSchema,
+    route: z.array(plannedStopSchema).min(1).max(24).optional(),
+    stations: z
+      .array(
+        z
+          .object({
+            key,
+            name: z.string().trim().min(1).max(120),
+            manifest,
+          })
+          .strict()
+      )
+      .min(1)
+      .max(6),
+  })
+  .strict()
+
+/** What exploration established. Facts with cited paths, never file contents. */
+const findingSchema = z
+  .object({
+    topic: z.string().trim().min(1).max(120),
+    summary: z.string().trim().min(1).max(600),
+    paths: z.array(area).max(10),
+  })
+  .strict()
+
+/** Only for failing baseline checks; Terminus routes every other Line through it. */
+const baselineFixSchema = z
+  .object({
+    reason: z.string().trim().min(1).max(400),
+    line: plannedLineSchema
+      .omit({ route: true })
+      .extend({ stations: plannedLineSchema.shape.stations.length(1) }),
+  })
+  .strict()
+
+export const baselineFixSelectionSchema = z.enum(["include", "reject"])
+
+export const selectBaselineFixRequestSchema = z
+  .object({ selection: baselineFixSelectionSchema })
+  .strict()
+export type SelectBaselineFixRequest = z.infer<
+  typeof selectBaselineFixRequestSchema
+>
+
+/** Trimmed results of trusted checks run on the planning baseline. */
+export const baselineReportSchema = z.object({
+  commit: z.string(),
+  checks: z
+    .array(
+      z.object({
+        name: z.string(),
+        status: z.enum(["passed", "failed", "skipped"]),
+        exitCode: z.number().int().optional(),
+        outputTail: z.string().max(2000),
+        outputTruncated: z.boolean(),
+      })
+    )
+    .max(21),
+})
+
 export const dispatchProposalSchema = z
   .object({
     junctions: z
@@ -59,36 +124,15 @@ export const dispatchProposalSchema = z
       .max(4)
       .optional(),
     summary: text,
-    lines: z
-      .array(
-        z
-          .object({
-            key,
-            name: z.string().trim().min(1).max(120),
-            unloadRecommendation: unloadRecommendationSchema,
-            route: z.array(plannedStopSchema).min(1).max(24).optional(),
-            stations: z
-              .array(
-                z
-                  .object({
-                    key,
-                    name: z.string().trim().min(1).max(120),
-                    manifest,
-                  })
-                  .strict()
-              )
-              .min(1)
-              .max(6),
-          })
-          .strict()
-      )
-      .min(0)
-      .max(8),
+    lines: z.array(plannedLineSchema).min(0).max(8),
+    findings: z.array(findingSchema).max(12).optional(),
+    baselineFix: baselineFixSchema.optional(),
   })
   .strict()
   .refine(
     (proposal) =>
       proposal.lines.reduce((n, l) => n + l.stations.length, 0) +
+        (proposal.baselineFix?.line.stations.length ?? 0) +
         (proposal.junctions ?? []).reduce(
           (n, j) =>
             n +
@@ -105,6 +149,8 @@ export const createDispatchPlanRequestSchema = z
   .object({
     requestId: z.uuid(),
     goal: z.string().trim().min(1).max(4000),
+    /** Install dependencies and run project checks before exploring. */
+    checkBaseline: z.boolean().optional(),
   })
   .strict()
 export type CreateDispatchPlanRequest = z.infer<
@@ -143,11 +189,20 @@ const storedProposal = z
       )
       .min(0)
       .max(8),
+    baselineFix: baselineFixSchema
+      .extend({
+        line: baselineFixSchema.shape.line.extend({
+          unloadMode: unloadModeSchema.optional(),
+        }),
+        selection: baselineFixSelectionSchema.optional(),
+      })
+      .optional(),
   })
   .refine(
     (proposal) =>
       (proposal.lines.length > 0 || !!proposal.junctions?.length) &&
       proposal.lines.reduce((n, line) => n + line.stations.length, 0) +
+        (proposal.baselineFix?.line.stations.length ?? 0) +
         (proposal.junctions ?? []).reduce(
           (n, j) =>
             n +
@@ -158,7 +213,11 @@ const storedProposal = z
         24,
     "Plan at most twenty-four Stations"
   )
-const reviewed = { proposal: storedProposal, assessment }
+const reviewed = {
+  proposal: storedProposal,
+  assessment,
+  baseline: baselineReportSchema.optional(),
+}
 export const dispatchPlanSchema = z.object({
   id: z.string(),
   networkId: z.string(),
@@ -166,6 +225,7 @@ export const dispatchPlanSchema = z.object({
   terminusCommit: z.string(),
   model: z.string(),
   createdAt: z.string(),
+  checkBaseline: z.boolean().optional(),
   state: z.discriminatedUnion("status", [
     z.object({ status: z.literal("planning") }),
     z.object({ status: z.literal("ready"), ...reviewed }),
@@ -185,20 +245,3 @@ export const dispatchPlanSchema = z.object({
     z.object({ status: z.literal("failed"), message: z.string() }),
   ]),
 })
-
-/** Ephemeral source context for a model; never persisted as project files in D1. */
-export const repositoryContextSchema = z.object({
-  commit: z.string(),
-  paths: z.array(z.string()).max(500),
-  pathsTruncated: z.boolean(),
-  files: z
-    .array(
-      z.object({
-        path: z.string(),
-        content: z.string().max(4000),
-        truncated: z.boolean(),
-      })
-    )
-    .max(12),
-})
-export type RepositoryContext = z.infer<typeof repositoryContextSchema>

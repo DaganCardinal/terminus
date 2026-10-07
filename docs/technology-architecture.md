@@ -701,7 +701,7 @@ Anything durable must already have been committed back to Artifacts or recorded 
 
 A model on its own only produces text and tool requests. A **harness** runs the loop that turns those requests into actions: it sends the task to the model, carries out the requested reads, edits, and commands in the Sandbox, returns the results, and repeats until the model is done.
 
-Station Agents and Technicians use an existing harness running **inside** the Sandbox. The default is **OpenCode**:
+Station Agents, Technicians, and the Dispatcher's planning session use an existing harness running **inside** the Sandbox. The default is **OpenCode**:
 
 - It is open source and works with any model provider.
 - It has a built-in `cloudflare-ai-gateway` provider.
@@ -716,7 +716,8 @@ Station Workflow
   ↓ fork Station repo from Train (Artifacts)
   ↓ create a short-lived, write-scoped token for the Station repo only
   ↓ start Sandbox, clone the Station repo, write the manifest into the workspace
-  ↓ opencode run --format json --auto --model <configured model> -- <prompt>
+  ↓ install dependencies, then prepare the harness (config, preflight, root guidance)
+  ↓ opencode run --format json --auto --agent station --model <configured model> -- <assignment>
   ↓ wait for the process to exit (exit code + JSON event log)
   ↓ orchestration code runs the required validation and collects evidence
   ↓ push to the Station repo, read the resulting commit
@@ -725,9 +726,25 @@ Station Workflow
 
 - **Completion is detected when the harness process exits.** Do not rely on Artifacts push notifications for this. Push notifications require a separate subscription for every repository and are delivered to a Queue, which does not suit Station repositories created on the fly.
 - **Evidence comes from our own validation run**, not from the agent's own summary.
+- **Repository content is untrusted for every harness role.** One shared preparation step (`prepareHarness`) gives each role its own OpenCode primary agent whose system prompt comes only from orchestration. It disables repository OpenCode configuration and instruction files, and removes user-level configuration that repository code could have written. It then attaches the root `AGENTS.md` (or `CLAUDE.md`) to the first message as delimited data. A role added later, such as a sandboxed Conductor, reuses the same step.
 - The model is passed per run as `cloudflare-ai-gateway/<provider>/<model>`, built from role configuration. It is never hardcoded.
 
-Dispatcher, Conductor, and Engineer models do **not** use a harness. They are called directly through the `ModelProvider` and return structured output. The Conductor reviews the diff and the evidence collected by orchestration code.
+Conductor and Engineer models do **not** use a harness. They are called directly through the `ModelProvider` and return structured output. The Conductor reviews the diff and the evidence collected by orchestration code.
+
+The Dispatcher plans in a **read-only** harness session:
+
+```text
+Dispatch Workflow "prepare proposal"
+  ↓ read-only token for Terminus; Sandbox allows Git reads, no model
+  ↓ detached checkout of the exact Terminus commit
+  ↓ [optional] npm ci + configured checks → trusted baseline report
+  ↓ remove secret files and .git; drop repository access; allow only the model
+  ↓ opencode run --agent dispatcher (edit, bash, web denied; Task → explore only)
+  ↓ validate the final message; correct in the same session (--session, ≤2 times)
+  ↓ proposal (+ findings, baseline report) → D1 → user review → explicit launch
+```
+
+As for every harness role, repository-supplied OpenCode configuration and instruction files are disabled, so project content stays untrusted data and cannot change the Dispatcher's prompt or permissions; the root `AGENTS.md` is supplied in its first message as delimited data instead. Raw harness events, which include file contents the agent read, stay in the Sandbox; only the session id, final message, and tool-use counts leave it.
 
 ## Security boundary
 

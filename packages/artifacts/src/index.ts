@@ -7,5 +7,6 @@ export * from "./station-git"
 export * from "./integration-git"
 export * from "./preview-git"
 export * from "./repository-browse"
+export * from "./planning-workspace"
 
 export * from "./technician-git"

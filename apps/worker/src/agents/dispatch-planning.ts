@@ -1,6 +1,8 @@
 import {
   createDispatchPlan,
   requestPlanLaunch,
+  selectBaselineFix,
+  type BaselineFixSelection,
   type DispatchPlan,
   type PlanningContext,
 } from "@terminus/domain"
@@ -64,7 +66,8 @@ export async function proposeDispatchPlan(
   if (existing) {
     if (
       existing.networkId !== networkId ||
-      existing.value.goal !== request.goal
+      existing.value.goal !== request.goal ||
+      !!existing.value.checkBaseline !== !!request.checkBaseline
     )
       throw new DispatchError(
         409,
@@ -82,6 +85,7 @@ export async function proposeDispatchPlan(
       terminusCommit: network.terminusCommit,
       model: ports.planner.model,
       createdAt: ports.now(),
+      ...(request.checkBaseline ? { checkBaseline: true } : {}),
     })
   )
   try {
@@ -164,4 +168,43 @@ export async function retryDispatchPlan(
       "Plan finished; request a fresh plan for new work"
     )
   await ports.retryPlan(planId)
+}
+
+/** Includes or rejects a proposal's suggested baseline fix before launch. */
+export async function selectPlanBaselineFix(
+  ports: Pick<DispatchPlanningPorts, "store">,
+  networkId: string,
+  planId: string,
+  selection: BaselineFixSelection
+): Promise<DispatchPlan> {
+  const loaded = await ports.store.dispatchPlan(planId)
+  if (!loaded || loaded.networkId !== networkId)
+    throw new DispatchError(404, "Unknown plan")
+  const snapshot = await ports.store.snapshot(networkId)
+  if (!snapshot) throw new DispatchError(404, "Unknown network")
+  const selected = selectBaselineFix(
+    loaded.value,
+    selection,
+    planningContext(snapshot)
+  )
+  if (!selected.ok) throw new DispatchError(409, selected.error.message)
+  if (!selected.events.length) return selected.value
+  try {
+    await ports.store.commit(
+      networkId,
+      [
+        {
+          kind: "dispatch_plan",
+          plan: selected.value,
+          version: loaded.version,
+        },
+      ],
+      selected.events
+    )
+  } catch (error) {
+    if (error instanceof StaleWriteError)
+      throw new DispatchError(409, "Proposal changed; reload before selecting")
+    throw error
+  }
+  return selected.value
 }

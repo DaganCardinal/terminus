@@ -1,9 +1,5 @@
 import type { CommitId, RepoId } from "@terminus/domain"
-import type {
-  RepositoryContext,
-  RepositoryFile,
-  RepositoryOverview,
-} from "@terminus/protocol"
+import type { RepositoryFile, RepositoryOverview } from "@terminus/protocol"
 
 /**
  * Each Project owns one Artifacts namespace, and every repository the Project
@@ -63,7 +59,6 @@ export interface RepositoryHost {
     repairPaths: string[]
     repairDiff: string
   }>
-  readContext(repoId: RepoId, commit: CommitId): Promise<RepositoryContext>
   /** A commit's file inventory and leading documents, for people browsing. */
   readOverview(repoId: RepoId, commit: CommitId): Promise<RepositoryOverview>
   /** One committed file, or null when the commit has none at `path`. */

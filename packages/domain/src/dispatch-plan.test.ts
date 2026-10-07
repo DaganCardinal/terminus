@@ -7,6 +7,11 @@ import {
   launchDispatchPlan,
   readyDispatchPlan,
   requestPlanLaunch,
+  assessPlan,
+  launchProposal,
+  selectBaselineFix,
+  selectPlannedUnloadMode,
+  type BaselineReport,
   type DispatchProposal,
 } from "./dispatch-plan"
 import { manifest, unwrap, expectRejected, eventTypes } from "./testing"
@@ -235,4 +240,134 @@ it("permits a cross-Line contract consumer only after pickup includes its provid
   expect(assessDispatchProposal(p, context).errors.join(" ")).toMatch(
     /code dependency/
   )
+})
+
+describe("Baseline fix suggestions", () => {
+  const failing: BaselineReport = {
+    commit: "base",
+    checks: [
+      {
+        name: "test",
+        status: "failed",
+        exitCode: 1,
+        outputTail: "1 failing",
+        outputTruncated: false,
+      },
+    ],
+  }
+  const withFix = (): DispatchProposal => ({
+    ...proposal(),
+    lines: [
+      ...proposal().lines,
+      {
+        key: "blue",
+        name: "Blue Line",
+        route: [{ kind: "station", key: "header" }],
+        stations: [
+          {
+            key: "header",
+            name: "Header",
+            manifest: manifest({ expectedAreas: ["src/header.tsx"] }),
+          },
+        ],
+      },
+    ],
+    baselineFix: {
+      reason: "The test check fails on the baseline",
+      line: {
+        key: "fix",
+        name: "Baseline Fix",
+        stations: [
+          {
+            key: "fix-tests",
+            name: "Fix tests",
+            manifest: manifest({ expectedAreas: ["src/broken.test.tsx"] }),
+          },
+        ],
+      },
+    },
+  })
+  const fixReady = () =>
+    unwrap(readyDispatchPlan(plan(), withFix(), context, failing))
+
+  it("routes every other Line through the accepted fix when included", () => {
+    const launched = launchProposal(withFix())
+    expect(launched.baselineFix).toBeUndefined()
+    expect(launched.lines.map((l) => l.key)).toEqual(["fix", "red", "blue"])
+    const pickup = {
+      kind: "crossing",
+      source: { kind: "planned", stationKey: "fix-tests" },
+    }
+    expect(launched.lines[1]!.route).toEqual([
+      pickup,
+      { kind: "station", key: "footer" },
+      { kind: "station", key: "tests" },
+    ])
+    expect(launched.lines[2]!.route).toEqual([
+      pickup,
+      { kind: "station", key: "header" },
+    ])
+    expect(fixReady().state).toMatchObject({
+      status: "ready",
+      baseline: failing,
+      assessment: { errors: [] },
+    })
+  })
+
+  it("drops the fix when rejected and re-assesses the selection", () => {
+    const rejected = selectBaselineFix(fixReady(), "reject", context)
+    expect(eventTypes(rejected)).toEqual(["dispatcher.baseline_fix_selected"])
+    const value = unwrap(rejected)
+    if (value.state.status !== "ready") throw new Error("Expected ready")
+    expect(
+      launchProposal(value.state.proposal).lines.map((l) => l.key)
+    ).toEqual(["red", "blue"])
+    expect(eventTypes(selectBaselineFix(value, "reject", context))).toEqual([])
+    expectRejected(
+      selectBaselineFix(ready(), "include", context),
+      "invalid_input"
+    )
+  })
+
+  it("launches the fix Line with one Train", () => {
+    const requested = unwrap(requestPlanLaunch(fixReady(), "base", context))
+    expect(
+      launchDispatchPlan(requested, ["l0", "l1", "l2"], ["t0", "t1", "t2"]).ok
+    ).toBe(true)
+    expectRejected(
+      launchDispatchPlan(requested, ["l0", "l1"], ["t0", "t1"]),
+      "invalid_input"
+    )
+  })
+
+  it("refuses a fix without a failing baseline, and an included fix alongside Junctions", () => {
+    expect(assessPlan(withFix(), context, undefined).errors).toContain(
+      "A baseline fix was proposed, but the baseline checks did not fail."
+    )
+    const junctions: DispatchProposal = {
+      ...withFix(),
+      junctions: [
+        {
+          key: "feature",
+          name: "Feature",
+          brief: {} as never,
+          incoming: [],
+          outgoing: { name: "Out", stations: [] },
+        },
+      ],
+    }
+    expect(assessPlan(junctions, context, failing).errors.join(" ")).toContain(
+      "cannot reach Junction input Lines"
+    )
+  })
+
+  it("selects the fix Line's unload mode like any other planned Line", () => {
+    const selected = unwrap(
+      selectPlannedUnloadMode(fixReady(), "fix", "human_approval")
+    )
+    if (selected.state.status !== "ready") throw new Error("Expected ready")
+    expect(selected.state.proposal.baselineFix?.line.unloadMode).toBe(
+      "human_approval"
+    )
+  })
 })

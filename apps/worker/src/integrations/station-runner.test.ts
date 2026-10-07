@@ -136,6 +136,42 @@ describe("Station execution boundary", () => {
       run.mock.calls.filter(([command]) => command[0] === "opencode")
     ).toHaveLength(1)
   })
+  it("configures the Station agent only after repository install scripts have run", async () => {
+    const f = await fixture()
+    await f.runner.run(f.input)
+    const run = vi.mocked(f.sandbox.run).mock
+    const write = vi.mocked(f.sandbox.write).mock
+    const order = (command: string) =>
+      run.invocationCallOrder[
+        run.calls.findIndex(([args]) => args.slice(0, 2).join(" ") === command)
+      ]!
+    const configured =
+      write.invocationCallOrder[
+        write.calls.findIndex(([path]) => path === "/workspace/opencode.json")
+      ]!
+    expect(order("npm ci")).toBeLessThan(configured)
+    expect(configured).toBeLessThan(order("node -e"))
+    expect(order("node -e")).toBeLessThan(order("opencode run"))
+    const config = JSON.parse(
+      write.calls.find(([path]) => path === "/workspace/opencode.json")![1]
+    )
+    expect(config.agent.station.prompt).toContain("Terminus Station Agent")
+    const [harness, cwd, environment] = run.calls.find(
+      ([args]) => args[0] === "opencode"
+    )!
+    expect(harness).toEqual(expect.arrayContaining(["--agent", "station"]))
+    expect(cwd).toBe("/workspace/repo")
+    expect(environment).toMatchObject({
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    })
+    const message = harness.at(-1)!
+    expect(message).toContain("Manifest: ")
+    expect(message).toContain(
+      "The checkout has no root AGENTS.md or CLAUDE.md."
+    )
+    expect(message).not.toContain("Terminus Station Agent")
+  })
   it("recovers a pushed candidate when publication acknowledgement fails without another model run", async () => {
     const f = await fixture()
     vi.spyOn(f.store, "publishAgentRun").mockRejectedValueOnce(

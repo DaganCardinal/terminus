@@ -178,6 +178,17 @@ export const api = {
         body: { trainCommit },
       })
     ),
+  selectPlanBaselineFix: async (
+    networkId: string,
+    planId: string,
+    selection: "include" | "reject"
+  ) =>
+    dispatchPlanSchema.parse(
+      await request(`/networks/${networkId}/plans/${planId}/baseline-fix`, {
+        method: "PUT",
+        body: { selection },
+      })
+    ),
   retryPlan: (networkId: string, planId: string) =>
     request<void>(`/networks/${networkId}/plans/${planId}/retry`, {
       method: "POST",

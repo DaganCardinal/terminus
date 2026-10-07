@@ -36,18 +36,6 @@ export class FakeRepositoryHost implements RepositoryHost {
       repairDiff: "Fake reconciliation diff",
     }
   }
-  async readContext(_repoId: string, commit: string) {
-    return {
-      commit,
-      paths: [
-        "src/App.tsx",
-        "src/components/theme-provider.tsx",
-        "package.json",
-      ],
-      pathsTruncated: false,
-      files: [],
-    }
-  }
   async readOverview(_repoId: string, commit: string) {
     const documents = fakeEntries
       .filter((entry) => isDocumentPath(entry.path))

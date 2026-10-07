@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
-import { ModelRepairConductor, technicianPrompt } from "./technician"
+import {
+  ModelRepairConductor,
+  technicianHarnessAgent,
+  technicianMessage,
+} from "./technician"
 import type { TechnicianRepair } from "@terminus/domain"
 const repair: TechnicianRepair = {
   id: "repair",
@@ -25,12 +29,14 @@ const repair: TechnicianRepair = {
 }
 describe("Technician runtime", () => {
   it("gives the harness exact reconciliation context and constrained implementation authority", () => {
-    const prompt = technicianPrompt(repair)
-    expect(prompt).toContain("Edit only the listed conflicted files")
-    expect(prompt).toContain("cannot approve or promote")
-    expect(prompt).toContain("train-head")
-    expect(prompt).toContain("terminus-head")
-    expect(prompt).toContain("src/shared.ts")
+    const { system } = technicianHarnessAgent(repair)
+    expect(system).toContain("Edit only the listed conflicted files")
+    expect(system).toContain("cannot approve or promote")
+    const message = technicianMessage(repair)
+    expect(message).toContain("train-head")
+    expect(message).toContain("terminus-head")
+    expect(message).toContain("src/shared.ts")
+    expect(system).not.toContain("train-head")
   })
   it("validates the affected Conductor's structured output and records its configured identity", async () => {
     const provider = {

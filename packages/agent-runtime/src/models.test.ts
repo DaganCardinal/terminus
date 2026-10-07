@@ -5,7 +5,12 @@ import {
   type ModelTransport,
 } from "./model-provider"
 import { ModelConductor } from "./model-conductor"
-import { harnessOutcome, opencodeConfig, opencodeCommand } from "./opencode"
+import {
+  harnessOutcome,
+  opencodeConfig,
+  stationHarnessAgent,
+  stationMessage,
+} from "./opencode"
 import type { ReviewInput, StationRunInput } from "./roles"
 
 const model = "@cf/zai-org/glm-5.3-flash"
@@ -165,13 +170,14 @@ describe("configured model routing", () => {
     ).rejects.toThrow("truncated")
   })
   it("pins both OpenCode model choices and uses only a placeholder key in the Sandbox", () => {
-    const config = JSON.parse(opencodeConfig("account", "gateway", model))
+    const config = JSON.parse(
+      opencodeConfig("account", "gateway", model, stationHarnessAgent)
+    )
     expect(config.model).toBe(`terminus/${model}`)
     expect(config.small_model).toBe(config.model)
     expect(config.enabled_providers).toEqual(["terminus"])
     expect(config.snapshot).toBe(false)
     expect(config.provider.terminus.options.apiKey).toBe("provided-by-worker")
-    expect(opencodeCommand(model, run)).toContain(`terminus/${model}`)
   })
 })
 
@@ -188,9 +194,7 @@ describe("OpenCode outcomes", () => {
       summary: "Missing accessible navigation",
       findings: ["Label the footer navigation"],
     }
-    const command = opencodeCommand(model, { ...run, validation, feedback })
-    expect(command.at(-2)).toBe("--")
-    const prompt = command.at(-1)!
+    const prompt = stationMessage({ ...run, validation, feedback })
     const data = (prefix: string): unknown => {
       const line = prompt.split("\n").find((line) => line.startsWith(prefix))
       expect(line).toBeDefined()
@@ -202,6 +206,9 @@ describe("OpenCode outcomes", () => {
       data("Trusted project validation (all checks required; command arrays): ")
     ).toEqual(validation)
     expect(prompt).toContain(`Station base commit: ${run.workspace.baseCommit}`)
+    // Role instructions are the agent's system prompt, never task data.
+    expect(prompt).not.toContain("Terminus Station Agent")
+    expect(stationHarnessAgent.system).toContain("Terminus Station Agent")
   })
   it("collects summaries from JSON events without treating them as evidence", () => {
     expect(

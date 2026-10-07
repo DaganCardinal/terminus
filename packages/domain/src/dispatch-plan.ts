@@ -37,10 +37,41 @@ export interface PlannedJunction {
     unloadMode?: import("./unload-policy").UnloadMode
   }
 }
+/** A fact the Dispatcher established while exploring; never file contents. */
+export interface PlanningFinding {
+  topic: string
+  summary: string
+  paths: string[]
+}
+
+export type BaselineFixSelection = "include" | "reject"
+
+/** A suggested Line that repairs failing baseline checks before planned work. */
+export interface BaselineFix {
+  reason: string
+  line: PlannedLine
+  /** User selection; absent means include. */
+  selection?: BaselineFixSelection
+}
+
 export interface DispatchProposal {
   junctions?: PlannedJunction[]
   summary: string
   lines: PlannedLine[]
+  findings?: PlanningFinding[]
+  baselineFix?: BaselineFix
+}
+
+/** Trusted checks orchestration ran on the planning baseline before the Dispatcher explored it. */
+export interface BaselineReport {
+  commit: string
+  checks: {
+    name: string
+    status: "passed" | "failed" | "skipped"
+    exitCode?: number
+    outputTail: string
+    outputTruncated: boolean
+  }[]
 }
 
 export interface CollisionForecast {
@@ -67,6 +98,8 @@ export interface PlanningContext {
 interface ReviewedPlan {
   proposal: DispatchProposal
   assessment: PlanAssessment
+  /** Present when the user asked for a baseline check before planning. */
+  baseline?: BaselineReport
 }
 
 export interface DispatchPlan {
@@ -76,6 +109,8 @@ export interface DispatchPlan {
   terminusCommit: string
   model: string
   createdAt: string
+  /** Install dependencies and run project checks on the baseline before exploring. */
+  checkBaseline?: boolean
   state:
     | { status: "planning" }
     | ({ status: "ready" | "launching" } & ReviewedPlan)
@@ -345,10 +380,74 @@ function pathsOverlap(a: string, b: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
 }
 
+export function baselineFailed(report: BaselineReport | undefined): boolean {
+  return !!report?.checks.some((check) => check.status !== "passed")
+}
+
+/**
+ * The proposal that launches. An included baseline fix becomes its own Line,
+ * and every other top-level Line picks up its accepted checkpoint through a
+ * Crossing before its first Station.
+ */
+export function launchProposal(proposal: DispatchProposal): DispatchProposal {
+  const { baselineFix, ...base } = proposal
+  if (!baselineFix || baselineFix.selection === "reject") return base
+  const fix = baselineFix.line.stations[0]
+  if (!fix) return base
+  return {
+    ...base,
+    lines: [
+      baselineFix.line,
+      ...base.lines.map((line) => ({
+        ...line,
+        route: [
+          {
+            kind: "crossing" as const,
+            source: { kind: "planned" as const, stationKey: fix.key },
+          },
+          ...(line.route ??
+            line.stations.map((s) => ({
+              kind: "station" as const,
+              key: s.key,
+            }))),
+        ],
+      })),
+    ],
+  }
+}
+
+/** Assesses what would launch, including baseline-fix rules. */
+export function assessPlan(
+  proposal: DispatchProposal,
+  context: PlanningContext,
+  baseline: BaselineReport | undefined
+): PlanAssessment {
+  const assessment = assessDispatchProposal(launchProposal(proposal), context)
+  const errors: string[] = []
+  const fix = proposal.baselineFix
+  if (fix) {
+    if (!baselineFailed(baseline))
+      errors.push(
+        "A baseline fix was proposed, but the baseline checks did not fail."
+      )
+    if (fix.line.stations.length !== 1 || fix.line.route)
+      errors.push("A baseline fix must be one Line with exactly one Station.")
+    if (fix.selection !== "reject" && proposal.junctions?.length)
+      errors.push(
+        "A baseline fix cannot reach Junction input Lines; reject the fix or request a plan without Junctions."
+      )
+  }
+  return {
+    ...assessment,
+    errors: [...new Set([...errors, ...assessment.errors])],
+  }
+}
+
 export function readyDispatchPlan(
   plan: DispatchPlan,
   proposal: DispatchProposal,
-  context: PlanningContext
+  context: PlanningContext,
+  baseline?: BaselineReport
 ): Transition<DispatchPlan> {
   if (plan.state.status !== "planning")
     return reject("invalid_state", "Plan is not being prepared")
@@ -358,7 +457,8 @@ export function readyDispatchPlan(
       state: {
         status: "ready",
         proposal,
-        assessment: assessDispatchProposal(proposal, context),
+        assessment: assessPlan(proposal, context, baseline),
+        ...(baseline ? { baseline } : {}),
       },
     },
     [{ type: "dispatcher.plan_ready", planId: plan.id }]
@@ -377,7 +477,11 @@ export function requestPlanLaunch(
       "invalid_input",
       "Terminus changed; request a fresh plan before launching"
     )
-  const assessment = assessDispatchProposal(plan.state.proposal, context)
+  const assessment = assessPlan(
+    plan.state.proposal,
+    context,
+    plan.state.baseline
+  )
   if (assessment.errors.length)
     return reject("invalid_input", assessment.errors.join(" "))
   if (hasNewCollisionForecasts(plan.state.assessment, assessment))
@@ -398,19 +502,17 @@ export function launchDispatchPlan(
 ): Transition<DispatchPlan> {
   if (plan.state.status !== "launching")
     return reject("invalid_state", "Plan launch was not requested")
+  const proposal = launchProposal(plan.state.proposal)
   if (
     lineIds.length !==
-      plan.state.proposal.lines.length +
-        (plan.state.proposal.junctions ?? []).reduce(
+      proposal.lines.length +
+        (proposal.junctions ?? []).reduce(
           (n, j) => n + j.incoming.length + 1,
           0
         ) ||
     trainIds.length !==
-      plan.state.proposal.lines.length +
-        (plan.state.proposal.junctions ?? []).reduce(
-          (n, j) => n + j.incoming.length,
-          0
-        )
+      proposal.lines.length +
+        (proposal.junctions ?? []).reduce((n, j) => n + j.incoming.length, 0)
   )
     return reject("invalid_input", "Every planned Line must have one Train")
   return accept(
@@ -466,6 +568,30 @@ export function selectPlannedUnloadMode(
 ): Transition<DispatchPlan> {
   if (plan.state.status !== "ready")
     return reject("invalid_state", "Unload selections require a ready proposal")
+  const fix = plan.state.proposal.baselineFix
+  if (fix?.line.key === lineKey) {
+    if (fix.line.unloadMode === mode) return accept(plan, [])
+    return accept(
+      {
+        ...plan,
+        state: {
+          ...plan.state,
+          proposal: {
+            ...plan.state.proposal,
+            baselineFix: { ...fix, line: { ...fix.line, unloadMode: mode } },
+          },
+        },
+      },
+      [
+        {
+          type: "dispatcher.unload_mode_changed",
+          planId: plan.id,
+          lineKey,
+          mode,
+        },
+      ]
+    )
+  }
   const line = plan.state.proposal.lines.find((line) => line.key === lineKey)
   if (!line) {
     const junction = plan.state.proposal.junctions?.find(
@@ -514,5 +640,36 @@ export function selectPlannedUnloadMode(
       },
     },
     [{ type: "dispatcher.unload_mode_changed", planId: plan.id, lineKey, mode }]
+  )
+}
+
+/** Includes or rejects the suggested baseline fix on a reviewable proposal. */
+export function selectBaselineFix(
+  plan: DispatchPlan,
+  selection: BaselineFixSelection,
+  context: PlanningContext
+): Transition<DispatchPlan> {
+  if (plan.state.status !== "ready")
+    return reject(
+      "invalid_state",
+      "Baseline fix selections require a ready proposal"
+    )
+  const fix = plan.state.proposal.baselineFix
+  if (!fix) return reject("invalid_input", "This plan has no baseline fix")
+  if ((fix.selection ?? "include") === selection) return accept(plan, [])
+  const proposal = {
+    ...plan.state.proposal,
+    baselineFix: { ...fix, selection },
+  }
+  return accept(
+    {
+      ...plan,
+      state: {
+        ...plan.state,
+        proposal,
+        assessment: assessPlan(proposal, context, plan.state.baseline),
+      },
+    },
+    [{ type: "dispatcher.baseline_fix_selected", planId: plan.id, selection }]
   )
 }

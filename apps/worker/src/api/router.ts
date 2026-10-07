@@ -21,6 +21,7 @@ import {
   layLineRequestSchema,
   placeHoldRequestSchema,
   createDispatchPlanRequestSchema,
+  selectBaselineFixRequestSchema,
   removeStationRequestSchema,
   repositoryFileQuerySchema,
   modelSettingsSchema,
@@ -50,6 +51,7 @@ import {
 import { dispatcherPorts, dispatchPlanningPorts } from "../agents/ports"
 import {
   proposeDispatchPlan,
+  selectPlanBaselineFix,
   launchPlannedLines,
   retryDispatchPlan,
 } from "../agents/dispatch-planning"
@@ -502,6 +504,23 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
           body
         ),
         202
+      )
+    },
+  ],
+  [
+    "PUT",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/plans/:planId/baseline-fix",
+    }),
+    async (request, env, { networkId, planId }) => {
+      const body = await parse(request, selectBaselineFixRequestSchema)
+      return json(
+        await selectPlanBaselineFix(
+          dispatcherPorts(env),
+          networkId!,
+          planId!,
+          body.selection
+        )
       )
     },
   ],

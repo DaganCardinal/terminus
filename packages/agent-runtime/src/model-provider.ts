@@ -1,7 +1,7 @@
 import { chatCompletionSchema } from "@terminus/protocol"
 
 export interface ModelRequest {
-  role: "conductor" | "dispatcher"
+  role: "conductor"
   system: string
   input: unknown
 }

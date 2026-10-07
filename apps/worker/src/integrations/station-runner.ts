@@ -1,7 +1,7 @@
 import {
   harnessOutcome,
-  opencodeCommand,
-  opencodeConfig,
+  stationHarnessAgent,
+  stationMessage,
   type StationRunner,
   type StationRunInput,
   type StationRunResult,
@@ -19,6 +19,7 @@ import {
 } from "@terminus/protocol"
 import type { NetworkStore } from "./network-store"
 import { gatewayConfig } from "./execution-config"
+import { prepareHarness } from "./harness"
 
 const repoDirectory = stationDirectory
 
@@ -27,7 +28,8 @@ export interface StationSandbox {
   run(
     command: string[],
     cwd?: string,
-    env?: Record<string, string>
+    env?: Record<string, string>,
+    timeoutMs?: number
   ): Promise<unknown>
   write(path: string, contents: string): Promise<void>
   close(): Promise<void>
@@ -159,10 +161,6 @@ export class SandboxStationRunner implements StationRunner {
         "/workspace/manifest.json",
         JSON.stringify(input.manifest, null, 2)
       )
-      await sandbox.write(
-        "/workspace/opencode.json",
-        opencodeConfig(config.accountId, config.gatewayId, config.model)
-      )
       phase = "dependencies"
       const installed = commandResultSchema.parse(
         await workspace.run(
@@ -172,20 +170,17 @@ export class SandboxStationRunner implements StationRunner {
       )
       if (installed.exitCode !== 0)
         throw new Error("Project dependency installation failed")
+      // Install scripts are repository code, so the harness is prepared after them.
+      phase = "preflight"
+      const prepared = await prepareHarness(this.#env, sandbox, workspace, {
+        model: config.model,
+        agent: stationHarnessAgent,
+        directory: repoDirectory,
+        assignment: stationMessage(input),
+      })
       phase = "harness"
       const harness = commandResultSchema.parse(
-        await workspace.run(
-          opencodeCommand(config.model, input),
-          repoDirectory,
-          {
-            OPENCODE_CONFIG: "/workspace/opencode.json",
-            OPENCODE_DISABLE_MODELS_FETCH: "1",
-            OPENCODE_DISABLE_AUTOUPDATE: "1",
-            OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-            OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
-            OPENCODE_DISABLE_SHARE: "1",
-          }
-        )
+        await workspace.run(prepared.command, repoDirectory, prepared.env)
       )
       const outcome = harnessOutcome(harness)
       if (outcome.error) throw new Error(outcome.error)

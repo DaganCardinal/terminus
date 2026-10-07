@@ -213,37 +213,6 @@ async function fixture() {
 }
 
 describe("Artifacts repository transport with real Git", () => {
-  it("reads bounded context from the exact canonical commit using only read grants, without changing its history", async () => {
-    const f = await fixture()
-    await f.host.createTerminus({ namespace: "p" })
-    const saved = await f.change("p/terminus", "README.md", "x".repeat(6000))
-    await f.change("p/terminus", ".env", "SECRET=fixture-secret")
-    await f.change("p/terminus", "README.md", "newer content")
-    const current = await f.head("p/terminus")
-    const context = await f.host.readContext("p/terminus", saved.commit)
-    expect(context.commit).toBe(saved.commit)
-    expect(context.files.find((file) => file.path === "README.md")).toEqual({
-      path: "README.md",
-      content: "x".repeat(4000),
-      truncated: true,
-    })
-    expect(await f.head("p/terminus")).toBe(current)
-    const latest = await f.host.readContext("p/terminus", current)
-    expect(latest.paths).not.toContain(".env")
-    expect(
-      latest.files.some((file) => file.content.includes("fixture-secret"))
-    ).toBe(false)
-    expect(
-      f.grants
-        .slice(-2)
-        .every((grants) => grants.length === 1 && grants[0]!.scope === "read")
-    ).toBe(true)
-    expect(f.tokens.size).toBe(0)
-    await expect(
-      f.host.readContext("p/terminus", "not-a-commit")
-    ).rejects.toThrow("full Git commit")
-    expect(f.tokens.size).toBe(0)
-  })
   it("keeps a Project's Terminus, Train and Station repos in its own namespace", async () => {
     const f = await fixture()
     const terminus = await f.host.createTerminus({ namespace: "p" })

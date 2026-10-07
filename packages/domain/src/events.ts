@@ -158,6 +158,11 @@ export type DomainEvent =
   | { type: "dispatcher.launch_requested"; planId: string }
   | { type: "dispatcher.plan_failed"; planId: string }
   | {
+      type: "dispatcher.baseline_fix_selected"
+      planId: string
+      selection: import("./dispatch-plan").BaselineFixSelection
+    }
+  | {
       type: "dispatcher.lines_laid"
       planId: string
       lineIds: LineId[]

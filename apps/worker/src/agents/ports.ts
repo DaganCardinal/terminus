@@ -6,7 +6,7 @@ import {
   FakeStationRunner,
   GatewayModelProvider,
   ModelConductor,
-  ModelDispatcher,
+  HarnessDispatcher,
   FakeDispatchPlanner,
   type Conductor,
   type ModelProvider,
@@ -22,6 +22,7 @@ import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { artifactsRepositories } from "../integrations/artifacts-repositories"
 import { SandboxTechnicianRunner } from "../integrations/technician-runner"
+import { SandboxDispatchSessions } from "../integrations/dispatch-session"
 import type { TechnicianPorts } from "./technician"
 import { SandboxStationRunner } from "../integrations/station-runner"
 import {
@@ -249,9 +250,9 @@ export function dispatchPlanningPorts(
     planner:
       env.DISPATCHER_MODEL === FAKE
         ? new FakeDispatchPlanner()
-        : new ModelDispatcher(
+        : new HarnessDispatcher(
             models.dispatcher,
-            gatewayProvider(env, models.dispatcher)
+            new SandboxDispatchSessions(env, artifactsRepositories(env))
           ),
     startPlanning: async (planId) => {
       try {

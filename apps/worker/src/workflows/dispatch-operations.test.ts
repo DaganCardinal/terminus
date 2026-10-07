@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
 import type { DispatchProposal } from "@terminus/domain"
-import { DispatchProposalError } from "@terminus/agent-runtime"
+import {
+  DispatchProposalError,
+  FakeDispatchPlanner,
+} from "@terminus/agent-runtime"
 import { NonRetryableError } from "cloudflare:workflows"
 import {
   proposeDispatchPlan,
   launchPlannedLines,
   type DispatchPlanningPorts,
+  selectPlanBaselineFix,
 } from "../agents/dispatch-planning"
 import {
   testPorts,
@@ -69,12 +73,17 @@ function proposal(): DispatchProposal {
   }
 }
 
+const planned = (proposal: DispatchProposal) => ({
+  proposal,
+  baseline: null,
+})
+
 async function fixture() {
   const base = testPorts()
   const network = await seedNetwork(base)
   const ports: DispatchPlanningPorts = {
     ...base.dispatcher,
-    planner: { model: "fake", plan: vi.fn(async () => proposal()) },
+    planner: { model: "fake", plan: vi.fn(async () => planned(proposal())) },
     startPlanning: vi.fn(async () => {}),
     wakePlan: vi.fn(async () => {}),
     retryPlan: vi.fn(async () => {}),
@@ -169,7 +178,6 @@ describe("durable Dispatcher planning and launch", () => {
   })
   it("checkpoints proposals without starting work and reuses them after lost acknowledgements", async () => {
     const f = await fixture()
-    const readContext = vi.spyOn(f.ports.repositories, "readContext")
     const commit = f.ports.store.commit.bind(f.ports.store)
     vi.spyOn(f.ports.store, "commit").mockImplementationOnce(
       async (...args) => {
@@ -182,9 +190,17 @@ describe("durable Dispatcher planning and launch", () => {
     )
     await prepareDispatchPlan(f.ports, f.plan.id)
     expect(f.ports.planner.plan).toHaveBeenCalledOnce()
-    expect(readContext).toHaveBeenCalledWith(
-      f.network.terminusRepoId,
-      f.network.terminusCommit
+    expect(f.ports.planner.plan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repository: {
+          repoId: f.network.terminusRepoId,
+          commit: f.network.terminusCommit,
+        },
+        checkBaseline: false,
+        validation: expect.arrayContaining([
+          expect.objectContaining({ name: "test" }),
+        ]),
+      })
     )
     expect((await f.ports.store.snapshot(f.network.id))!.trains).toEqual([])
     expect(
@@ -222,7 +238,7 @@ describe("durable Dispatcher planning and launch", () => {
     const p = proposal()
     p.lines[1]!.stations[0]!.manifest.dependencies = ["a"]
     p.lines[0]!.stations[0]!.manifest.expectedEvidence = ["invented"]
-    f.ports.planner.plan = vi.fn(async () => p)
+    f.ports.planner.plan = vi.fn(async () => planned(p))
     await expect(
       launchPlannedLines(f.ports, f.network.id, f.plan.id)
     ).rejects.toThrow("not ready")
@@ -335,18 +351,15 @@ describe("durable Dispatcher planning and launch", () => {
   })
   it("rejects mismatched or malformed context/output, and stores safe failure diagnostics", async () => {
     const f = await fixture()
-    vi.spyOn(f.ports.repositories, "readContext").mockResolvedValueOnce({
-      commit: "wrong",
-      paths: [],
-      pathsTruncated: false,
-      files: [],
-    })
+    f.ports.planner.plan = vi.fn(async () => ({
+      ...planned(proposal()),
+      baseline: { commit: "wrong", checks: [] },
+    }))
     await expect(prepareDispatchPlan(f.ports, f.plan.id)).rejects.toThrow(
       "different commit"
     )
-    expect(f.ports.planner.plan).not.toHaveBeenCalled()
-    f.ports.planner.plan = vi.fn(
-      async () => ({ lines: [] }) as unknown as DispatchProposal
+    f.ports.planner.plan = vi.fn(async () =>
+      planned({ lines: [] } as unknown as DispatchProposal)
     )
     await expect(prepareDispatchPlan(f.ports, f.plan.id)).rejects.toThrow()
     await recordDispatchFailure(f.ports, f.plan.id, "planning")
@@ -372,7 +385,7 @@ it("launches planned Crossing references atomically across Lines", async () => {
     { kind: "crossing", source: { kind: "planned", stationKey: "a-tests" } },
     { kind: "station", key: "b" },
   ]
-  f.ports.planner.plan = vi.fn(async () => p)
+  f.ports.planner.plan = vi.fn(async () => planned(p))
   await prepareDispatchPlan(f.ports, f.plan.id)
   await launchPlannedLines(f.ports, f.network.id, f.plan.id)
   await layDispatchLines(f.ports, f.plan.id)
@@ -392,29 +405,30 @@ it("atomically launches Junction proposals with stable membership and a deferred
     p = proposal(),
     a = p.lines[0]!,
     b = p.lines[1]!
-  f.ports.planner.plan = async () => ({
-    summary: "Feature",
-    lines: [],
-    junctions: [
-      {
-        key: "feature",
-        name: "Feature",
-        brief: {
-          goal: "Feature",
-          scope: ["src/"],
-          contracts: [],
-          invariants: [],
-          acceptanceCriteria: ["works"],
-          validation: [{ name: "test", command: ["npm", "test"] }],
+  f.ports.planner.plan = async () =>
+    planned({
+      summary: "Feature",
+      lines: [],
+      junctions: [
+        {
+          key: "feature",
+          name: "Feature",
+          brief: {
+            goal: "Feature",
+            scope: ["src/"],
+            contracts: [],
+            invariants: [],
+            acceptanceCriteria: ["works"],
+            validation: [{ name: "test", command: ["npm", "test"] }],
+          },
+          incoming: [
+            { name: a.name, stations: a.stations },
+            { name: b.name, stations: b.stations },
+          ],
+          outgoing: { name: "Deliver", stations: [] },
         },
-        incoming: [
-          { name: a.name, stations: a.stations },
-          { name: b.name, stations: b.stations },
-        ],
-        outgoing: { name: "Deliver", stations: [] },
-      },
-    ],
-  })
+      ],
+    })
   f.ports.startJunction = vi.fn(async () => {})
   await prepareDispatchPlan(f.ports, f.plan.id)
   await launchPlannedLines(f.ports, f.network.id, f.plan.id)
@@ -433,4 +447,71 @@ it("atomically launches Junction proposals with stable membership and a deferred
   expect((await f.base.store.dispatchPlan(f.plan.id))!.value.state.status).toBe(
     "launched"
   )
+})
+
+describe("baseline checks before planning", () => {
+  it("records the baseline option, refuses reusing a request with a different option, and persists the report", async () => {
+    const f = await fixture()
+    await expect(
+      proposeDispatchPlan(f.ports, f.network.id, {
+        ...f.request,
+        checkBaseline: true,
+      })
+    ).rejects.toThrow("different goal")
+    const request = { ...f.request, requestId: crypto.randomUUID() }
+    const checked = await proposeDispatchPlan(f.ports, f.network.id, {
+      ...request,
+      checkBaseline: true,
+    })
+    expect(checked.checkBaseline).toBe(true)
+    f.ports.planner = new FakeDispatchPlanner()
+    await prepareDispatchPlan(f.ports, checked.id)
+    const plan = (await f.ports.store.dispatchPlan(checked.id))!.value
+    if (plan.state.status !== "ready") throw new Error("Expected ready")
+    expect(plan.state.baseline?.checks.some((c) => c.status === "failed")).toBe(
+      true
+    )
+    expect(plan.state.proposal.findings?.length).toBeGreaterThan(0)
+    expect(plan.state.proposal.baselineFix).toBeDefined()
+    expect(plan.state.assessment.errors).toEqual([])
+  })
+
+  it("lays an included fix with Crossings on every other Line, and omits a rejected fix", async () => {
+    for (const selection of ["include", "reject"] as const) {
+      const f = await fixture()
+      f.ports.planner = new FakeDispatchPlanner()
+      const plan = await proposeDispatchPlan(f.ports, f.network.id, {
+        requestId: crypto.randomUUID(),
+        goal: "Add a footer",
+        checkBaseline: true,
+      })
+      await prepareDispatchPlan(f.ports, plan.id)
+      if (selection === "reject")
+        await selectPlanBaselineFix(f.ports, f.network.id, plan.id, "reject")
+      await launchPlannedLines(f.ports, f.network.id, plan.id)
+      await layDispatchLines(f.ports, plan.id)
+      const snapshot = (await f.ports.store.snapshot(f.network.id))!
+      const fix = snapshot.lines.find((l) => l.name === "Baseline Fix Line")
+      if (selection === "reject") {
+        expect(fix).toBeUndefined()
+        expect(snapshot.crossings ?? []).toEqual([])
+        continue
+      }
+      expect(fix).toBeDefined()
+      const goal = snapshot.lines.find((l) => l.name === "Goal Line")!
+      expect(goal.stops?.[0]).toMatchObject({
+        kind: "crossing",
+        stationId: fix!.stationIds[0],
+      })
+      expect(snapshot.trains).toHaveLength(2)
+    }
+  })
+
+  it("refuses baseline fix selection without a fix", async () => {
+    const f = await fixture()
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await expect(
+      selectPlanBaselineFix(f.ports, f.network.id, f.plan.id, "reject")
+    ).rejects.toThrow("no baseline fix")
+  })
 })

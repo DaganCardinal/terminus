@@ -100,6 +100,11 @@ export function PlanExchange({
               api.selectPlanUnloadMode(networkId, plan.id, lineKey, mode)
             )
           }
+          selectFix={(selection) =>
+            command(() =>
+              api.selectPlanBaselineFix(networkId, plan.id, selection)
+            )
+          }
           retry={retry}
           refine={refine}
           propose={propose}
@@ -110,8 +115,10 @@ export function PlanExchange({
   )
 }
 
-/** The Dispatcher is reading the project and writing manifests. Elapsed
+/** The Dispatcher is exploring the project and writing manifests. Elapsed
  * time is real; nothing here pretends to measure progress. */
+const recoverAfterSeconds = 35 * 60
+
 function Drafting({
   plan,
   pending,
@@ -135,15 +142,20 @@ function Drafting({
       <p className="dmsg-status" role="status">
         <Typing />
         <span>
-          Reading the project at <code>{shortCommit(plan.terminusCommit)}</code>{" "}
-          and drafting Lines and Station manifests
+          {plan.checkBaseline
+            ? "Checking the baseline, then exploring"
+            : "Exploring"}{" "}
+          the project at <code>{shortCommit(plan.terminusCommit)}</code> and
+          drafting Lines and Station manifests
         </span>
       </p>
       <p className="dmsg-hint">
         <span className="tabular">{elapsed}</span> · The proposal is saved when
         it&rsquo;s ready, so you can close this panel.
       </p>
-      {seconds > 90 && (
+      {/* Recovery only restarts an errored run, so offer it once the
+          planning step's own time budget has passed. */}
+      {seconds > recoverAfterSeconds && (
         <button
           className="dmsg-link"
           disabled={pending}
@@ -164,6 +176,7 @@ function Proposal({
   pending,
   launch,
   selectMode,
+  selectFix,
   retry,
   refine,
   propose,
@@ -176,6 +189,7 @@ function Proposal({
   pending: boolean
   launch: () => Promise<void>
   selectMode: (lineKey: string, mode: UnloadMode) => Promise<void>
+  selectFix: (selection: "include" | "reject") => Promise<void>
   retry: () => Promise<void>
   refine: (goal: string) => void
   propose: (goal: string) => void
@@ -185,7 +199,11 @@ function Proposal({
   const launched = state.status === "launched"
   // Older and launched plans fold to a summary so the thread stays readable.
   const [showPlan, setShowPlan] = useState(latest && !launched)
-  const lines = proposal.lines
+  const fix = proposal.baselineFix
+  const fixIncluded = !!fix && fix.selection !== "reject"
+  // Matches launch order: an included fix is laid first, and every other
+  // Line picks up its accepted checkpoint before its first Station.
+  const lines = fixIncluded ? [fix.line, ...proposal.lines] : proposal.lines
   const stations = lines.reduce((n, line) => n + line.stations.length, 0)
   const lineIds = "lineIds" in state ? state.lineIds : []
   const launchedLines = lineIds
@@ -379,6 +397,15 @@ function Proposal({
                 )}
               </div>
             )}
+            {state.baseline && (
+              <BaselineNote
+                baseline={state.baseline}
+                fix={fix}
+                editable={state.status === "ready"}
+                pending={pending}
+                selectFix={selectFix}
+              />
+            )}
             {lines.some((l) => l.route?.some((s) => s.kind === "crossing")) && (
               <PlanNote tone="held" title="Crossing routes">
                 {lines.map((l) => (
@@ -410,6 +437,9 @@ function Proposal({
                   </p>
                 ))}
               </PlanNote>
+            )}
+            {proposal.findings && proposal.findings.length > 0 && (
+              <Findings findings={proposal.findings} />
             )}
             <div className="plan-lines">
               {lines.map((line, index) => (
@@ -618,6 +648,124 @@ function UnloadToggle({
         </button>
       ))}
     </div>
+  )
+}
+
+type Finding = NonNullable<Reviewed["proposal"]["findings"]>[number]
+
+/** What exploration established, with the paths that support each fact. */
+function Findings({ findings }: { findings: Finding[] }) {
+  return (
+    <details className="plan-findings">
+      <summary>
+        What Dispatch explored · {plural(findings.length, "finding")}
+      </summary>
+      <ul>
+        {findings.map((finding, index) => (
+          <li key={index}>
+            <strong>{finding.topic}</strong>
+            <p>{finding.summary}</p>
+            {finding.paths.length > 0 && (
+              <p className="plan-finding-paths">
+                {finding.paths.map((path) => (
+                  <code key={path}>{path}</code>
+                ))}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+type Baseline = NonNullable<Reviewed["baseline"]>
+
+/** Trusted checks on the planning baseline, and the suggested fix when one failed. */
+function BaselineNote({
+  baseline,
+  fix,
+  editable,
+  pending,
+  selectFix,
+}: {
+  baseline: Baseline
+  fix: Reviewed["proposal"]["baselineFix"]
+  editable: boolean
+  pending: boolean
+  selectFix: (selection: "include" | "reject") => Promise<void>
+}) {
+  const failed = baseline.checks.filter((check) => check.status !== "passed")
+  if (!failed.length)
+    return (
+      <PlanNote tone="held" title="Baseline checks passed">
+        <p>
+          {baseline.checks.map((check) => check.name).join(", ")} passed on{" "}
+          <code>{shortCommit(baseline.commit)}</code> before planning.
+        </p>
+      </PlanNote>
+    )
+  const included = !!fix && fix.selection !== "reject"
+  return (
+    <PlanNote
+      tone="attention"
+      title={`Baseline checks failing: ${failed.map((c) => c.name).join(", ")}`}
+      action={
+        fix && editable ? (
+          <div
+            className="plan-fix-choice"
+            role="group"
+            aria-label="Baseline fix"
+          >
+            <Button
+              size="sm"
+              variant={included ? "default" : "outline"}
+              aria-pressed={included}
+              disabled={pending || included}
+              onClick={() => void selectFix("include")}
+            >
+              Include fix
+            </Button>
+            <Button
+              size="sm"
+              variant={included ? "outline" : "default"}
+              aria-pressed={!included}
+              disabled={pending || !included}
+              onClick={() => void selectFix("reject")}
+            >
+              Reject fix
+            </Button>
+          </div>
+        ) : undefined
+      }
+    >
+      <p>
+        Every Station must pass every check, so these failures would return
+        every Station&rsquo;s work.
+      </p>
+      {failed.map((check) => (
+        <details key={check.name}>
+          <summary>
+            {check.name} {check.status}
+            {check.exitCode !== undefined ? ` (exit ${check.exitCode})` : ""}
+          </summary>
+          <pre className="unload-diff">
+            {check.outputTruncated ? "…" : ""}
+            {check.outputTail}
+          </pre>
+        </details>
+      ))}
+      {fix ? (
+        <p>
+          {fix.reason}{" "}
+          {included
+            ? `${fix.line.name} runs first; every other Line picks up its accepted fix before its first Station.`
+            : "The fix is rejected; Lines start from the failing baseline."}
+        </p>
+      ) : (
+        <p>The Dispatcher did not suggest a separate fix for this goal.</p>
+      )}
+    </PlanNote>
   )
 }
 

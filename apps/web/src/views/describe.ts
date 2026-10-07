@@ -114,6 +114,10 @@ export function describeEvent(
       return `Dispatcher launched ${plural(event.trainIds.length, "Train")}`
     case "dispatcher.plan_failed":
       return "Dispatcher plan stopped; inspect its details"
+    case "dispatcher.baseline_fix_selected":
+      return event.selection === "include"
+        ? "Baseline fix included in the proposal"
+        : "Baseline fix rejected from the proposal"
     case "line.created":
       return `${name(event.lineId)} laid with ${plural(event.stationIds.length, "Station")}`
     case "train.created":

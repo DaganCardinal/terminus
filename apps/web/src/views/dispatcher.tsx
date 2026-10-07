@@ -61,7 +61,12 @@ const starters = [
   "Improve the README with setup and contribution instructions",
 ]
 
-type Sent = { goal: string; requestId: string; planId?: string }
+type Sent = {
+  goal: string
+  requestId: string
+  checkBaseline: boolean
+  planId?: string
+}
 
 /** The Dispatcher as a collaborator beside the map: a thread of goals, the
  * plans it proposes, and the things it needs the user for. Every message is
@@ -85,6 +90,7 @@ export function DispatcherPanel({
   const indicator = dispatcherIndicator(snapshot)
   const [wide, setWide] = useState(false)
   const [draft, setDraft] = useState("")
+  const [checkBaseline, setCheckBaseline] = useState(false)
   const [sent, setSent] = useState<Sent | null>(null)
   // The goal being refined, shown above the composer until it is sent.
   const [revising, setRevising] = useState<string | null>(null)
@@ -128,9 +134,12 @@ export function DispatcherPanel({
     // A resend of the same text keeps its request identity, so a retried
     // request cannot create a second plan.
     const request =
-      sent && sent.goal === trimmed && !sent.planId
+      sent &&
+      sent.goal === trimmed &&
+      sent.checkBaseline === checkBaseline &&
+      !sent.planId
         ? sent
-        : { goal: trimmed, requestId: crypto.randomUUID() }
+        : { goal: trimmed, requestId: crypto.randomUUID(), checkBaseline }
     setSent(request)
     setDraft("")
     setRevising(null)
@@ -139,6 +148,7 @@ export function DispatcherPanel({
         const created = await api.proposePlan(networkId, {
           goal: request.goal,
           requestId: request.requestId,
+          ...(request.checkBaseline ? { checkBaseline: true } : {}),
         })
         setSent({ ...request, planId: created.id })
       } catch (caught) {
@@ -433,10 +443,23 @@ export function DispatcherPanel({
             <ArrowUp size={17} />
           </button>
         </div>
-        <p className="composer-hint">
-          <kbd>Enter</kbd> to send · <kbd>Shift</kbd> <kbd>Enter</kbd> for a new
-          line
-        </p>
+        <div className="composer-footer">
+          <label
+            className="composer-option"
+            title="Install dependencies and run the project's checks before exploring. Slower; a failing check gets a suggested fix you can reject."
+          >
+            <input
+              type="checkbox"
+              checked={checkBaseline}
+              onChange={(event) => setCheckBaseline(event.target.checked)}
+            />
+            Check baseline first
+          </label>
+          <p className="composer-hint">
+            <kbd>Enter</kbd> to send · <kbd>Shift</kbd> <kbd>Enter</kbd> for a
+            new line
+          </p>
+        </div>
       </form>
     </aside>
   )

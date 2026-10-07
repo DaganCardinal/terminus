@@ -276,3 +276,111 @@ it("accepts Junction-only proposals, counts all feature Stations, and retains le
     }).success
   ).toBe(false)
 })
+
+describe("exploration findings and baseline fixes", () => {
+  const line = proposal.lines[0]!
+  it("bounds findings to plain paths and short facts", () => {
+    const finding = {
+      topic: "Footer",
+      summary: "The layout renders children in App.",
+      paths: ["src/App.tsx"],
+    }
+    expect(
+      dispatchProposalSchema.safeParse({ ...proposal, findings: [finding] })
+        .success
+    ).toBe(true)
+    for (const findings of [
+      [{ ...finding, paths: ["src/App.tsx (layout)"] }],
+      [{ ...finding, summary: "x".repeat(601) }],
+      Array.from({ length: 13 }, () => finding),
+    ])
+      expect(
+        dispatchProposalSchema.safeParse({ ...proposal, findings }).success
+      ).toBe(false)
+  })
+  it("allows a baseline fix of exactly one Station and counts it toward the limit", () => {
+    const fix = {
+      reason: "Tests fail on the baseline",
+      line: {
+        ...line,
+        key: "fix",
+        stations: [{ ...line.stations[0]!, key: "fix-tests" }],
+      },
+    }
+    expect(
+      dispatchProposalSchema.safeParse({ ...proposal, baselineFix: fix })
+        .success
+    ).toBe(true)
+    for (const baselineFix of [
+      {
+        ...fix,
+        line: {
+          ...fix.line,
+          stations: [...fix.line.stations, line.stations[0]!],
+        },
+      },
+      {
+        ...fix,
+        line: { ...fix.line, route: [{ kind: "station", key: "fix-tests" }] },
+      },
+      { ...fix, selection: "reject" },
+    ])
+      expect(
+        dispatchProposalSchema.safeParse({ ...proposal, baselineFix }).success
+      ).toBe(false)
+  })
+  it("stores the baseline option, report and fix selection, and still reads older plans", () => {
+    const base = {
+      id: "plan",
+      networkId: "net",
+      goal: "Goal",
+      terminusCommit: "c",
+      model: "m",
+      createdAt: "now",
+    }
+    const assessment = { errors: [], collisions: [] }
+    expect(
+      dispatchPlanSchema.safeParse({
+        ...base,
+        state: { status: "ready", proposal, assessment },
+      }).success
+    ).toBe(true)
+    expect(
+      dispatchPlanSchema.safeParse({
+        ...base,
+        checkBaseline: true,
+        state: {
+          status: "ready",
+          proposal: {
+            ...proposal,
+            baselineFix: {
+              reason: "Tests fail",
+              selection: "reject",
+              line: { ...line, key: "fix", unloadMode: "human_approval" },
+            },
+          },
+          assessment,
+          baseline: {
+            commit: "c",
+            checks: [
+              {
+                name: "test",
+                status: "failed",
+                exitCode: 1,
+                outputTail: "1 failing",
+                outputTruncated: false,
+              },
+            ],
+          },
+        },
+      }).success
+    ).toBe(true)
+    expect(
+      createDispatchPlanRequestSchema.safeParse({
+        requestId: "64d6315b-7d66-4e50-94aa-4de0b71029ef",
+        goal: "Goal",
+        checkBaseline: true,
+      }).success
+    ).toBe(true)
+  })
+})

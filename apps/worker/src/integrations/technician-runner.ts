@@ -1,7 +1,7 @@
 import {
   harnessOutcome,
-  opencodeConfig,
-  technicianPrompt,
+  technicianHarnessAgent,
+  technicianMessage,
   type TechnicianRunner,
 } from "@terminus/agent-runtime"
 import {
@@ -14,6 +14,7 @@ import {
 import type { TechnicianRepair, RepairCandidate } from "@terminus/domain"
 import { commandResultSchema } from "@terminus/protocol"
 import { gatewayConfig } from "./execution-config"
+import { prepareHarness } from "./harness"
 import type { StationSandbox } from "./station-runner"
 
 export class SandboxTechnicianRunner implements TechnicianRunner {
@@ -85,31 +86,16 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
           "/workspace/repair.json",
           JSON.stringify(repair, null, 2)
         )
-        await sandbox.write(
-          "/workspace/opencode.json",
-          opencodeConfig(config.accountId, config.gatewayId, config.model)
-        )
+        const prepared = await prepareHarness(this.env, sandbox, workspace, {
+          model: config.model,
+          agent: technicianHarnessAgent(repair),
+          directory: technicianDirectory,
+          assignment: technicianMessage(repair),
+        })
         const harness = await workspace.run(
-          [
-            "opencode",
-            "run",
-            "--format",
-            "json",
-            "--auto",
-            "--model",
-            `terminus/${config.model}`,
-            "--",
-            technicianPrompt(repair),
-          ],
+          prepared.command,
           technicianDirectory,
-          {
-            OPENCODE_CONFIG: "/workspace/opencode.json",
-            OPENCODE_DISABLE_MODELS_FETCH: "1",
-            OPENCODE_DISABLE_AUTOUPDATE: "1",
-            OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-            OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
-            OPENCODE_DISABLE_SHARE: "1",
-          }
+          prepared.env
         )
         const outcome = harnessOutcome(harness)
         if (outcome.error) throw new Error(outcome.error)
