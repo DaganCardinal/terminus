@@ -59,6 +59,11 @@ export async function routeTrainPreview(
   } catch {
     return null
   }
+  // A dedicated preview domain's apex must never serve the control app or API.
+  if (env.PREVIEW_BASE_URL && url.hostname === base.hostname)
+    return ["localhost", "127.0.0.1", "[::1]"].includes(base.hostname)
+      ? null
+      : new Response("Not found", { status: 404 })
   const suffix = `.${base.hostname}`
   if (!url.hostname.endsWith(suffix)) return null
   const match = /^(preview-[a-f0-9]{24})-([a-f0-9]{24})$/.exec(

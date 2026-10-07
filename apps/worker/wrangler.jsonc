@@ -1,11 +1,22 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "terminus",
+  "preview_urls": false,
+  // Preserve the protected workers.dev app URL when adding preview routes.
+  "workers_dev": true,
   "main": "src/index.ts",
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
+  },
+  "build": { "command": "npm run build --workspace @terminus/web" },
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    // Hostname routing must precede assets on every application preview path.
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application",
   },
   "d1_databases": [
     {
@@ -66,6 +77,9 @@
   "secrets": { "required": ["AI_GATEWAY_TOKEN", "ARTIFACTS_API_TOKEN"] },
   "vars": {
     "REPOSITORY_MODE": "artifacts",
+    // Exact public app origin, e.g. https://terminus.YOUR_SUBDOMAIN.workers.dev.
+    // An empty value permits local development only; Access protects live traffic.
+    "APP_ORIGIN": "",
     "ARTIFACTS_ACCOUNT_ID": "",
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
@@ -134,6 +148,7 @@
       ],
       "vars": {
         "REPOSITORY_MODE": "fake",
+        "APP_ORIGIN": "",
         "ARTIFACTS_ACCOUNT_ID": "",
         "PREVIEW_BASE_URL": "",
         "TECHNICIAN_MODEL": "fake",

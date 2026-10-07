@@ -146,6 +146,9 @@ export class ExecutionSandbox extends DurableObject<Env> {
     const forwarded = new Request(url, request)
     forwarded.headers.delete("cookie")
     forwarded.headers.delete("authorization")
+    for (const name of [...forwarded.headers.keys()]) {
+      if (name.startsWith("cf-access-")) forwarded.headers.delete(name)
+    }
     try {
       const response = await this.container().getTcpPort(8080).fetch(forwarded)
       const headers = new Headers(response.headers)

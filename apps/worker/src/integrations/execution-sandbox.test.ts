@@ -96,6 +96,10 @@ describe("Sandbox preview routing", () => {
           headers: {
             cookie: "session=private",
             authorization: "Bearer secret",
+            "cf-access-jwt-assertion": "signed-identity",
+            "cf-access-authenticated-user-email": "private@example.test",
+            "cf-access-client-id": "service-id",
+            "cf-access-client-secret": "service-secret",
           },
         }
       )
@@ -105,6 +109,11 @@ describe("Sandbox preview routing", () => {
       expect(forwarded.url).toBe("http://preview.test/assets/main.js?version=1")
       expect(forwarded.headers.has("cookie")).toBe(false)
       expect(forwarded.headers.has("authorization")).toBe(false)
+      expect(
+        [...forwarded.headers.keys()].some((name) =>
+          name.startsWith("cf-access-")
+        )
+      ).toBe(false)
       expect(response.headers.get("cache-control")).toBe("no-store")
       expect(response.headers.get("referrer-policy")).toBe("no-referrer")
     })

@@ -19,6 +19,7 @@ export default defineConfig(async () => {
             TEST_MIGRATIONS: migrations,
             FAKE_AGENT_DELAY_MS: "0",
             DISPATCHER_MODEL: "fake",
+            APP_ORIGIN: "https://terminus.test",
           },
         },
       }),

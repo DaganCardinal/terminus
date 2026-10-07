@@ -65,17 +65,9 @@ Role models are chosen in the app's **Settings** (map menu → Settings): Genera
 
 The Sandbox image pins OpenCode 1.18.32 and Node 24. OpenCode's internal snapshots are disabled: their Git subprocesses reproduced a harness hang in local Sandboxes. Terminus captures candidate commits, diffs, and validation evidence independently after the harness exits. The required Sandbox Durable Object is only a container adapter; it stores no orchestration state. Outbound access is limited to its explicitly granted repository, the configured model endpoint, and the npm registry. Repository tokens are short-lived and repo-scoped, and the Worker injects them into Git requests. The Station process receives neither repository tokens nor model secrets. Orchestration uses separate workspaces for writes to a Train.
 
-For a deployed Worker, create/bind the D1 database, configure its `database_id`, apply migrations remotely, set the secret, and deploy from `apps/worker`:
+For the single-maintainer live beta, follow [Private beta deployment](docs/private-beta-deployment.md): bind remote D1, configure both Worker secrets, apply migrations, protect the Worker with Cloudflare Access, and set `APP_ORIGIN` to the exact public HTTPS origin. An empty `APP_ORIGIN` permits local development only. Access is the live authentication boundary; the app has no user accounts.
 
-```sh
-npx wrangler d1 create terminus
-# Copy the returned database_id into wrangler.jsonc before continuing.
-npx wrangler d1 migrations apply terminus --remote
-npx wrangler secret put AI_GATEWAY_TOKEN
-npm run deploy
-```
-
-Deployment is a maintainer action. The frontend currently runs separately through Vite; this Worker deployment does not publish the React app. The API currently has no authentication, so use a controlled development environment.
+`npm run deploy` from the repository root builds the React app and publishes it with the API, Workflows and execution container. Cloudflare deployment/version preview URLs are explicitly disabled; Train/Terminus application previews use their own wildcard domain. Deployment is a maintainer action.
 
 ## Previewing Terminus
 
@@ -93,7 +85,7 @@ Previews have read-only access to that Train repository while cloning, no model 
 
 Local development uses `http://preview-<snapshot>-<token>.localhost:8787/`, routed directly to Wrangler. Docker and the real Worker (`npm run dev:worker`) must be running. The fake environment reports that it has no real app to preview. If Wrangler runs on another port, set `PREVIEW_BASE_URL=http://localhost:PORT` in `.dev.vars`.
 
-Deployment requires a separate preview domain with wildcard DNS, TLS, and a Worker route. Set `PREVIEW_BASE_URL` to its HTTPS origin, for example `https://example-previews.com`, and route `*.example-previews.com/*` to this Worker. Keep `workers_dev: true` if adding routes should preserve the existing API URL. No domain or route is provisioned by this change. See Cloudflare's [preview hostname setup](https://developers.cloudflare.com/sandbox/previews/serve-previews-on-their-own-hostnames/) for DNS and certificate details. Each preview has its own browser origin, and requests to its hostname reach only the preview app, including paths beginning with `/api`. Anyone with the preview URL can view it while its Sandbox is running; keep it private if the changes are private.
+Deployment requires a separate preview domain with wildcard DNS, TLS, and a Worker route. Set `PREVIEW_BASE_URL` to its HTTPS origin, for example `https://example-previews.com`, and route `*.example-previews.com/*` to this Worker. Keep `workers_dev: true` if the control app uses that URL. Protect preview traffic with Cloudflare Access before using it; the preview URL token alone is a bearer link. See [Private beta deployment](docs/private-beta-deployment.md) and Cloudflare's [preview hostname setup](https://developers.cloudflare.com/sandbox/previews/serve-previews-on-their-own-hostnames/) for DNS and certificate details. Each preview has its own browser origin, and all paths on its hostname reach only the preview app, including `/api` and paths matching control-app assets. Access credentials are stripped before forwarding to the container. No domain or route is provisioned by the repository configuration.
 
 The API action is `POST /api/trains/TRAIN_ID/preview`. Its response contains `trainId`, the exact preview `commit`, and `url`. Installation/build/startup failures return an error and dispose of the failed Sandbox; they do not block or mutate the Train.
 
