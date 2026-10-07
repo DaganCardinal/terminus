@@ -701,13 +701,13 @@ Anything durable must already have been committed back to Artifacts or recorded 
 
 A model on its own only produces text and tool requests. A **harness** runs the loop that turns those requests into actions: it sends the task to the model, carries out the requested reads, edits, and commands in the Sandbox, returns the results, and repeats until the model is done.
 
-Station Agents, Technicians, and the Dispatcher's planning session use an existing harness running **inside** the Sandbox. The default is **OpenCode**:
+Station Agents, Technicians, the Dispatcher's planning session, and every Conductor review use an existing harness running **inside** the Sandbox. The default is **OpenCode**:
 
 - It is open source and works with any model provider.
 - It has a built-in `cloudflare-ai-gateway` provider.
 - Cloudflare documents how to run it in a Sandbox.
 
-The harness sits behind a runner interface in `packages/agent-runtime`, so it can be swapped without touching the domain or the Workflows.
+The harness sits behind a runner interface in `packages/agent-runtime`, and supports per-role OpenCode, Claude Code and Codex adapters behind a release gate. Settings and immutable execution snapshots are described in [Harness selection](harness-selection.md). Workflows keep their cached step shapes; new work includes frozen provider/model/harness/version configuration.
 
 A Station run works like this:
 
@@ -717,19 +717,19 @@ Station Workflow
   ↓ create a short-lived, write-scoped token for the Station repo only
   ↓ start Sandbox, clone the Station repo, write the manifest into the workspace
   ↓ install dependencies, then prepare the harness (config, preflight, root guidance)
-  ↓ opencode run --format json --auto --agent station --model <configured model> -- <assignment>
+  ↓ invoke the frozen harness adapter with the Station capability profile
   ↓ wait for the process to exit (exit code + JSON event log)
   ↓ orchestration code runs the required validation and collects evidence
   ↓ push to the Station repo, read the resulting commit
   ↓ Station → ready_for_pickup
 ```
 
-- **Completion is detected when the harness process exits.** Do not rely on Artifacts push notifications for this. Push notifications require a separate subscription for every repository and are delivered to a Queue, which does not suit Station repositories created on the fly.
+- **Completion is detected when the harness process exits and the adapter validates its final outcome.** Do not rely on Artifacts push notifications for this. Push notifications require a separate subscription for every repository and are delivered to a Queue, which does not suit Station repositories created on the fly.
 - **Evidence comes from our own validation run**, not from the agent's own summary.
-- **Repository content is untrusted for every harness role.** One shared preparation step (`prepareHarness`) gives each role its own OpenCode primary agent whose system prompt comes only from orchestration. It disables repository OpenCode configuration and instruction files, and removes user-level configuration that repository code could have written. It then attaches the root `AGENTS.md` (or `CLAUDE.md`) to the first message as delimited data. A role added later, such as a sandboxed Conductor, reuses the same step.
-- The model is passed per run as `cloudflare-ai-gateway/<provider>/<model>`, built from role configuration. It is never hardcoded.
+- **Repository content is untrusted for every harness role.** One shared preparation step (`prepareHarness`) gives each role its trusted system prompt and capability profile through the configured adapter. It disables repository OpenCode configuration and instruction files, and removes user-level configuration that repository code could have written. It then attaches the root `AGENTS.md` (or `CLAUDE.md`) to the first message as delimited data. Every role, including the sandboxed Conductor, uses this step, and the Dispatcher and Conductor share one session runner (`HarnessSession`).
+- The curated catalog resolves the provider-native model ID, compatible harnesses, pinned version and explicit cost order. OpenCode supports Workers AI, Anthropic Messages and OpenAI Responses; Claude Code supports Anthropic Messages; Codex supports OpenAI Responses. Native provider requests pass through AI Gateway with Worker-injected authentication. Provider keys stay in Cloudflare’s dashboard. No runtime model or billing fallback is implemented.
 
-Conductor and Engineer models do **not** use a harness. They are called directly through the `ModelProvider` and return structured output. The Conductor reviews the diff and the evidence collected by orchestration code.
+Engineer models do **not** use a harness. They are called directly through the `ModelProvider` and return structured output.
 
 The Dispatcher plans in a **read-only** harness session:
 
@@ -745,6 +745,32 @@ Dispatch Workflow "prepare proposal"
 ```
 
 As for every harness role, repository-supplied OpenCode configuration and instruction files are disabled, so project content stays untrusted data and cannot change the Dispatcher's prompt or permissions; the root `AGENTS.md` is supplied in its first message as delimited data instead. Raw harness events, which include file contents the agent read, stay in the Sandbox; only the session id, final message, and tool-use counts leave it.
+
+The Conductor reviews every candidate in a **verification** harness session: Station work, Crossing handoffs, Junction inputs and features, and Technician repairs. The steps below show a Station review; the others differ only in the repository and commit checked out (the integration merge candidate, the Junction head, or the repair workspace), the review files (repairs add the Technician's own `repair.diff`), the review-kind guidance appended to the prompt, and the Workflow step that runs them. Unlike the Dispatcher, it may run commands, so it can build the candidate and run the app end to end:
+
+```text
+Train Workflow "review <station>" (own step: 30 minutes, one retry)
+  ↓ read-only token for the Station repo; Sandbox allows Git reads, no model
+  ↓ detached checkout of the exact candidate commit; npm ci
+  ↓ write patch, check output and review input to /workspace/review
+  ↓ fingerprint tracked files; remove secret files and .git; drop repository access; allow only the model
+  ↓ opencode run --agent conductor (bash allowed; edit, web, skills denied;
+  ↓   external directories limited to /workspace/review and /tmp; Task → explore only)
+  ↓ discard the review if tracked files changed; correct the verdict in the same session (≤2 times)
+  ↓ verdict → conductor_reviews (D1)
+Train Workflow "advance" applies the recorded verdict: accept → fast-forward + Car, return, or escalate
+```
+
+| Review | Candidate checked out | Runs in | Applied by |
+| --- | --- | --- | --- |
+| Station | Station repo at the proposal head | Train Workflow `review` step (30 min) | next Train `advance` |
+| Crossing, Junction input | integration merge candidate | Integration Workflow `Conductor review` step (30 min) | `promote candidate` |
+| Junction feature | Junction repo at its head | Junction Workflow `review Junction feature` step (45 min, includes feature validation) | the same step (`ready` or `blocked`) |
+| Technician repair | repair workspace at its candidate | Technician Workflow `Conductor reconciliation review` (30 min) | the same step |
+
+Each step gets one retry. A session is paid and takes minutes, so retrying it as freely as a D1 write would multiply cost.
+
+Nothing the Conductor does is kept: its Sandbox has no repository write access and is destroyed after the review. The fingerprint check guards the verdict, not the repository: a review that changed tracked files (formatting, fixes, updated snapshots, dependency changes) would describe something other than the candidate, so it fails and the Train blocks with `review_escalated`.
 
 ## Security boundary
 
@@ -862,6 +888,7 @@ Owns:
 - checking the Station Manifest
 - reviewing the actual diff
 - inspecting test/build evidence
+- verifying the candidate in its own Sandbox: building it and running the app end to end
 - accepting or rejecting work
 
 Acceptance updates the Train and creates a Car.

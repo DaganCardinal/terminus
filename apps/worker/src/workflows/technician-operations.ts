@@ -139,9 +139,21 @@ export async function reviewTechnician(
         summary: "Project-wide validation did not pass",
         findings: missing.map((check) => `${check.name}: ${check.status}`),
       }
-    : conductorVerdictSchema.parse(await ports.reviewer.review(loaded.value))
+    : conductorVerdictSchema.parse(
+        await ports.reviewer.review(loaded.value, {
+          repoId: loaded.value.state.workspaceRepoId,
+          validation:
+            loaded.value.validation ??
+            (await ports.store.integration(loaded.value.source.integrationId))
+              ?.input.validation,
+        })
+      )
   const reviewed = applied(
-    reviewRepair(loaded.value, { ...review, model: ports.reviewer.model })
+    reviewRepair(loaded.value, {
+      ...review,
+      ...ports.reviewer.config,
+      model: ports.reviewer.model,
+    })
   )
   await ports.store.commit(
     loaded.networkId,

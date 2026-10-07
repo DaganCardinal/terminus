@@ -1,4 +1,5 @@
 import {
+  catalogModel,
   validationCommandsSchema,
   stationMaxRetriesSchema,
   type ValidationCommand,
@@ -38,12 +39,13 @@ export function gatewayConfig(env: Env, model: string) {
     throw new Error(
       "Configure the AI_GATEWAY_TOKEN Worker secret before running real agents"
     )
-  if (!model.startsWith("@cf/"))
-    throw new Error("Configure a Workers AI model identity for the role")
+  const entry = catalogModel(model)
   return {
     accountId: env.AI_GATEWAY_ACCOUNT_ID,
     gatewayId: env.AI_GATEWAY_ID,
     token: env.AI_GATEWAY_TOKEN,
     model,
+    provider: entry.provider,
+    apiModel: entry.apiModel,
   }
 }

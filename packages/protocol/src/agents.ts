@@ -21,7 +21,12 @@ export const proposalSchema = z.object({
   changedPaths: z.array(z.string()),
   diff: z.string().optional(),
   evidence: evidenceSchema,
-  agent: z.object({ harness: z.string(), model: z.string() }),
+  agent: z.object({
+    harness: z.string(),
+    model: z.string(),
+    provider: z.string().optional(),
+    harnessVersion: z.string().optional(),
+  }),
   agentSummary: z.string().nullable(),
 })
 

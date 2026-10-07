@@ -53,10 +53,13 @@ async function block(
 }
 
 /** One durable Junction owner serializes arrivals, acknowledges promotions, and releases the feature. */
+/** What the Junction Workflow does after a step. */
+export type JunctionMove = "moved" | "wait" | "review" | "finished"
+
 export async function advanceJunction(
   ports: JunctionPorts,
   id: string
-): Promise<"moved" | "wait" | "finished"> {
+): Promise<JunctionMove> {
   const loaded = await ports.store.junction(id)
   if (!loaded) throw new Error("Unknown Junction")
   const j = loaded.value
@@ -378,8 +381,8 @@ export async function advanceJunction(
       )
       return "moved"
     }
-    await reviewFeature(ports, loaded)
-    return "moved"
+    // Feature validation and a sandboxed review take minutes: their own step.
+    return "review"
   }
   for (const entry of await ports.store.junctionEntries(id)) {
     if (j.inputs.some((i) => i.trainId === entry.trainId)) continue
@@ -445,6 +448,26 @@ export function featureChecks(
   }
   return [...checks.values()]
 }
+/**
+ * Validates the converged feature and records the Conductor's feature review,
+ * moving the Junction to `ready` or `blocked`. Does nothing unless every input
+ * has arrived and the Junction is reviewing. Safe to repeat.
+ */
+export async function reviewJunctionFeature(
+  ports: JunctionPorts,
+  id: string
+): Promise<void> {
+  const loaded = await ports.store.junction(id)
+  if (!loaded) throw new Error("Unknown Junction")
+  const j = loaded.value
+  if (
+    j.state.status !== "reviewing" ||
+    j.inputs.length !== j.incomingTrainIds.length
+  )
+    return
+  await reviewFeature(ports, loaded)
+}
+
 async function reviewFeature(ports: JunctionPorts, loaded: Loaded<Junction>) {
   const j = loaded.value,
     snapshot = await ports.store.snapshot(j.networkId)
@@ -487,25 +510,32 @@ async function reviewFeature(ports: JunctionPorts, loaded: Loaded<Junction>) {
         findings: failing.map((c) => `${c.name}: ${c.status}`),
       }
     : conductorVerdictSchema.parse(
-        await ports.conductor.reviewJunction({
-          kind: "junction_feature",
-          junctionId: j.id,
-          brief: j.brief,
-          sourceCommit: j.headCommit,
-          targetCommit: j.terminusBaseline,
-          candidateCommit: j.headCommit,
-          ...inspected,
-          evidence,
-          sourceCars: junctionCars(j, snapshot.cars),
-          receivingCars: [],
-          repairIds: j.repairIds,
-          ...(await junctionReviewProvenance(ports, j)),
-        })
+        await ports.conductor.reviewJunction(
+          {
+            kind: "junction_feature",
+            junctionId: j.id,
+            brief: j.brief,
+            sourceCommit: j.headCommit,
+            targetCommit: j.terminusBaseline,
+            candidateCommit: j.headCommit,
+            ...inspected,
+            evidence,
+            sourceCars: junctionCars(j, snapshot.cars),
+            receivingCars: [],
+            repairIds: j.repairIds,
+            ...(await junctionReviewProvenance(ports, j)),
+          },
+          { repoId: j.repoId, validation: checks }
+        )
       )
   const acceptance: JunctionAcceptance = {
     commit: j.headCommit,
     evidence,
-    review: { ...verdict, model: ports.conductor.model },
+    review: {
+      ...verdict,
+      ...ports.conductor.config,
+      model: ports.conductor.model,
+    },
     ...inspected,
   }
   if (verdict.verdict !== "accept" || failing.length) {

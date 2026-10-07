@@ -9,6 +9,7 @@ import {
   failIntegration,
   prepareIntegration,
   promoteIntegration,
+  reviewIntegration,
 } from "./integration-operations"
 import { TRAIN_EVENTS } from "./events"
 
@@ -35,6 +36,13 @@ export class IntegrationWorkflow extends WorkflowEntrypoint<
         "merge and validate",
         { retries, timeout: "30 minutes" },
         () => prepareIntegration(ports, id)
+      )
+      // Crossing and Junction-input candidates get a sandboxed Conductor
+      // review, a paid session that verifies the app, so it gets one retry.
+      await step.do(
+        "Conductor review",
+        { retries: { limit: 1, delay: "5 seconds" }, timeout: "30 minutes" },
+        () => reviewIntegration(ports, id)
       )
       outcome = {
         integrationId: id,

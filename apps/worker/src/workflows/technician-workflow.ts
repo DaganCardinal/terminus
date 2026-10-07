@@ -45,7 +45,8 @@ export class TechnicianWorkflow extends WorkflowEntrypoint<
       )
       await step.do(
         "Conductor reconciliation review",
-        { retries, timeout: "10 minutes" },
+        // A sandboxed review is a paid session that verifies the app.
+        { retries: { limit: 1, delay: "5 seconds" }, timeout: "30 minutes" },
         () => reviewTechnician(ports, id)
       )
     } catch (error) {

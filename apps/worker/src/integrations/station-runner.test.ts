@@ -30,7 +30,11 @@ async function fixture(failedTests = false) {
     run: vi.fn(async (command: string[]) => {
       let stdout = ""
       let exitCode = 0
-      if (command[0] === "opencode")
+      if (command[1] === "--version") stdout = "1.18.32"
+      if (
+        command[0] === "node" &&
+        command[1] === "/workspace/harness-events.mjs"
+      )
         stdout =
           '{"type":"text","part":{"text":"All tests passed according to the agent"}}'
       if (command[0] === "npm" && command[1] === "test" && failedTests)
@@ -87,7 +91,7 @@ describe("Station execution boundary", () => {
     )
     const run = vi.mocked(f.sandbox.run).getMockImplementation()!
     vi.mocked(f.sandbox.run).mockImplementation(async (...args) => {
-      if (args[0][0] === "opencode") throw error
+      if (args[0][0] === "bash" && args[0].includes("opencode")) throw error
       return run(...args)
     })
     await expect(f.runner.run(f.input)).rejects.toBe(error)
@@ -96,7 +100,7 @@ describe("Station execution boundary", () => {
       expect.objectContaining({
         runId: f.input.runId,
         phase: "harness",
-        command: "opencode",
+        command: "bash",
         reference: "abc123",
       })
     )
@@ -133,7 +137,9 @@ describe("Station execution boundary", () => {
     expect(f.repositories.access).toHaveBeenCalledTimes(1)
     const run = vi.mocked(f.sandbox.run)
     expect(
-      run.mock.calls.filter(([command]) => command[0] === "opencode")
+      run.mock.calls.filter(
+        ([command]) => command[0] === "bash" && command.includes("opencode")
+      )
     ).toHaveLength(1)
   })
   it("configures the Station agent only after repository install scripts have run", async () => {
@@ -150,14 +156,14 @@ describe("Station execution boundary", () => {
         write.calls.findIndex(([path]) => path === "/workspace/opencode.json")
       ]!
     expect(order("npm ci")).toBeLessThan(configured)
-    expect(configured).toBeLessThan(order("node -e"))
-    expect(order("node -e")).toBeLessThan(order("opencode run"))
+    expect(order("node -e")).toBeLessThan(configured)
+    expect(configured).toBeLessThan(order("bash -c"))
     const config = JSON.parse(
       write.calls.find(([path]) => path === "/workspace/opencode.json")![1]
     )
     expect(config.agent.station.prompt).toContain("Terminus Station Agent")
     const [harness, cwd, environment] = run.calls.find(
-      ([args]) => args[0] === "opencode"
+      ([args]) => args[0] === "bash" && args.includes("opencode")
     )!
     expect(harness).toEqual(expect.arrayContaining(["--agent", "station"]))
     expect(cwd).toBe("/workspace/repo")
@@ -188,7 +194,9 @@ describe("Station execution boundary", () => {
     expect(
       vi
         .mocked(f.sandbox.run)
-        .mock.calls.filter(([command]) => command[0] === "opencode")
+        .mock.calls.filter(
+          ([command]) => command[0] === "bash" && command.includes("opencode")
+        )
     ).toHaveLength(1)
     expect(f.repositories.revoke).toHaveBeenCalledTimes(2)
   })

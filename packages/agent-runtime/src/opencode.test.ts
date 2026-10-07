@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  conductorHarnessAgent,
   dispatcherHarnessAgent,
   harnessMessage,
   harnessOutcome,
@@ -74,6 +75,7 @@ describe("Harness agent configuration", () => {
     stationHarnessAgent,
     technicianHarnessAgent(repair),
     dispatcherHarnessAgent("SYSTEM"),
+    conductorHarnessAgent("SYSTEM"),
   ])(
     "runs $name as its own primary agent with only orchestration's prompt",
     (agent) => {
@@ -117,6 +119,23 @@ describe("Harness agent configuration", () => {
       "external_directory",
     ])
       expect(config.agent.dispatcher.permission[tool]).toBe("deny")
+  })
+
+  it("lets the Conductor run commands without editing tools or unrelated directories", () => {
+    const config = JSON.parse(
+      opencodeConfig("account", "gateway", model, conductorHarnessAgent("S"))
+    )
+    const permission = config.agent.conductor.permission
+    for (const tool of ["edit", "webfetch", "websearch", "skill"])
+      expect(permission[tool]).toBe("deny")
+    expect(permission.bash).toBe("allow")
+    expect(permission.read).toMatchObject({ "*.env": "deny" })
+    // Rules are evaluated last-match-wins in key order.
+    expect(Object.entries(permission.external_directory)).toEqual([
+      ["*", "deny"],
+      ["/workspace/review/*", "allow"],
+      ["/tmp/*", "allow"],
+    ])
   })
 
   it("starts a role's agent and resumes its exact session", () => {

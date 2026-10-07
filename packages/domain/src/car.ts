@@ -6,9 +6,14 @@ import type { WorkManifest } from "./manifest"
 export interface AgentConfig {
   harness: string
   model: string
+  provider?: string
+  harnessVersion?: string
 }
 
 export interface ConductorReview {
+  harness?: string
+  provider?: string
+  harnessVersion?: string
   summary: string
   findings: string[]
   model: string

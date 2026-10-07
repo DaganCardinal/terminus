@@ -47,14 +47,30 @@ export interface ReviewInput {
   revisionCount: number
 }
 
+/**
+ * Where the candidate lives, for a Conductor that verifies it in a Sandbox.
+ * Kept apart from review inputs, which identify durable verdicts.
+ */
+export interface ReviewContext {
+  /** The repository holding the candidate commit under review. */
+  repoId: string
+  /** Trusted project configuration from D1, never supplied by a model. */
+  validation?: ValidationCommand[]
+}
+
 /** Reviews Station work against its manifest and the Train's current state. */
 export interface Conductor {
+  readonly config?: AgentConfig
   readonly model: string
-  review(input: ReviewInput): Promise<ConductorVerdict>
+  review(input: ReviewInput, context: ReviewContext): Promise<ConductorVerdict>
   reviewJunction?(
-    input: import("@terminus/protocol").JunctionReviewInput
+    input: import("@terminus/protocol").JunctionReviewInput,
+    context: ReviewContext
   ): Promise<ConductorVerdict>
-  reviewCrossing?(input: CrossingReviewInput): Promise<ConductorVerdict>
+  reviewCrossing?(
+    input: CrossingReviewInput,
+    context: ReviewContext
+  ): Promise<ConductorVerdict>
 }
 
 export type { CrossingReviewInput } from "@terminus/protocol"

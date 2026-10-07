@@ -77,6 +77,8 @@
   "secrets": { "required": ["AI_GATEWAY_TOKEN", "ARTIFACTS_API_TOKEN"] },
   "vars": {
     "REPOSITORY_MODE": "artifacts",
+    // Enable only after the documented Cloudflare harness acceptance checks.
+    "ALTERNATIVE_HARNESSES_ENABLED": "false",
     // Exact public app origin, e.g. https://terminus.YOUR_SUBDOMAIN.workers.dev.
     // An empty value permits local development only; Access protects live traffic.
     "APP_ORIGIN": "",
@@ -148,6 +150,7 @@
       ],
       "vars": {
         "REPOSITORY_MODE": "fake",
+        "ALTERNATIVE_HARNESSES_ENABLED": "false",
         "APP_ORIGIN": "",
         "ARTIFACTS_ACCOUNT_ID": "",
         "PREVIEW_BASE_URL": "",

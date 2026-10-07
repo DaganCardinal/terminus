@@ -108,6 +108,7 @@ export interface DispatchPlan {
   goal: string
   terminusCommit: string
   model: string
+  agent?: import("./car").AgentConfig
   createdAt: string
   /** Install dependencies and run project checks on the baseline before exploring. */
   checkBaseline?: boolean

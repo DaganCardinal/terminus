@@ -23,7 +23,8 @@ export interface IntegrationPorts {
   validator: IntegrationValidator
   conductorForTrain?(
     trainId: string,
-    model?: string
+    model?: string,
+    junctionId?: string
   ): Promise<import("@terminus/agent-runtime").Conductor>
 }
 
@@ -177,62 +178,8 @@ export async function promoteIntegration(
     throw new Error("Train changed before Terminus promotion")
   if (input.purpose === "crossing") {
     await assertCrossing(ports, input)
-    const crossing = input.crossingId
-      ? (await ports.store.crossing(input.crossingId))?.value
-      : undefined
-    if (!crossing?.checkpoint) throw new Error("Crossing has no checkpoint")
-    const snapshot = await ports.store.snapshot(input.networkId)
-    if (!snapshot) throw new Error("Unknown network")
-    let review = attempt.review
-    if (!review) {
-      const inspected = await ports.repositories.inspectIntegration?.(
-        input,
-        candidate
-      )
-      const conductor = await ports.conductorForTrain?.(
-        input.trainId,
-        input.conductorModel
-      )
-      if (!inspected || !conductor?.reviewCrossing)
-        throw new Error("Crossing review adapter is unavailable")
-      await ports.store.recordIntegrationDiff(id, inspected.diff)
-      const receivingLineId = train.value.lineId
-      const sourceCars = crossing.checkpoint.carIds.map((id) => {
-        const c = snapshot.cars.find((c) => c.id === id)
-        if (!c) throw new Error("Missing checkpoint Car")
-        return c
-      })
-      const verdict = conductorVerdictSchema.parse(
-        await conductor.reviewCrossing({
-          kind: "crossing",
-          crossingId: crossing.id,
-          sourceStationId: crossing.sourceStationId,
-          sourceCommit: input.trainCommit,
-          targetCommit: input.terminusCommit,
-          candidateCommit: candidate.headCommit,
-          ...inspected,
-          evidence,
-          sourceCars,
-          receivingCars: snapshot.cars.filter(
-            (c) => c.trainId === input.trainId
-          ),
-          downstreamManifests: snapshot.stations
-            .filter(
-              (s) =>
-                s.lineId === receivingLineId &&
-                s.state.status !== "complete" &&
-                s.state.status !== "cancelled"
-            )
-            .map((s) => s.manifest),
-        })
-      )
-      await ports.store.recordIntegrationReview(
-        id,
-        { ...verdict, model: conductor.model },
-        inspected.diff
-      )
-      review = (await load(ports, id)).review
-    }
+    await reviewCrossingCandidate(ports, attempt, train.value.lineId)
+    const review = (await load(ports, id)).review
     if (review?.verdict !== "accept") {
       const result: IntegrationResult = {
         ok: false,
@@ -499,6 +446,96 @@ async function junctionSource(
     throw new Error("Junction input changed before promotion")
   return train
 }
+/**
+ * Records the Conductor's review of a prepared Crossing or Junction-input
+ * candidate. A sandboxed review takes minutes, so the Integration Workflow
+ * runs this as its own step before promotion; promotion calls the same
+ * reviews again, which do nothing once a review is recorded. Terminus
+ * integration has no Conductor review here.
+ */
+export async function reviewIntegration(
+  ports: IntegrationPorts,
+  id: string
+): Promise<void> {
+  const attempt = await load(ports, id)
+  if (attempt.result || attempt.review || attempt.status !== "prepared") return
+  const { input } = attempt
+  if (input.purpose === "junction") {
+    await junctionSource(ports, input)
+    return reviewJunctionInput(ports, attempt)
+  }
+  if (input.purpose !== "crossing") return
+  // A changed receiving Train fails at promotion; don't spend a review on it.
+  const train = await ports.store.train(input.trainId)
+  if (!train || !crossingVisitMatches(train.value, input)) return
+  await assertCrossing(ports, input)
+  await reviewCrossingCandidate(ports, attempt, train.value.lineId)
+}
+
+async function reviewCrossingCandidate(
+  ports: IntegrationPorts,
+  attempt: IntegrationAttempt,
+  receivingLineId: string
+) {
+  if (attempt.review) return
+  const { input, candidate, evidence } = attempt
+  if (!candidate || !evidence)
+    throw new Error("No validated Crossing candidate")
+  const crossing = input.crossingId
+    ? (await ports.store.crossing(input.crossingId))?.value
+    : undefined
+  if (!crossing?.checkpoint) throw new Error("Crossing has no checkpoint")
+  const snapshot = await ports.store.snapshot(input.networkId)
+  if (!snapshot) throw new Error("Unknown network")
+  const inspected = await ports.repositories.inspectIntegration?.(
+    input,
+    candidate
+  )
+  const conductor = await ports.conductorForTrain?.(
+    input.trainId,
+    input.conductorModel,
+    input.junctionId
+  )
+  if (!inspected || !conductor?.reviewCrossing)
+    throw new Error("Crossing review adapter is unavailable")
+  await ports.store.recordIntegrationDiff(input.id, inspected.diff)
+  const sourceCars = crossing.checkpoint.carIds.map((id) => {
+    const c = snapshot.cars.find((c) => c.id === id)
+    if (!c) throw new Error("Missing checkpoint Car")
+    return c
+  })
+  const verdict = conductorVerdictSchema.parse(
+    await conductor.reviewCrossing(
+      {
+        kind: "crossing",
+        crossingId: crossing.id,
+        sourceStationId: crossing.sourceStationId,
+        sourceCommit: input.trainCommit,
+        targetCommit: input.terminusCommit,
+        candidateCommit: candidate.headCommit,
+        ...inspected,
+        evidence,
+        sourceCars,
+        receivingCars: snapshot.cars.filter((c) => c.trainId === input.trainId),
+        downstreamManifests: snapshot.stations
+          .filter(
+            (s) =>
+              s.lineId === receivingLineId &&
+              s.state.status !== "complete" &&
+              s.state.status !== "cancelled"
+          )
+          .map((s) => s.manifest),
+      },
+      { repoId: candidate.repoId, validation: input.validation }
+    )
+  )
+  await ports.store.recordIntegrationReview(
+    input.id,
+    { ...verdict, ...conductor.config, model: conductor.model },
+    inspected.diff
+  )
+}
+
 async function reviewJunctionInput(
   ports: IntegrationPorts,
   attempt: IntegrationAttempt
@@ -516,7 +553,8 @@ async function reviewJunctionInput(
   )
   const conductor = await ports.conductorForTrain?.(
     input.trainId,
-    input.conductorModel
+    input.conductorModel,
+    input.junctionId
   )
   if (!inspected || !conductor?.reviewJunction)
     throw new Error("Junction review adapter unavailable")
@@ -532,32 +570,35 @@ async function reviewJunctionInput(
       : train?.value.carIds.includes(c.id)
   )
   const verdict = conductorVerdictSchema.parse(
-    await conductor.reviewJunction({
-      kind: featureRepair ? "junction_feature" : "junction_input",
-      junctionId: j.id,
-      brief: j.brief,
-      sourceCommit: input.trainCommit,
-      targetCommit: input.terminusCommit,
-      candidateCommit: candidate.headCommit,
-      ...inspected,
-      evidence,
-      sourceCars,
-      receivingCars: j.inputs.flatMap((i) =>
-        i.carIds.map((id) => {
-          const c = snapshot.cars.find((c) => c.id === id)
-          if (!c) throw new Error("Missing Junction provenance")
-          return c
-        })
-      ),
-      repairIds: j.repairIds,
-      ...(await (
-        await import("./junction-operations")
-      ).junctionReviewProvenance(ports, j)),
-    })
+    await conductor.reviewJunction(
+      {
+        kind: featureRepair ? "junction_feature" : "junction_input",
+        junctionId: j.id,
+        brief: j.brief,
+        sourceCommit: input.trainCommit,
+        targetCommit: input.terminusCommit,
+        candidateCommit: candidate.headCommit,
+        ...inspected,
+        evidence,
+        sourceCars,
+        receivingCars: j.inputs.flatMap((i) =>
+          i.carIds.map((id) => {
+            const c = snapshot.cars.find((c) => c.id === id)
+            if (!c) throw new Error("Missing Junction provenance")
+            return c
+          })
+        ),
+        repairIds: j.repairIds,
+        ...(await (
+          await import("./junction-operations")
+        ).junctionReviewProvenance(ports, j)),
+      },
+      { repoId: candidate.repoId, validation: input.validation }
+    )
   )
   await ports.store.recordIntegrationReview(
     input.id,
-    { ...verdict, model: conductor.model },
+    { ...verdict, ...conductor.config, model: conductor.model },
     inspected.diff
   )
 }

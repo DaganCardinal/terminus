@@ -1,5 +1,12 @@
 import {
   MODEL_CATALOG,
+  HARNESS_CATALOG,
+  roleHarnesses,
+  modelForHarness,
+  compatibleModels,
+  type Harness,
+  type HarnessRole,
+  type RoleHarnesses,
   MODEL_PRESETS,
   roleModels,
   type FixedModelPreset,
@@ -10,7 +17,7 @@ import {
 import { Button, buttonVariants } from "@terminus/ui/components/button"
 import { cn } from "@terminus/ui/lib/utils"
 import { useEffect, useState, type FormEvent, type ReactNode } from "react"
-import { KeyRound, RotateCw } from "lucide-react"
+import { RotateCw } from "lucide-react"
 import { AppNav } from "@/components/app-nav"
 import { api } from "@/state/api"
 import { routes } from "@/state/route"
@@ -40,7 +47,11 @@ const presets: {
       "GLM-5.3 plans, reviews and repairs; Kimi K2.7 Code writes Station work.",
   },
   { id: "heavy", name: "Heavy", detail: "Larger models for every role." },
-  { id: "custom", name: "Custom", detail: "Choose a model for each role." },
+  {
+    id: "custom",
+    name: "Custom",
+    detail: "Choose a harness and model for each role.",
+  },
 ]
 
 const presetName = (settings: ModelSettings) =>
@@ -77,38 +88,44 @@ const roles: { id: ModelRole; name: string; detail: string }[] = [
 const catalog = (id: string) => MODEL_CATALOG.find((model) => model.id === id)
 
 /** The models a role may use: the Engineer only answers fixed questions. */
-const options = (role: ModelRole) =>
-  MODEL_CATALOG.filter(
-    (model) => (model.kind === "decision") === (role === "engineer")
-  )
+const options = (role: ModelRole, harness: Harness = "opencode") =>
+  role === "engineer"
+    ? MODEL_CATALOG.filter((model) => model.kind === "decision")
+    : compatibleModels(harness)
 
 interface Saved {
   choice: Choice
   custom: RoleModels
+  harnesses: RoleHarnesses
   general: ModelSettings
   updatedAt: string | null
+  alternativesEnabled: boolean
 }
 
 const settingsFor = (
   choice: Choice,
-  custom: RoleModels
+  custom: RoleModels,
+  harnesses: RoleHarnesses
 ): ModelSettings | null =>
   choice === "general"
     ? null
     : choice === "custom"
-      ? { preset: "custom", models: custom }
+      ? { preset: "custom", models: custom, harnesses }
       : { preset: choice }
 
 function toSaved(
   own: ModelSettings | null,
   general: ModelSettings,
-  updatedAt: string | null
+  updatedAt: string | null,
+  alternativesEnabled = false
 ): Saved {
   return {
     choice: own?.preset ?? "general",
     custom: roleModels(own ?? general),
+    harnesses: roleHarnesses(own ?? general),
     general,
     updatedAt,
+    alternativesEnabled,
   }
 }
 
@@ -132,13 +149,23 @@ export function SettingsPage({ networkId }: { networkId: string | null }) {
           if (cancelled) return
           setNetworkName(summary.name)
           setSaved(
-            toSaved(settings.override, settings.general, settings.updatedAt)
+            toSaved(
+              settings.override,
+              settings.general,
+              settings.updatedAt,
+              settings.alternativeHarnessesEnabled
+            )
           )
         })
       : api.modelSettings().then((general) => {
           if (!cancelled)
             setSaved(
-              toSaved(general.settings, general.settings, general.updatedAt)
+              toSaved(
+                general.settings,
+                general.settings,
+                general.updatedAt,
+                general.alternativeHarnessesEnabled
+              )
             )
         })
     load.catch((caught) => !cancelled && setLoadError(String(caught)))
@@ -161,7 +188,7 @@ export function SettingsPage({ networkId }: { networkId: string | null }) {
       <AppNav trail={trail} settingsHref={here} />
       <div className="settings-page">
         <nav className="settings-nav" aria-label="Settings">
-          <p className="eyebrow">Models</p>
+          <p className="eyebrow">Agents</p>
           <ul>
             <li>
               <a
@@ -184,11 +211,13 @@ export function SettingsPage({ networkId }: { networkId: string | null }) {
           <p className="eyebrow">Providers</p>
           <ul>
             <li>
-              <span className="settings-nav-soon" aria-disabled="true">
-                <KeyRound size={14} aria-hidden="true" />
-                API keys
-                <small>Soon</small>
-              </span>
+              <a
+                href="https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Provider setup<small>Cloudflare AI Gateway</small>
+              </a>
             </li>
           </ul>
         </nav>
@@ -197,15 +226,15 @@ export function SettingsPage({ networkId }: { networkId: string | null }) {
           <header className="settings-header">
             <h1>
               {networkId
-                ? `Models for ${networkName ?? "this network"}`
-                : "Models"}
+                ? `Agents for ${networkName ?? "this network"}`
+                : "Agents"}
             </h1>
             <p>
               {networkId
-                ? "Follow the General settings, or choose models for this network only."
+                ? "Follow the General settings, or choose harnesses and models for this network only."
                 : "The default for every network. A network can override these in its own settings."}{" "}
               Changes apply to new Trains, plans and repairs; work already
-              running keeps its models.
+              running keeps its harnesses and models.
             </p>
           </header>
 
@@ -257,6 +286,8 @@ function ModelSettingsForm({
 }) {
   const [choice, setChoice] = useState<Choice>(saved.choice)
   const [custom, setCustom] = useState<RoleModels>(saved.custom)
+  const [harnesses, setHarnesses] = useState<RoleHarnesses>(saved.harnesses)
+  const [modelChange, setModelChange] = useState<string | null>(null)
   const [customEdited, setCustomEdited] = useState(saved.choice === "custom")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -267,14 +298,40 @@ function ModelSettingsForm({
       : choice === "custom"
         ? custom
         : MODEL_PRESETS[choice]
-  const target = settingsFor(choice, custom)
+  const shownHarnesses =
+    choice === "general"
+      ? roleHarnesses(saved.general)
+      : choice === "custom"
+        ? harnesses
+        : roleHarnesses({ preset: choice })
+  const changeHarness = (role: HarnessRole, harness: Harness) => {
+    const model = modelForHarness(
+      harness,
+      shown[role]
+    ) as RoleModels[HarnessRole]
+    setCustom({ ...shown, [role]: model })
+    setHarnesses({ ...shownHarnesses, [role]: harness })
+    setCustomEdited(true)
+    setChoice("custom")
+    setError(null)
+    setModelChange(
+      model === shown[role]
+        ? null
+        : `${roles.find((item) => item.id === role)!.name} now uses ${catalog(model)!.name}, the lowest-cost compatible catalog model. Save to apply.`
+    )
+  }
+  const target = settingsFor(choice, custom, harnesses)
   const dirty =
     JSON.stringify(target) !==
-    JSON.stringify(settingsFor(saved.choice, saved.custom))
+    JSON.stringify(settingsFor(saved.choice, saved.custom, saved.harnesses))
 
   const choose = (next: Choice) => {
     // Custom starts from whatever is showing, until someone edits it.
-    if (next === "custom" && !customEdited) setCustom(shown)
+    if (next === "custom" && !customEdited) {
+      setCustom(shown)
+      setHarnesses(shownHarnesses)
+    }
+    setModelChange(null)
     setChoice(next)
     setError(null)
   }
@@ -286,10 +343,24 @@ function ModelSettingsForm({
     try {
       if (networkId) {
         const next = await api.saveNetworkModelSettings(networkId, target)
-        onSaved(toSaved(next.override, next.general, next.updatedAt))
+        onSaved(
+          toSaved(
+            next.override,
+            next.general,
+            next.updatedAt,
+            next.alternativeHarnessesEnabled
+          )
+        )
       } else {
         const next = await api.saveModelSettings(target!)
-        onSaved(toSaved(next.settings, next.settings, next.updatedAt))
+        onSaved(
+          toSaved(
+            next.settings,
+            next.settings,
+            next.updatedAt,
+            next.alternativeHarnessesEnabled
+          )
+        )
       }
     } catch (caught) {
       setError(String(caught))
@@ -299,6 +370,26 @@ function ModelSettingsForm({
 
   return (
     <form className="settings-form" onSubmit={submit}>
+      <p className="settings-help">
+        All providers run through Cloudflare AI Gateway. To use your own
+        Anthropic or OpenAI account, add its API key in your gateway’s Provider
+        Keys settings. Gateway configuration controls billing; Terminus never
+        stores your provider keys.{" "}
+        <a
+          href="https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Set up providers
+        </a>
+        .
+      </p>
+      {!saved.alternativesEnabled && (
+        <p className="settings-help" role="status">
+          Claude Code, Codex and external-provider models are unavailable until
+          this deployment passes live Sandbox verification.
+        </p>
+      )}
       <section aria-labelledby="settings-preset">
         <h2 id="settings-preset">Preset</h2>
         <div
@@ -340,19 +431,21 @@ function ModelSettingsForm({
         </div>
       </section>
 
+      {modelChange && <p role="status">{modelChange}</p>}
       <section aria-labelledby="settings-roles">
         <div className="settings-section-heading">
-          <h2 id="settings-roles">Role models</h2>
+          <h2 id="settings-roles">Role agents</h2>
           <p>
             {choice === "custom"
-              ? "Pick a Workers AI model for each role. The Engineer uses a Clef decision model."
-              : "What each role runs with this preset. Choose Custom to change one."}
+              ? "Choose a harness and compatible model for each role. The Engineer uses a Clef decision model."
+              : "Choose a harness to customize a role, or choose Custom to edit models."}
           </p>
         </div>
         <table className="settings-roles panel">
-          <thead className="sr-only">
+          <thead>
             <tr>
               <th scope="col">Role</th>
+              <th scope="col">Harness</th>
               <th scope="col">Model</th>
             </tr>
           </thead>
@@ -371,7 +464,36 @@ function ModelSettingsForm({
                       </small>
                     )}
                   </th>
-                  <td>
+                  <td data-label="Harness">
+                    {role.id === "engineer" ? (
+                      <span>Direct model</span>
+                    ) : (
+                      <select
+                        aria-label={`${role.name} harness`}
+                        value={shownHarnesses[role.id]}
+                        onChange={(event) =>
+                          changeHarness(
+                            role.id as HarnessRole,
+                            event.target.value as Harness
+                          )
+                        }
+                      >
+                        {HARNESS_CATALOG.map((harness) => (
+                          <option
+                            key={harness.id}
+                            value={harness.id}
+                            disabled={
+                              harness.id !== "opencode" &&
+                              !saved.alternativesEnabled
+                            }
+                          >
+                            {harness.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </td>
+                  <td data-label="Model">
                     {choice === "custom" ? (
                       <select
                         aria-label={`${role.name} model`}
@@ -384,8 +506,20 @@ function ModelSettingsForm({
                           } as RoleModels)
                         }}
                       >
-                        {options(role.id).map((option) => (
-                          <option key={option.id} value={option.id}>
+                        {options(
+                          role.id,
+                          role.id === "engineer"
+                            ? "opencode"
+                            : harnesses[role.id]
+                        ).map((option) => (
+                          <option
+                            key={option.id}
+                            value={option.id}
+                            disabled={
+                              option.provider !== "workers-ai" &&
+                              !saved.alternativesEnabled
+                            }
+                          >
                             {option.name} · {option.maker}
                           </option>
                         ))}
@@ -423,6 +557,8 @@ function ModelSettingsForm({
           onClick={() => {
             setChoice(saved.choice)
             setCustom(saved.custom)
+            setHarnesses(saved.harnesses)
+            setModelChange(null)
             setCustomEdited(saved.choice === "custom")
             setError(null)
           }}

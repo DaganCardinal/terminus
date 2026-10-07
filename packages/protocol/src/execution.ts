@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { modelProviderSchema } from "./models"
 
 export const stationMaxRetriesSchema = z.number().int().nonnegative()
 
@@ -58,9 +59,32 @@ export const sandboxNetworkSchema = z.object({
   allowModel: z.boolean(),
   /** The one model this Sandbox's harness may call, resolved by orchestration. */
   model: z.string().min(1).optional(),
+  provider: modelProviderSchema.optional(),
 })
 export type SandboxNetwork = z.infer<typeof sandboxNetworkSchema>
 
 export const modelCallSchema = z
   .object({ model: z.string().min(1) })
   .passthrough()
+
+/** Native outcome events only; raw tool arguments/results never leave a Sandbox. */
+export const claudeResultSchema = z.object({
+  type: z.literal("result"),
+  subtype: z.string(),
+  is_error: z.boolean(),
+  result: z.string().optional(),
+  session_id: z.string().optional(),
+})
+export const codexOutcomeEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("thread.started"), thread_id: z.string().min(1) }),
+  z.object({ type: z.literal("turn.completed") }),
+  z.object({
+    type: z.literal("turn.failed"),
+    error: z.object({ message: z.string() }),
+  }),
+  z.object({ type: z.literal("error"), message: z.string() }),
+  z.object({
+    type: z.literal("item.completed"),
+    item: z.object({ type: z.literal("agent_message"), text: z.string() }),
+  }),
+])

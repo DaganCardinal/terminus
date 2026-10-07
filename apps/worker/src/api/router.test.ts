@@ -443,6 +443,7 @@ describe("model settings", () => {
       override: null,
       general: { preset: "light" },
       updatedAt: null,
+      alternativeHarnessesEnabled: true,
     })
 
     const models = {

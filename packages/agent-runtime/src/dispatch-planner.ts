@@ -23,6 +23,7 @@ export interface DispatchPlanResult {
 
 export interface DispatchPlanner {
   readonly model: string
+  readonly config?: import("@terminus/domain").AgentConfig
   plan(input: DispatchPlanningInput): Promise<DispatchPlanResult>
 }
 

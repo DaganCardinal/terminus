@@ -16,12 +16,20 @@ import { TRAIN_EVENTS, type TrainWorkflowParams } from "./events"
 import {
   advanceTrain,
   clearTrain,
+  failReview,
   recordStationOutcome,
   recordIntegrationOutcome,
+  reviewStation,
 } from "./train-operations"
 
 const stepConfig: WorkflowStepConfig = {
   retries: { limit: 5, delay: "1 second", backoff: "exponential" },
+}
+
+/** A harness review is a paid session that verifies the app, so it gets one retry. */
+const reviewConfig: WorkflowStepConfig = {
+  retries: { limit: 1, delay: "5 seconds" },
+  timeout: "30 minutes",
 }
 
 /**
@@ -62,6 +70,21 @@ export class TrainWorkflow extends WorkflowEntrypoint<
           }
           break
         }
+        case "review":
+          try {
+            await step.do(
+              `review ${move.stationId} (${leg})`,
+              reviewConfig,
+              () => reviewStation(ports, trainId)
+            )
+          } catch {
+            await step.do(
+              `review failed ${move.stationId} (${leg})`,
+              stepConfig,
+              () => failReview(ports, trainId)
+            )
+          }
+          break
         case "await_wake":
           // Wakes are a shortcut; the gate is re-checked periodically anyway.
           await waitFor(step, `held (${leg})`, TRAIN_EVENTS.wake, "10 minutes")

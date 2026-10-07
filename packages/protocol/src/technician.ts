@@ -15,7 +15,12 @@ const candidate = z.object({
   repairPaths: z.array(z.string()),
 })
 const reviewed = candidate.extend({
-  review: conductorVerdictSchema.extend({ model: z.string().min(1) }),
+  review: conductorVerdictSchema.extend({
+    model: z.string().min(1),
+    harness: z.string().optional(),
+    provider: z.string().optional(),
+    harnessVersion: z.string().optional(),
+  }),
 })
 export const technicianRepairSchema = z.object({
   id: z.string().min(1),
@@ -42,7 +47,12 @@ export const technicianRepairSchema = z.object({
   description: z.string(),
   manifests: z.array(workManifestSchema),
   expectedChecks: z.array(z.string().min(1)),
-  agent: z.object({ harness: z.string(), model: z.string() }),
+  agent: z.object({
+    harness: z.string(),
+    model: z.string(),
+    provider: z.string().optional(),
+    harnessVersion: z.string().optional(),
+  }),
   createdAt: z.string(),
   integrationFailure: z
     .object({

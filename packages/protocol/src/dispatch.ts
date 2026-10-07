@@ -224,6 +224,14 @@ export const dispatchPlanSchema = z.object({
   goal: z.string(),
   terminusCommit: z.string(),
   model: z.string(),
+  agent: z
+    .object({
+      harness: z.string(),
+      model: z.string(),
+      provider: z.string().optional(),
+      harnessVersion: z.string().optional(),
+    })
+    .optional(),
   createdAt: z.string(),
   checkBaseline: z.boolean().optional(),
   state: z.discriminatedUnion("status", [

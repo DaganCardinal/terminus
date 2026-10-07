@@ -25,6 +25,7 @@ function fixture(options: { testExit?: number; harnessExit?: number } = {}) {
       calls.push({ command, env: environment })
       order.push(command.slice(0, 2).join(" "))
       const ok = { exitCode: 0, stdout: "", stderr: "" }
+      if (command[1] === "--version") return { ...ok, stdout: "1.18.32" }
       if (command[0] === "git" && command[1] === "rev-parse")
         return { ...ok, stdout: `${commit}\n` }
       if (command[0] === "git" && command[1] === "ls-files")
@@ -175,7 +176,7 @@ describe("Sandbox Dispatcher session", () => {
       "bash",
       "-c",
       'exec "$@" > "$0"',
-      "/workspace/harness-1.jsonl",
+      "/workspace/harness-session-1.jsonl",
     ])
     expect(harness.command).toContain("dispatcher")
     // Root guidance is read from the sealed checkout and supplied as data.

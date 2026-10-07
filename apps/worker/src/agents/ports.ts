@@ -6,23 +6,34 @@ import {
   FakeStationRunner,
   GatewayModelProvider,
   ModelConductor,
+  HarnessConductor,
+  HarnessRepairConductor,
   HarnessDispatcher,
   FakeDispatchPlanner,
   type Conductor,
   type ModelProvider,
+  type RepairConductor,
   type StationRunner,
+  executionConfig,
 } from "@terminus/agent-runtime"
 import {
   ArtifactsRepositoryHost,
   FakeRepositoryHost,
   type RepositoryHost,
 } from "@terminus/artifacts"
-import type { ModelRole } from "@terminus/protocol"
+import {
+  harnessRoles,
+  type RoleExecutions,
+  type RoleExecution,
+  type HarnessRole,
+  type ModelRole,
+} from "@terminus/protocol"
 import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { artifactsRepositories } from "../integrations/artifacts-repositories"
 import { SandboxTechnicianRunner } from "../integrations/technician-runner"
 import { SandboxDispatchSessions } from "../integrations/dispatch-session"
+import { SandboxConductorSessions } from "../integrations/conductor-session"
 import type { TechnicianPorts } from "./technician"
 import { SandboxStationRunner } from "../integrations/station-runner"
 import {
@@ -52,14 +63,33 @@ const FAKE = "fake"
  * The model each role runs with for one piece of work. Resolved from the
  * network's settings when the work starts, or from what the work recorded.
  */
-export type ConfiguredModels = Record<ModelRole, string>
+export type ConfiguredModels = Record<ModelRole, string> & {
+  executions?: RoleExecutions
+}
+function configuredModels(executions: RoleExecutions): ConfiguredModels {
+  return {
+    executions,
+    engineer: executions.engineer,
+    ...Object.fromEntries(
+      harnessRoles.map((role) => [role, executions[role].model])
+    ),
+  } as ConfiguredModels
+}
+function roleExecution(
+  models: ConfiguredModels,
+  role: HarnessRole
+): RoleExecution {
+  return models.executions?.[role] ?? executionConfig(models[role])
+}
 
 /** The models a network's settings choose right now. */
-export function networkModels(
+export async function networkModels(
   env: Env,
   networkId: string
 ): Promise<ConfiguredModels> {
-  return new NetworkStore(env.DB).roleModels(networkId)
+  return configuredModels(
+    await new NetworkStore(env.DB).networkExecutions(networkId)
+  )
 }
 
 /** A Train and its Station runs use the models of the Train's network. */
@@ -69,7 +99,11 @@ export async function trainModels(
 ): Promise<ConfiguredModels> {
   const train = await new NetworkStore(env.DB).train(trainId)
   if (!train) throw new Error(`Unknown Train ${trainId}`)
-  return networkModels(env, train.networkId)
+  const config = await new NetworkStore(env.DB).executionConfig(
+    "train",
+    trainId
+  )
+  return config ? configuredModels(config) : legacyModels(env, train.networkId)
 }
 
 /** A plan keeps the Dispatcher model it was proposed with. */
@@ -79,8 +113,13 @@ export async function planModels(
 ): Promise<ConfiguredModels> {
   const plan = await new NetworkStore(env.DB).dispatchPlan(planId)
   if (!plan) throw new Error(`Unknown plan ${planId}`)
+  const config = await new NetworkStore(env.DB).executionConfig(
+    "dispatch_plan",
+    planId
+  )
+  if (config) return configuredModels(config)
   return {
-    ...(await networkModels(env, plan.networkId)),
+    ...(await legacyModels(env, plan.networkId)),
     dispatcher: plan.value.model,
   }
 }
@@ -92,17 +131,36 @@ export async function repairModels(
 ): Promise<ConfiguredModels> {
   const repair = await new NetworkStore(env.DB).repair(repairId)
   if (!repair) throw new Error(`Unknown repair ${repairId}`)
+  const config = await new NetworkStore(env.DB).executionConfig(
+    "technician_repair",
+    repairId
+  )
+  if (config) return configuredModels(config)
   return {
-    ...(await networkModels(env, repair.networkId)),
+    ...(await legacyModels(env, repair.networkId)),
     technician: repair.value.agent.model,
   }
+}
+
+async function legacyModels(
+  env: Env,
+  networkId: string
+): Promise<ConfiguredModels> {
+  const models = await new NetworkStore(env.DB).roleModels(networkId)
+  // Deployment drains old work before allowing external provider selections.
+  for (const role of harnessRoles)
+    if (!models[role].startsWith("@cf/"))
+      throw new Error(
+        "Legacy work has no frozen execution configuration; drain it before changing providers"
+      )
+  return models
 }
 
 export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
   return {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
-    conductor: conductor(env, models.conductor),
+    conductor: conductor(env, models.conductor, models.executions?.conductor),
     stationMaxRetries: stationMaxRetries(env),
     startStationRun: (params) => startStationRun(env, params),
     startIntegration: async (integrationId) => {
@@ -127,8 +185,22 @@ export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
 export function integrationPorts(env: Env): IntegrationPorts {
   const host = repositories(env)
   return {
-    conductorForTrain: async (id, model) =>
-      conductor(env, model ?? (await trainModels(env, id)).conductor),
+    conductorForTrain: async (id, model, junctionId) => {
+      if (junctionId) {
+        const execution = (
+          await new NetworkStore(env.DB).executionConfig("junction", junctionId)
+        )?.conductor
+        if (execution) return conductor(env, execution.model, execution)
+        if (model) return conductor(env, model)
+      }
+      const models = await trainModels(env, id)
+      const execution = models.executions?.conductor
+      return conductor(
+        env,
+        execution?.model ?? model ?? models.conductor,
+        execution
+      )
+    },
     store: new NetworkStore(env.DB),
     repositories: host,
     validator:
@@ -144,7 +216,7 @@ export function technicianPorts(
 ): TechnicianPorts {
   const host = repositories(env)
   return {
-    ...dispatcherPorts(env),
+    ...dispatcherPorts(env, models),
     repositories: host,
     runner:
       env.TECHNICIAN_MODEL === FAKE
@@ -152,15 +224,15 @@ export function technicianPorts(
         : new SandboxTechnicianRunner(
             env,
             models.technician,
-            artifactsRepositories(env)
+            artifactsRepositories(env),
+            undefined,
+            roleExecution(models, "technician")
           ),
-    reviewer:
-      env.CONDUCTOR_MODEL === FAKE
-        ? new FakeRepairConductor()
-        : new ModelRepairConductor(
-            models.conductor,
-            gatewayProvider(env, models.conductor)
-          ),
+    reviewer: repairConductor(
+      env,
+      models.conductor,
+      models.executions?.conductor
+    ),
     validator:
       host instanceof ArtifactsRepositoryHost
         ? new SandboxIntegrationValidator(host, new SandboxWorkspaces(env))
@@ -184,13 +256,20 @@ export function stationPorts(env: Env, models: ConfiguredModels): StationPorts {
   return {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
-    runner: stationRunner(env, models.stationAgent),
+    runner: stationRunner(
+      env,
+      models.stationAgent,
+      models.executions?.stationAgent
+    ),
   }
 }
 
-export function dispatcherPorts(env: Env): DispatcherPorts {
+export function dispatcherPorts(
+  env: Env,
+  models?: ConfiguredModels
+): DispatcherPorts {
   return {
-    store: new NetworkStore(env.DB),
+    store: new NetworkStore(env.DB, models?.executions),
     repositories: repositories(env),
     startTrain: async (trainId) => {
       try {
@@ -245,14 +324,20 @@ export function dispatchPlanningPorts(
   models: ConfiguredModels
 ): DispatchPlanningPorts {
   return {
-    ...dispatcherPorts(env),
+    ...dispatcherPorts(env, models),
     startJunction: (id) => junctionDispatchPorts(env).startJunction(id),
     planner:
       env.DISPATCHER_MODEL === FAKE
         ? new FakeDispatchPlanner()
         : new HarnessDispatcher(
             models.dispatcher,
-            new SandboxDispatchSessions(env, artifactsRepositories(env))
+            new SandboxDispatchSessions(
+              env,
+              artifactsRepositories(env),
+              undefined,
+              roleExecution(models, "dispatcher")
+            ),
+            roleExecution(models, "dispatcher")
           ),
     startPlanning: async (planId) => {
       try {
@@ -297,7 +382,11 @@ function repositories(env: Env): RepositoryHost {
   return artifactsRepositories(env)
 }
 
-function stationRunner(env: Env, model: string): StationRunner {
+function stationRunner(
+  env: Env,
+  model: string,
+  execution?: RoleExecution
+): StationRunner {
   if (env.STATION_AGENT_MODEL !== FAKE) {
     if (env.REPOSITORY_MODE !== "artifacts")
       throw new Error("Real Station Agents require Artifacts repositories")
@@ -305,7 +394,9 @@ function stationRunner(env: Env, model: string): StationRunner {
       env,
       model,
       artifactsRepositories(env),
-      new NetworkStore(env.DB)
+      new NetworkStore(env.DB),
+      undefined,
+      execution
     )
   }
   const delayMs = Number(env.FAKE_AGENT_DELAY_MS)
@@ -314,10 +405,49 @@ function stationRunner(env: Env, model: string): StationRunner {
   })
 }
 
-function conductor(env: Env, model: string): Conductor {
-  if (env.CONDUCTOR_MODEL !== FAKE)
+function conductor(
+  env: Env,
+  model: string,
+  execution?: RoleExecution
+): Conductor {
+  if (env.CONDUCTOR_MODEL === FAKE)
+    return new FakeConductor({ returns: Number(env.FAKE_CONDUCTOR_RETURNS) })
+  // Verifying a candidate in a Sandbox needs its real repository; fake
+  // repositories are reviewed from the supplied diff alone.
+  if (env.REPOSITORY_MODE !== "artifacts")
     return new ModelConductor(model, gatewayProvider(env, model))
-  return new FakeConductor({ returns: Number(env.FAKE_CONDUCTOR_RETURNS) })
+  return new HarnessConductor(
+    model,
+    conductorSessions(env, execution),
+    execution
+  )
+}
+
+function repairConductor(
+  env: Env,
+  model: string,
+  execution?: RoleExecution
+): RepairConductor {
+  if (env.CONDUCTOR_MODEL === FAKE) return new FakeRepairConductor()
+  if (env.REPOSITORY_MODE !== "artifacts")
+    return new ModelRepairConductor(model, gatewayProvider(env, model))
+  return new HarnessRepairConductor(
+    model,
+    conductorSessions(env, execution),
+    execution
+  )
+}
+
+function conductorSessions(
+  env: Env,
+  execution?: RoleExecution
+): SandboxConductorSessions {
+  return new SandboxConductorSessions(
+    env,
+    artifactsRepositories(env),
+    undefined,
+    execution
+  )
 }
 
 /** Gateway configuration is checked per call, so a misconfigured role fails its own step. */
@@ -325,10 +455,19 @@ function gatewayProvider(env: Env, model: string): ModelProvider {
   return {
     generateStructured: (request) =>
       new GatewayModelProvider(
-        gatewayConfig(env, model),
+        directGatewayConfig(env, model),
         gatewayTransport
       ).generateStructured(request),
   }
+}
+
+function directGatewayConfig(env: Env, model: string) {
+  const config = gatewayConfig(env, model)
+  if (config.provider !== "workers-ai")
+    throw new Error(
+      "External-provider reviews require real candidate repositories and a Sandbox harness"
+    )
+  return config
 }
 
 async function startStationRun(
@@ -354,9 +493,12 @@ function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`
 }
 
-export function junctionDispatchPorts(env: Env): JunctionDispatchPorts {
+export function junctionDispatchPorts(
+  env: Env,
+  models?: ConfiguredModels
+): JunctionDispatchPorts {
   return {
-    ...dispatcherPorts(env),
+    ...dispatcherPorts(env, models),
     startJunction: async (id) => {
       try {
         await env.JUNCTION_WORKFLOW.create({ id, params: { junctionId: id } })
@@ -372,11 +514,15 @@ export function junctionDispatchPorts(env: Env): JunctionDispatchPorts {
     },
   }
 }
-export function junctionExecutionPorts(env: Env, model: string) {
+export function junctionExecutionPorts(
+  env: Env,
+  model: string,
+  execution?: RoleExecution
+) {
   return {
     ...junctionDispatchPorts(env),
     ...integrationPorts(env),
-    conductor: conductor(env, model),
+    conductor: conductor(env, execution?.model ?? model, execution),
     startIntegration: async (id: string) => {
       try {
         await env.INTEGRATION_WORKFLOW.create({

@@ -18,6 +18,9 @@ export interface RepairSource {
   acceptedCommits: string[]
 }
 export interface RepairReview {
+  harness?: string
+  provider?: string
+  harnessVersion?: string
   model: string
   verdict: "accept" | "return" | "escalate"
   summary: string

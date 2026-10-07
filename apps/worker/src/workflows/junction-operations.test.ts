@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from "vitest"
 import { env } from "cloudflare:test"
 import { drive, manifest, seedNetwork, testPorts } from "../../test/fixtures"
 import { layJunction } from "../agents/junctions"
-import { advanceJunction, type JunctionPorts } from "./junction-operations"
+import {
+  advanceJunction,
+  reviewJunctionFeature,
+  type JunctionPorts,
+} from "./junction-operations"
 import { advanceTrain, recordIntegrationOutcome } from "./train-operations"
 import {
   prepareIntegration,
@@ -10,6 +14,13 @@ import {
 } from "./integration-operations"
 import { FakeIntegrationValidator } from "../integrations/integration-validator"
 
+/** One Junction Workflow iteration, including the feature review step it runs. */
+async function advance(ports: JunctionPorts, id: string) {
+  const move = await advanceJunction(ports, id)
+  if (move !== "review") return move
+  await reviewJunctionFeature(ports, id)
+  return "moved" as const
+}
 async function setup(stops = true) {
   const p = testPorts(),
     network = await seedNetwork(p)
@@ -53,7 +64,7 @@ async function converge(w: Awaited<ReturnType<typeof setup>>) {
     await advanceTrain(w.p.train, id)
   }
   for (let n = 0; n < 15; n++) {
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     const active = (await w.p.store.integrations(w.network.id)).find(
       (a) => a.input.purpose === "junction" && !a.result
     )
@@ -67,13 +78,50 @@ async function converge(w: Awaited<ReturnType<typeof setup>>) {
   throw new Error("Junction did not become ready")
 }
 describe("Junction convergence", () => {
+  it("leaves feature review to its own step, verifying the Junction head with its feature checks", async () => {
+    const w = await setup()
+    const review = vi.spyOn(w.p.train.conductor, "reviewJunction")
+    for (const id of w.j.incomingTrainIds) {
+      await drive(w.p, id)
+      await advanceTrain(w.p.train, id)
+    }
+    let move = await advanceJunction(w.ports, w.j.id)
+    for (let n = 0; move !== "review" && n < 15; n++) {
+      const active = (await w.p.store.integrations(w.network.id)).find(
+        (a) => a.input.purpose === "junction" && !a.result
+      )
+      if (active) {
+        await prepareIntegration(w.ports, active.input.id)
+        await promoteIntegration(w.ports, active.input.id)
+      }
+      move = await advanceJunction(w.ports, w.j.id)
+    }
+    expect(move).toBe("review")
+    const inputReviews = review.mock.calls.length
+    expect(await advanceJunction(w.ports, w.j.id)).toBe("review")
+    expect(review).toHaveBeenCalledTimes(inputReviews)
+
+    await reviewJunctionFeature(w.ports, w.j.id)
+    const j = (await w.p.store.junction(w.j.id))!.value
+    expect(j.state.status).toBe("ready")
+    const [input, context] = review.mock.calls.at(-1)!
+    expect(input.kind).toBe("junction_feature")
+    expect(context).toEqual({
+      repoId: j.repoId,
+      validation: expect.arrayContaining(w.request.brief.validation),
+    })
+    // A repeated step does nothing once the feature is reviewed.
+    await reviewJunctionFeature(w.ports, w.j.id)
+    expect(review).toHaveBeenCalledTimes(inputReviews + 1)
+  })
+
   it("defers promotion when an input becomes held after clearance and resumes automatically", async () => {
     const w = await setup(false)
     for (const id of w.j.incomingTrainIds) {
       await drive(w.p, id)
       await advanceTrain(w.p.train, id)
     }
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     const active = (await w.p.store.integrations(w.network.id))[0]!
     const { placeHold, releaseHold } = await import("../agents/dispatcher")
     const hold = await placeHold(w.p.dispatcher, w.network.id, {
@@ -91,7 +139,7 @@ describe("Junction convergence", () => {
       ok: false,
       holds: [{ kind: "user_hold" }],
     })
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     expect((await w.p.store.junction(w.j.id))!.value.state.status).toBe(
       "collecting"
     )
@@ -142,7 +190,7 @@ describe("Junction convergence", () => {
       w.p.store.commandJunction(w.j.id, { commit: ready.headCommit }),
       w.p.store.commandJunction(w.j.id, { commit: ready.headCommit }),
     ])
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     expect(await w.p.store.train(ready.outgoingTrainId)).toBeNull()
     expect(
       (await w.p.store.snapshot(w.network.id))!.junctionApprovals
@@ -152,13 +200,11 @@ describe("Junction convergence", () => {
       .fn()
       .mockRejectedValueOnce(new Error("Notification lost"))
       .mockResolvedValue(undefined)
-    await expect(advanceJunction(w.ports, w.j.id)).rejects.toThrow(
-      /Notification lost/
-    )
+    await expect(advance(w.ports, w.j.id)).rejects.toThrow(/Notification lost/)
     expect((await w.p.store.junction(w.j.id))!.value.state.status).toBe(
       "released"
     )
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     const snapshot = (await w.p.store.snapshot(w.network.id))!
     expect(
       snapshot.trains.filter((t) => t.train.id === ready.outgoingTrainId)
@@ -194,8 +240,8 @@ describe("Junction convergence", () => {
       w.p.store.commandJunction(w.j.id, { commit: "stale" })
     ).rejects.toThrow()
     await w.p.store.commandJunction(w.j.id, { commit: ready.headCommit })
-    await advanceJunction(w.ports, w.j.id)
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     const output = (await w.p.store.train(w.j.outgoingTrainId))!.value
     expect(output.terminusBaseline).toBe(w.j.terminusBaseline)
     expect(output.headCommit).toBe(ready.headCommit)
@@ -230,7 +276,7 @@ describe("Junction convergence", () => {
       await drive(w.p, id)
       await advanceTrain(w.p.train, id)
     }
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     const active = (await w.p.store.integrations(w.network.id))[0]!
     await prepareIntegration(w.ports, active.input.id)
     await promoteIntegration(w.ports, active.input.id)
@@ -244,11 +290,11 @@ describe("Junction convergence", () => {
         .bind(w.j.id)
         .run()
     ).rejects.toThrow()
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     expect((await w.p.store.integration(active.input.id))!.status).toBe(
       "completed"
     )
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     expect((await w.p.store.junction(w.j.id))!.value.inputs).toHaveLength(1)
   })
   it("supports direct outgoing routes and feature validation blockers", async () => {
@@ -256,7 +302,7 @@ describe("Junction convergence", () => {
     await converge(w)
     const ready = (await w.p.store.junction(w.j.id))!.value
     await w.p.store.commandJunction(w.j.id, { commit: ready.headCommit })
-    await advanceJunction(w.ports, w.j.id)
+    await advance(w.ports, w.j.id)
     await advanceTrain(w.p.train, w.j.outgoingTrainId)
     expect(
       (await w.p.store.train(w.j.outgoingTrainId))!.value.state.status
@@ -317,27 +363,27 @@ it("recovers an uncertain push through the same reservation and acknowledges bef
   const id = w.j.incomingTrainIds[0]!
   await drive(w.p, id)
   await advanceTrain(w.p.train, id)
-  await advanceJunction(w.ports, w.j.id)
+  await advance(w.ports, w.j.id)
   const a = (await w.p.store.integrations(w.network.id))[0]!
   await prepareIntegration(w.ports, a.input.id)
   await w.p.store.interruptIntegration(
     a.input.id,
     "Push acknowledgement unknown"
   )
-  await advanceJunction(w.ports, w.j.id)
+  await advance(w.ports, w.j.id)
   expect((await w.p.store.junction(w.j.id))!.value.state.status).toBe("blocked")
   await w.p.store.retryIntegration(a.input.id)
   await w.p.store.commandJunction(w.j.id, { retry: true })
-  await advanceJunction(w.ports, w.j.id)
+  await advance(w.ports, w.j.id)
   expect((await w.p.store.junction(w.j.id))!.value.state.status).toBe(
     "collecting"
   )
   await promoteIntegration(w.ports, a.input.id)
   await w.p.store.commandJunction(w.j.id, { reason: "cancel feature" })
-  await advanceJunction(w.ports, w.j.id)
+  await advance(w.ports, w.j.id)
   expect((await w.p.store.integration(a.input.id))!.status).toBe("completed")
   await advanceTrain(w.p.train, id)
-  await advanceJunction(w.ports, w.j.id)
+  await advance(w.ports, w.j.id)
   await advanceTrain(w.p.train, w.j.incomingTrainIds[1]!)
   expect((await w.p.store.junction(w.j.id))!.value.state.status).toBe(
     "abandoned"
@@ -366,8 +412,8 @@ it("collects independent Junctions concurrently and skips a held first arrival",
     scope: { kind: "line", lineId: w.j.incomingLineIds[0]! },
     note: "Wait",
   })
-  await advanceJunction(w.ports, w.j.id)
-  await advanceJunction(w.ports, second.id)
+  await advance(w.ports, w.j.id)
+  await advance(w.ports, second.id)
   const active = (await w.p.store.integrations(w.network.id)).filter(
     (a) => a.status === "cleared"
   )
@@ -377,8 +423,8 @@ it("collects independent Junctions concurrently and skips a held first arrival",
     await prepareIntegration(w.ports, a.input.id)
     await promoteIntegration(w.ports, a.input.id)
   }
-  await advanceJunction(w.ports, w.j.id)
-  await advanceJunction(w.ports, second.id)
+  await advance(w.ports, w.j.id)
+  await advance(w.ports, second.id)
   expect((await w.p.store.junction(w.j.id))!.value.inputs).toHaveLength(1)
   await releaseHold(w.p.dispatcher, w.network.id, hold.id)
   await converge(w)
@@ -445,18 +491,18 @@ it("repairs a feature review failure without granting release permission", async
     reviewed.state.proposal.headCommit
   )
   w.ports.conductor = original
-  await advanceJunction(w.ports, j.id)
+  await advance(w.ports, j.id)
   const active = (await w.p.store.integrations(w.network.id)).find(
     (a) => a.input.repairId === repair.id
   )!
   await prepareIntegration(w.ports, active.input.id)
   await promoteIntegration(w.ports, active.input.id)
-  await advanceJunction(w.ports, j.id)
+  await advance(w.ports, j.id)
   expect((await w.p.store.repair(repair.id))!.value.state.status).toBe(
     "integrated"
   )
-  await advanceJunction(w.ports, j.id)
-  await advanceJunction(w.ports, j.id)
+  await advance(w.ports, j.id)
+  await advance(w.ports, j.id)
   const ready = (await w.p.store.junction(j.id))!.value
   expect(ready.state.status).toBe("ready")
   expect(ready.headCommit).not.toBe(j.headCommit)

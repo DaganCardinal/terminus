@@ -19,7 +19,9 @@ import { placeHold, releaseHold } from "../agents/dispatcher"
 import {
   advanceTrain,
   clearTrain,
+  failReview,
   recordStationOutcome,
+  reviewStation,
 } from "./train-operations"
 
 async function eventTypes(ports: TestPorts, networkId: string) {
@@ -444,6 +446,75 @@ describe("a Train on its Line", () => {
       status: "blocked",
       issues: [{ kind: "review_escalated" }],
     })
+  })
+
+  it("reviews in its own step with the candidate's repository, then applies the durable verdict", async () => {
+    const review = vi.fn<Conductor["review"]>(async (input) =>
+      new FakeConductor().review(input)
+    )
+    const ports = testPorts({ conductor: { model: "spy", review } })
+    const network = await seedNetwork(ports)
+    const { train, stations } = await seedLine(ports, network.id)
+
+    let move = await advanceTrain(ports.train, train.id)
+    while (move.kind !== "review") {
+      if (move.kind === "await_station")
+        await recordStationOutcome(
+          ports.train,
+          train.id,
+          await runStation(ports, ports.runs.at(-1)!)
+        )
+      move = await advanceTrain(ports.train, train.id)
+    }
+    expect(move).toEqual({ kind: "review", stationId: stations[0]!.id })
+    // Advancing never calls the Conductor; it waits for the review step.
+    expect(await advanceTrain(ports.train, train.id)).toEqual(move)
+    expect(review).not.toHaveBeenCalled()
+
+    const station = (await ports.store.station(stations[0]!.id))!.value
+    if (station.state.status !== "in_review") throw new Error("Not in review")
+    await reviewStation(ports.train, train.id)
+    await reviewStation(ports.train, train.id)
+    expect(review).toHaveBeenCalledOnce()
+    expect(review.mock.calls[0]![1]).toEqual({
+      repoId: station.state.workspace.repoId,
+      validation: (await ports.store.network(network.id))!.validation,
+    })
+    // A late failure report cannot discard a recorded verdict.
+    await failReview(ports.train, train.id)
+    expect(await advanceTrain(ports.train, train.id)).toEqual({
+      kind: "moved",
+    })
+    expect((await ports.store.train(train.id))!.value.carIds).toHaveLength(1)
+  })
+
+  it("blocks for intervention when the review step cannot produce a verdict", async () => {
+    const ports = testPorts({
+      conductor: {
+        model: "spy",
+        review: async () => {
+          throw new Error("Conductor verdict failed validation")
+        },
+      },
+    })
+    const network = await seedNetwork(ports)
+    const { train, stations } = await seedLine(ports, network.id)
+
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(await trainState(ports, train.id)).toMatchObject({
+      status: "blocked",
+      issues: [
+        {
+          kind: "review_escalated",
+          detail: expect.stringContaining(
+            "review is required before acceptance"
+          ),
+        },
+      ],
+    })
+    expect(
+      (await ports.store.station(stations[0]!.id))!.value.state.status
+    ).toBe("blocked")
   })
 
   it("ignores outcomes from runs that are no longer current", async () => {

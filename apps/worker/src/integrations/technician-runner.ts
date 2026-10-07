@@ -1,5 +1,8 @@
+import { catalogModel, type RoleExecution } from "@terminus/protocol"
 import {
-  harnessOutcome,
+  harnessResult,
+  executionConfig,
+  agentProvenance,
   technicianHarnessAgent,
   technicianMessage,
   type TechnicianRunner,
@@ -14,28 +17,31 @@ import {
 import type { TechnicianRepair, RepairCandidate } from "@terminus/domain"
 import { commandResultSchema } from "@terminus/protocol"
 import { gatewayConfig } from "./execution-config"
-import { prepareHarness } from "./harness"
+import { prepareHarness, runPreparedHarness } from "./harness"
 import type { StationSandbox } from "./station-runner"
 
 export class SandboxTechnicianRunner implements TechnicianRunner {
-  readonly config: { harness: string; model: string }
+  readonly config: import("@terminus/domain").AgentConfig
   private readonly env: Env
   private readonly repositories: Pick<
     ArtifactsRepositoryHost,
     "access" | "revoke"
   >
   private readonly sandboxFactory: (id: string) => StationSandbox
+  private readonly execution: RoleExecution
   constructor(
     env: Env,
     model: string,
     repositories: Pick<ArtifactsRepositoryHost, "access" | "revoke">,
-    sandboxFactory?: (id: string) => StationSandbox
+    sandboxFactory?: (id: string) => StationSandbox,
+    execution: RoleExecution = executionConfig(model)
   ) {
+    this.execution = execution
     this.env = env
     this.repositories = repositories
     this.sandboxFactory =
       sandboxFactory ?? ((id) => env.SANDBOX.getByName(`technician-${id}`))
-    this.config = { harness: "opencode@1.18.32", model }
+    this.config = agentProvenance(this.execution)
   }
   async run(
     repair: TechnicianRepair,
@@ -66,6 +72,9 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
         })),
         allowModel: true,
         model: this.config.model,
+        ...(catalogModel(this.config.model).provider === "workers-ai"
+          ? {}
+          : { provider: catalogModel(this.config.model).provider }),
       })
       const workspace: GitWorkspace = {
         run: async (command, cwd, env) =>
@@ -88,16 +97,17 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
         )
         const prepared = await prepareHarness(this.env, sandbox, workspace, {
           model: config.model,
+          execution: this.execution,
           agent: technicianHarnessAgent(repair),
           directory: technicianDirectory,
           assignment: technicianMessage(repair),
         })
-        const harness = await workspace.run(
-          prepared.command,
-          technicianDirectory,
-          prepared.env
+        const harness = await runPreparedHarness(
+          sandbox,
+          prepared,
+          technicianDirectory
         )
-        const outcome = harnessOutcome(harness)
+        const outcome = harnessResult(prepared.harness, harness)
         if (outcome.error) throw new Error(outcome.error)
         summary = outcome.summary?.slice(-8000) ?? null
         headCommit = await git.candidateCommit()

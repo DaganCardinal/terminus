@@ -21,6 +21,9 @@ import type {
   DispatchPlanningInput,
   DispatchPlanResult,
 } from "./dispatch-planner"
+import { finalMessageJson } from "./opencode"
+import { agentProvenance } from "./harness-adapters"
+import type { RoleExecution } from "@terminus/protocol"
 
 /**
  * One read-only harness session over the exact planning baseline. The
@@ -80,18 +83,6 @@ type Review =
   | { kind: "schema"; issues: DispatchValidationIssue[] }
   | { kind: "assessment"; proposal: DispatchProposal; errors: string[] }
 
-/** Accepts a bare object, optionally fenced or surrounded by prose. */
-function proposalJson(text: string): unknown {
-  const trimmed = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-  const start = trimmed.indexOf("{")
-  const end = trimmed.lastIndexOf("}")
-  if (start < 0 || end < start) throw new SyntaxError("No JSON object")
-  return JSON.parse(trimmed.slice(start, end + 1)) as unknown
-}
-
 export function reviewProposalText(
   text: string,
   network: PlanningContext,
@@ -99,7 +90,7 @@ export function reviewProposalText(
 ): Review {
   let output: unknown
   try {
-    output = proposalJson(text)
+    output = finalMessageJson(text)
   } catch {
     return { kind: "schema", issues: [{ path: "$", code: "invalid_json" }] }
   }
@@ -133,9 +124,19 @@ function correction(review: Exclude<Review, { kind: "valid" }>): string {
  */
 export class HarnessDispatcher implements DispatchPlanner {
   readonly model: string
+  readonly config: import("@terminus/domain").AgentConfig
   private readonly sessions: DispatchSessionFactory
-  constructor(model: string, sessions: DispatchSessionFactory) {
+  constructor(
+    model: string,
+    sessions: DispatchSessionFactory,
+    execution?: RoleExecution
+  ) {
+    if (execution && execution.model !== model)
+      throw new Error("Dispatcher configuration differs from its frozen model")
     this.model = model
+    this.config = execution
+      ? agentProvenance(execution)
+      : { harness: "opencode@1.18.32", model }
     this.sessions = sessions
   }
 

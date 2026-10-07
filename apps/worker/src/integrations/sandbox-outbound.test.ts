@@ -18,6 +18,133 @@ const network = {
 afterEach(() => vi.restoreAllMocks())
 
 describe("Sandbox outbound capabilities", () => {
+  it.each([
+    {
+      provider: "anthropic" as const,
+      model: "anthropic/claude-haiku-4-5-20251001",
+      apiModel: "claude-haiku-4-5-20251001",
+      endpoint: "v1/messages",
+    },
+    {
+      provider: "openai" as const,
+      model: "openai/gpt-6-luna",
+      apiModel: "gpt-6-luna",
+      endpoint: "responses",
+    },
+  ])(
+    "authorizes exact $provider requests, replaces auth and preserves streams",
+    async ({ provider, model, apiModel, endpoint }) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: first\n\n"))
+          controller.close()
+        },
+      })
+      const send = vi.fn<typeof fetch>(
+        async () =>
+          new Response(stream, {
+            headers: { "content-type": "text/event-stream" },
+          })
+      )
+      const url = `https://gateway.ai.cloudflare.com/v1/account/gateway/${provider}/${endpoint}`
+      const request = (
+        target = url,
+        body: object = { model: apiModel, stream: true }
+      ) =>
+        new Request(target, {
+          method: "POST",
+          headers: {
+            authorization: "untrusted",
+            "x-api-key": "untrusted",
+            "cf-aig-authorization": "untrusted",
+            "cf-aig-byo-key": "alternate-billing",
+            "cf-aig-gateway-id": "other",
+            cookie: "untrusted",
+          },
+          body: JSON.stringify(body),
+        })
+      const grant = { repositories: [], allowModel: true, provider, model }
+      const response = await outboundRequest(request(), env, grant, send)
+      expect(response.body).toBe(stream)
+      expect(await response.text()).toBe("data: first\n\n")
+      const forwarded = send.mock.calls[0]![0] as Request
+      expect(forwarded.headers.get("cf-aig-authorization")).toBe(
+        "Bearer worker-secret"
+      )
+      for (const header of [
+        "authorization",
+        "x-api-key",
+        "cookie",
+        "cf-aig-byo-key",
+        "cf-aig-gateway-id",
+      ])
+        expect(forwarded.headers.has(header)).toBe(false)
+      expect(forwarded.redirect).toBe("manual")
+      expect(await forwarded.json()).toEqual({ model: apiModel, stream: true })
+      for (const target of [
+        url + "?alias=other",
+        url.replace("/gateway/", "/other/"),
+        url.replace(endpoint, "models"),
+        "https://api.openai.com/v1/responses",
+      ])
+        expect(
+          (await outboundRequest(request(target), env, grant, send)).status
+        ).toBe(403)
+      expect(
+        (
+          await outboundRequest(
+            request(url, { model: "different" }),
+            env,
+            grant,
+            send
+          )
+        ).status
+      ).toBe(403)
+      expect(
+        (
+          await outboundRequest(
+            request(url, { model: apiModel, tools: [{ type: "web_search" }] }),
+            env,
+            grant,
+            send
+          )
+        ).status
+      ).toBe(403)
+      expect(send).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it("does not follow redirects or retry upstream errors with another provider", async () => {
+    const request = () =>
+      new Request(
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/openai/responses",
+        { method: "POST", body: JSON.stringify({ model: "gpt-6-luna" }) }
+      )
+    const grant = {
+      repositories: [],
+      allowModel: true,
+      provider: "openai" as const,
+      model: "openai/gpt-6-luna",
+    }
+    const redirect = vi.fn<typeof fetch>(
+      async () =>
+        new Response(null, {
+          status: 307,
+          headers: { location: "https://example.com" },
+        })
+    )
+    expect(
+      (await outboundRequest(request(), env, grant, redirect)).status
+    ).toBe(502)
+    const failure = vi.fn<typeof fetch>(
+      async () => new Response("quota exceeded", { status: 429 })
+    )
+    expect((await outboundRequest(request(), env, grant, failure)).status).toBe(
+      429
+    )
+    expect(failure).toHaveBeenCalledTimes(1)
+    expect(redirect).toHaveBeenCalledTimes(1)
+  })
   it("correlates model transport failures without leaking request contents or credentials", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {})
     const failed = vi.spyOn(console, "error").mockImplementation(() => {})

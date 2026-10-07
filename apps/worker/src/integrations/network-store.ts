@@ -1,4 +1,5 @@
 import type {
+  AgentConfig,
   Junction,
   Crossing,
   StationCheckpoint,
@@ -28,6 +29,9 @@ import {
   rejectApprovedRepair,
 } from "@terminus/domain"
 import {
+  roleExecutions,
+  roleExecutionsSchema,
+  type RoleExecutions,
   junctionSchema,
   technicianRepairSchema,
   trainUnloadPolicySchema,
@@ -161,9 +165,11 @@ interface EventRow {
 /** D1 persistence for network state and its event log. */
 export class NetworkStore {
   readonly #db: D1Database
+  readonly #creationExecutions?: RoleExecutions
 
-  constructor(db: D1Database) {
+  constructor(db: D1Database, creationExecutions?: RoleExecutions) {
     this.#db = db
+    this.#creationExecutions = creationExecutions
   }
 
   async requestSiding(trainId: string, reason: string): Promise<boolean> {
@@ -839,14 +845,14 @@ export class NetworkStore {
 
   async conductorReview(
     input: ReviewInput,
-    model: string
+    model: string | AgentConfig
   ): Promise<ConductorVerdict | null> {
     const row = await this.#db
       .prepare("SELECT input, result FROM conductor_reviews WHERE id = ?")
       .bind(reviewId(input))
       .first<{ input: string; result: string }>()
     if (!row) return null
-    if (row.input !== JSON.stringify({ ...input, model }))
+    if (!sameExecutionInput(row.input, input, model))
       throw new Error(
         "Conductor review identity was reused with different input or configuration"
       )
@@ -856,7 +862,7 @@ export class NetworkStore {
   async recordConductorReview(
     networkId: string,
     input: ReviewInput,
-    model: string,
+    model: string | AgentConfig,
     verdict: ConductorVerdict
   ): Promise<void> {
     const validated = conductorVerdictSchema.parse(verdict)
@@ -868,7 +874,7 @@ export class NetworkStore {
         reviewId(input),
         input.stationId,
         networkId,
-        JSON.stringify({ ...input, model }),
+        executionInput(input, model),
         JSON.stringify(validated),
         new Date().toISOString()
       )
@@ -882,14 +888,14 @@ export class NetworkStore {
 
   async agentCheckpoint(
     input: StationRunInput,
-    model: string
+    model: string | AgentConfig
   ): Promise<{ result: StationRunResult; published: boolean } | null> {
     const row = await this.#db
       .prepare("SELECT input, result, published FROM agent_runs WHERE id = ?")
       .bind(input.runId)
       .first<{ input: string; result: string; published: number }>()
     if (!row) return null
-    if (row.input !== JSON.stringify({ ...input, model }))
+    if (!sameExecutionInput(row.input, input, model))
       throw new Error(
         "Station run identity was reused with different input or configuration"
       )
@@ -901,7 +907,7 @@ export class NetworkStore {
 
   async agentRun(
     input: StationRunInput,
-    model: string
+    model: string | AgentConfig
   ): Promise<StationRunResult | null> {
     const checkpoint = await this.agentCheckpoint(input, model)
     return checkpoint?.published ? checkpoint.result : null
@@ -910,7 +916,7 @@ export class NetworkStore {
   async recordAgentRun(
     networkId: string,
     input: StationRunInput,
-    model: string,
+    model: string | AgentConfig,
     result: StationRunResult
   ): Promise<void> {
     const validated = stationRunResultSchema.parse(result)
@@ -922,7 +928,7 @@ export class NetworkStore {
         input.runId,
         input.stationId,
         networkId,
-        JSON.stringify({ ...input, model }),
+        executionInput(input, model),
         JSON.stringify(validated),
         new Date().toISOString()
       )
@@ -932,7 +938,10 @@ export class NetworkStore {
       throw new Error("Station run already has a different durable result")
   }
 
-  async publishAgentRun(input: StationRunInput, model: string): Promise<void> {
+  async publishAgentRun(
+    input: StationRunInput,
+    model: string | AgentConfig
+  ): Promise<void> {
     const checkpoint = await this.agentCheckpoint(input, model)
     if (!checkpoint)
       throw new Error(
@@ -999,6 +1008,25 @@ export class NetworkStore {
             .bind(scope)
     ).run()
     return this.networkModelSettings(networkId)
+  }
+
+  /** Immutable work configuration, separate from lifecycle state. */
+  async executionConfig(
+    kind: "train" | "dispatch_plan" | "technician_repair" | "junction",
+    id: string
+  ): Promise<RoleExecutions | null> {
+    const row = await this.#db
+      .prepare(
+        "SELECT config FROM execution_configs WHERE kind = ? AND work_id = ?"
+      )
+      .bind(kind, id)
+      .first<{ config: string }>()
+    return row ? roleExecutionsSchema.parse(JSON.parse(row.config)) : null
+  }
+
+  async networkExecutions(networkId: string): Promise<RoleExecutions> {
+    const settings = await this.networkModelSettings(networkId)
+    return roleExecutions(settings.override ?? settings.general)
   }
 
   /** The models a network's roles run with, as of now. */
@@ -1217,8 +1245,48 @@ export class NetworkStore {
     events: DomainEvent[]
   ): Promise<void> {
     const occurredAt = new Date().toISOString()
+    const created = writes.filter(
+      (write) =>
+        (write.kind === "train" ||
+          write.kind === "dispatch_plan" ||
+          write.kind === "technician_repair" ||
+          write.kind === "junction") &&
+        write.version === null
+    )
+    const configurations: D1PreparedStatement[] = []
+    if (created.length) {
+      const config =
+        this.#creationExecutions ?? (await this.networkExecutions(networkId))
+      for (const write of created) {
+        const entity =
+          write.kind === "train"
+            ? write.train
+            : write.kind === "dispatch_plan"
+              ? write.plan
+              : write.kind === "technician_repair"
+                ? write.repair
+                : write.kind === "junction"
+                  ? write.junction
+                  : null
+        if (!entity) continue
+        configurations.push(
+          this.#db
+            .prepare(
+              "INSERT INTO execution_configs (kind, work_id, network_id, config, created_at) VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(
+              write.kind,
+              entity.id,
+              networkId,
+              JSON.stringify(config),
+              occurredAt
+            )
+        )
+      }
+    }
     const statements = [
       ...writes.map((write) => this.#statement(networkId, write, occurredAt)),
+      ...configurations,
       ...events.map((event) =>
         this.#db
           .prepare(
@@ -1683,4 +1751,34 @@ function toIntegration(row: IntegrationRow): IntegrationAttempt {
     ...(row.review ? { review: JSON.parse(row.review) } : {}),
     ...(row.diff !== null && row.diff !== undefined ? { diff: row.diff } : {}),
   })
+}
+
+function executionInput(
+  input: ReviewInput | StationRunInput,
+  execution: string | AgentConfig
+): string {
+  return JSON.stringify(
+    typeof execution === "string"
+      ? { ...input, model: execution }
+      : { ...input, model: execution.model, execution }
+  )
+}
+function sameExecutionInput(
+  saved: string,
+  input: ReviewInput | StationRunInput,
+  execution: string | AgentConfig
+): boolean {
+  if (saved === executionInput(input, execution)) return true
+  if (typeof execution === "string") {
+    const stored = JSON.parse(saved) as { execution?: AgentConfig }
+    return (
+      stored.execution?.harness === "opencode@1.18.32" &&
+      stored.execution.model === execution &&
+      saved === executionInput(input, stored.execution)
+    )
+  }
+  return (
+    execution.harness === "opencode@1.18.32" &&
+    saved === executionInput(input, execution.model)
+  )
 }

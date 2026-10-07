@@ -5,6 +5,11 @@ import {
   effectiveRoleModels,
   modelSettingsSchema,
   roleModels,
+  DEFAULT_ROLE_HARNESSES,
+  roleHarnesses,
+  roleExecutions,
+  modelForHarness,
+  roleExecutionSchema,
 } from "./models"
 
 const custom = {
@@ -16,6 +21,63 @@ const custom = {
 } as const
 
 describe("model settings", () => {
+  it("normalizes legacy settings and all presets to OpenCode without changing models", () => {
+    for (const settings of [
+      { preset: "custom", models: custom },
+      ...Object.keys(MODEL_PRESETS).map((preset) => ({ preset })),
+    ]) {
+      const parsed = modelSettingsSchema.parse(settings)
+      expect(roleHarnesses(parsed)).toEqual(DEFAULT_ROLE_HARNESSES)
+      expect(roleExecutions(parsed).dispatcher).toMatchObject({
+        harness: "opencode",
+        version: "1.18.32",
+        model: roleModels(parsed).dispatcher,
+      })
+    }
+  })
+
+  it("preserves compatible choices and chooses the cheapest compatible model otherwise", () => {
+    expect(modelForHarness("claude-code", custom.dispatcher)).toBe(
+      "anthropic/claude-haiku-4-5-20251001"
+    )
+    expect(modelForHarness("codex", custom.dispatcher)).toBe(
+      "openai/gpt-6-luna"
+    )
+    expect(modelForHarness("claude-code", "anthropic/claude-sonnet-5-5")).toBe(
+      "anthropic/claude-sonnet-5-5"
+    )
+    expect(modelForHarness("opencode", "openai/gpt-6-sol")).toBe(
+      "openai/gpt-6-sol"
+    )
+  })
+
+  it("validates per-role harness compatibility at the settings boundary", () => {
+    const settings = {
+      preset: "custom",
+      models: { ...custom, dispatcher: "openai/gpt-6-luna" },
+      harnesses: { ...DEFAULT_ROLE_HARNESSES, dispatcher: "codex" },
+    }
+    expect(
+      roleExecutions(modelSettingsSchema.parse(settings)).dispatcher
+    ).toMatchObject({
+      harness: "codex",
+      provider: "openai",
+      version: "0.156.1",
+    })
+    expect(
+      modelSettingsSchema.safeParse({ ...settings, models: custom }).success
+    ).toBe(false)
+    expect(
+      roleExecutionSchema.safeParse({
+        harness: "claude-code",
+        model: "openai/gpt-6-sol",
+      }).success
+    ).toBe(false)
+    expect(
+      roleExecutionSchema.safeParse({ harness: "codex", model: "arbitrary" })
+        .success
+    ).toBe(false)
+  })
   it("defaults every network to Extra-light", () => {
     expect(roleModels(DEFAULT_MODEL_SETTINGS)).toEqual({
       dispatcher: "@cf/zai-org/glm-5.3-flash",

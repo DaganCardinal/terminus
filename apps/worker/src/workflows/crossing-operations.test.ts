@@ -13,11 +13,13 @@ import {
   advanceTrain,
   recordStationOutcome,
   recordIntegrationOutcome,
+  reviewStation,
 } from "./train-operations"
 import {
   prepareIntegration,
   promoteIntegration,
   failIntegration,
+  reviewIntegration,
   type IntegrationPorts,
 } from "./integration-operations"
 import { FakeIntegrationValidator } from "../integrations/integration-validator"
@@ -38,6 +40,7 @@ async function acceptNext(p: TestPorts, id: string) {
       const run = p.runs.find((r) => r.runId === move.runId)!
       await recordStationOutcome(p.train, id, await runStation(p, run))
     }
+    if (move.kind === "review") await reviewStation(p.train, id)
     const after = await p.store.train(id)
     if (after!.value.carIds.length > before) return
   }
@@ -405,7 +408,9 @@ it("reviews an already-present checkpoint with an empty diff before completing p
       diff: "",
       targetCommit: input.terminusCommit,
       candidateCommit: input.terminusCommit,
-    })
+    }),
+    // The Conductor verifies the merge candidate with the attempt's checks.
+    { repoId: expect.any(String), validation: input.validation }
   )
   expect(result.ok).toBe(true)
   await recordIntegrationOutcome(w.p.train, w.receiver.train.id, {
@@ -415,6 +420,29 @@ it("reviews an already-present checkpoint with an empty diff before completing p
   expect(
     (await w.p.store.train(w.receiver.train.id))!.value.carIds
   ).toHaveLength(2)
+})
+
+it("records the Crossing review in its own step, so promotion only applies it", async () => {
+  const w = await ready(),
+    ports = integration(w.p)
+  const review = vi.spyOn(w.p.train.conductor, "reviewCrossing")
+  await reviewIntegration(ports, w.id)
+  // Nothing to review before a candidate is merged and validated.
+  expect(review).not.toHaveBeenCalled()
+  await prepareIntegration(ports, w.id)
+  const attempt = (await w.p.store.integration(w.id))!
+  await reviewIntegration(ports, w.id)
+  await reviewIntegration(ports, w.id)
+  expect(review).toHaveBeenCalledOnce()
+  expect(review.mock.calls[0]![1]).toEqual({
+    repoId: attempt.candidate!.repoId,
+    validation: attempt.input.validation,
+  })
+  expect((await w.p.store.integration(w.id))!.review).toMatchObject({
+    verdict: "accept",
+  })
+  expect((await promoteIntegration(ports, w.id)).ok).toBe(true)
+  expect(review).toHaveBeenCalledOnce()
 })
 
 it("reconstructs a legacy Station checkpoint from its accepted Car after the source advances", async () => {

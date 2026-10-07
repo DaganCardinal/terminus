@@ -1,5 +1,9 @@
 import { z } from "zod"
-import { harnessEventSchema, type CommandResult } from "@terminus/protocol"
+import {
+  catalogModel,
+  harnessEventSchema,
+  type CommandResult,
+} from "@terminus/protocol"
 import type { StationRunInput } from "./roles"
 import { stationAgentPrompt } from "./station-agent-prompt"
 
@@ -14,7 +18,7 @@ export interface HarnessAgent {
   /** Role instructions. They replace OpenCode's default system prompt. */
   readonly system: string
   /** Role limits, layered over the rules every harness agent shares. */
-  readonly permission: Readonly<Record<string, unknown>>
+  readonly capability: "planning" | "review" | "implementation" | "repair"
 }
 
 /**
@@ -45,8 +49,26 @@ const readOnly = {
   read: { "*": "allow", "*.env": "deny", "*.env.*": "deny" },
 } as const
 
+/** Translate role capabilities only inside the OpenCode adapter. */
+function opencodePermissions(capability: HarnessAgent["capability"]) {
+  if (capability === "planning") return readOnly
+  if (capability === "review")
+    return {
+      ...readOnly,
+      bash: "allow",
+      external_directory: {
+        "*": "deny",
+        [`${conductorReviewDirectory}/*`]: "allow",
+        "/tmp/*": "allow",
+      },
+    }
+  return {}
+}
+
 /** The provider block: an explicit provider/model avoids harness defaults or model-list fallbacks. */
 function terminusProvider(accountId: string, gatewayId: string, model: string) {
+  const entry = catalogModel(model)
+  const native = entry.provider !== "workers-ai"
   return {
     // Terminus owns candidate history. OpenCode's optional snapshot subprocesses
     // can hang in the Sandbox, preventing the harness from exiting.
@@ -56,19 +78,31 @@ function terminusProvider(accountId: string, gatewayId: string, model: string) {
     small_model: `terminus/${model}`,
     provider: {
       terminus: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "Terminus Workers AI",
+        npm:
+          entry.provider === "anthropic"
+            ? "@ai-sdk/anthropic"
+            : entry.provider === "openai"
+              ? "@ai-sdk/openai"
+              : "@ai-sdk/openai-compatible",
+        name: `Terminus ${entry.provider}`,
         options: {
-          baseURL: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
+          baseURL: native
+            ? `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/${entry.provider}${entry.provider === "anthropic" ? "/v1" : ""}`
+            : `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
           apiKey: "provided-by-worker",
           headers: { "cf-aig-gateway-id": gatewayId },
         },
         models: {
           [model]: {
             name: model,
+            id: entry.apiModel,
             tool_call: true,
-            reasoning: true,
-            interleaved: { field: "reasoning_content" },
+            ...(native
+              ? {}
+              : {
+                  reasoning: true,
+                  interleaved: { field: "reasoning_content" },
+                }),
             limit: { context: 131072, output: 8192 },
           },
         },
@@ -101,7 +135,7 @@ export function opencodeConfig(
         description: agent.description,
         prompt: `${agent.system}\n\n${repositoryContentPolicy}`,
         permission: {
-          ...agent.permission,
+          ...opencodePermissions(agent.capability),
           skill: "deny",
           task: { "*": "deny", explore: "allow" },
         },
@@ -143,7 +177,7 @@ const os = require("node:os")
 const path = require("node:path")
 const [limit, ...names] = process.argv.slice(1)
 const config = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
-for (const dir of [path.join(config, "opencode"), path.join(os.homedir(), ".opencode")])
+for (const dir of [path.join(config, "opencode"), path.join(os.homedir(), ".opencode"), path.join(os.homedir(), ".claude"), path.join(os.homedir(), ".claude.json"), path.join(os.homedir(), ".codex"), path.join(os.homedir(), ".agents"), "/workspace/harness-state"])
   fs.rmSync(dir, { recursive: true, force: true })
 for (const name of names) {
   let stat
@@ -216,7 +250,24 @@ export function dispatcherHarnessAgent(system: string): HarnessAgent {
     name: "dispatcher",
     description: "Terminus Dispatcher planner",
     system,
-    permission: readOnly,
+    capability: "planning",
+  }
+}
+
+/** Where orchestration leaves review material for the Conductor, outside the checkout. */
+export const conductorReviewDirectory = "/workspace/review"
+
+/**
+ * The Conductor runs commands to build and exercise the candidate but has no
+ * editing tools. Outside the checkout it may reach only its review material
+ * and scratch space; orchestration separately verifies tracked files are unchanged.
+ */
+export function conductorHarnessAgent(system: string): HarnessAgent {
+  return {
+    name: "conductor",
+    description: "Terminus Conductor reviewer",
+    system,
+    capability: "review",
   }
 }
 
@@ -225,7 +276,7 @@ export const stationHarnessAgent: HarnessAgent = {
   name: "station",
   description: "Terminus Station implementation agent",
   system: stationAgentPrompt,
-  permission: {},
+  capability: "implementation",
 }
 
 export function stationMessage(input: StationRunInput): string {
@@ -264,6 +315,18 @@ export function opencodeRunCommand(
     "--",
     message,
   ]
+}
+
+/** A role's JSON answer: a bare object, optionally fenced or surrounded by prose. */
+export function finalMessageJson(text: string): unknown {
+  const trimmed = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+  const start = trimmed.indexOf("{")
+  const end = trimmed.lastIndexOf("}")
+  if (start < 0 || end < start) throw new SyntaxError("No JSON object")
+  return JSON.parse(trimmed.slice(start, end + 1)) as unknown
 }
 
 const sessionEventSchema = z.object({ sessionID: z.string().min(1) })

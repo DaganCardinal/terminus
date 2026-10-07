@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
+import { env } from "cloudflare:test"
+import { repairModels } from "../agents/ports"
 import {
   FakeTechnicianRunner,
   FakeRepairConductor,
@@ -62,6 +64,29 @@ async function fixture() {
 }
 
 describe("Technician reconciliation orchestration", () => {
+  it("keeps Technician and repair Conductor settings through validation, review and retries", async () => {
+    const f = await fixture()
+    await f.ports.store.setNetworkModelSettings(
+      f.network.id,
+      { preset: "medium" },
+      f.ports.dispatcher.now()
+    )
+    const repair = await dispatchTechnician(
+      f.technician,
+      f.network.id,
+      f.conflict.id
+    )
+    const original = await repairModels(env, repair.id)
+    await f.ports.store.setNetworkModelSettings(
+      f.network.id,
+      { preset: "light" },
+      f.ports.dispatcher.now()
+    )
+    await f.ready()
+    expect(await repairModels(env, repair.id)).toEqual(original)
+    expect(original.executions!.conductor.model).toBe("@cf/zai-org/glm-5.3")
+    expect(original.executions!.technician.model).toBe("@cf/zai-org/glm-5.3")
+  })
   it("repairs a blocked integration, explicitly approves, promotes, resolves, and unloads without changing Cars", async () => {
     const f = await fixture()
     const before = (await f.ports.store.train(f.train.id))!.value
@@ -129,6 +154,15 @@ describe("Technician reconciliation orchestration", () => {
     await approveTechnician(f.technician, f.network.id, repair.id)
     expect(run).toHaveBeenCalledTimes(1)
     expect(review).toHaveBeenCalledTimes(1)
+    // The Conductor verifies the repair's own candidate repository.
+    const reviewed = (await f.ports.store.repair(repair.id))!.value
+    expect(review.mock.calls[0]![1]).toMatchObject({
+      repoId:
+        "workspaceRepoId" in reviewed.state
+          ? reviewed.state.workspaceRepoId
+          : undefined,
+      validation: expect.any(Array),
+    })
     expect(
       (await f.ports.store.eventsAfter(f.network.id, 0)).filter(
         (row) => row.event.type === "technician.approved"

@@ -72,7 +72,10 @@ describe("harness Dispatcher", () => {
     expect(system).toContain("untrusted context")
     expect(system).toContain("SAME canonical baseline")
     expect(system).toContain("ONLY plain paths")
-    expect(system).toContain("`explore` subagents in parallel")
+    expect(system).toContain("read-only `explore` subagents")
+    expect(system).toContain(
+      "Otherwise use the available read/search tools directly"
+    )
     expect(system).toContain('"validationNames":["test"]')
     expect(message).toContain("Add a footer")
     expect(session.resume).not.toHaveBeenCalled()

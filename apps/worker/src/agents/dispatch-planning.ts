@@ -84,6 +84,7 @@ export async function proposeDispatchPlan(
       goal: request.goal,
       terminusCommit: network.terminusCommit,
       model: ports.planner.model,
+      ...(ports.planner.config ? { agent: ports.planner.config } : {}),
       createdAt: ports.now(),
       ...(request.checkBaseline ? { checkBaseline: true } : {}),
     })

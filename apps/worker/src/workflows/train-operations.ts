@@ -43,7 +43,6 @@ import {
 } from "@terminus/domain"
 import {
   conductorVerdictSchema,
-  type ConductorVerdict,
   type StationOutcome,
   type IntegrationOutcome,
 } from "@terminus/protocol"
@@ -79,6 +78,7 @@ export interface TrainPorts {
 export type TrainMove =
   | { kind: "moved" }
   | { kind: "await_station"; runId: string }
+  | { kind: "review"; stationId: StationId }
   | { kind: "await_wake" }
   | { kind: "await_clear" }
   | { kind: "await_terminus" }
@@ -610,37 +610,13 @@ async function review(
     })
   }
 
-  const input: ReviewInput = {
-    stationId: station.value.id,
-    manifest: station.value.manifest,
-    proposal: state.proposal,
-    trainHead: train.value.headCommit,
-    revisionCount: station.value.revisionCount,
-  }
-  const cached = await ports.store.conductorReview(input, ports.conductor.model)
-  let verdict: ConductorVerdict
-  try {
-    verdict =
-      cached ??
-      conductorVerdictSchema.parse(await ports.conductor.review(input))
-  } catch {
-    await blockTrainAndStation(ports, train, station, [
-      {
-        kind: "review_escalated",
-        detail:
-          "Conductor review failed or returned invalid structured output; review is required before acceptance",
-      },
-    ])
-    return { kind: "moved" }
-  }
-
-  if (!cached)
-    await ports.store.recordConductorReview(
-      train.networkId,
-      input,
-      ports.conductor.model,
-      verdict
-    )
+  // The verdict is recorded by its own long-running step (`reviewStation`);
+  // this step only applies it.
+  const verdict = await ports.store.conductorReview(
+    reviewInput(train, station),
+    ports.conductor.config ?? ports.conductor.model
+  )
+  if (!verdict) return { kind: "review", stationId: station.value.id }
 
   switch (verdict.verdict) {
     case "return":
@@ -655,6 +631,92 @@ async function review(
   }
 }
 
+function reviewInput(
+  train: Loaded<Train>,
+  station: Loaded<Station>
+): ReviewInput {
+  const { state } = station.value
+  if (state.status !== "in_review")
+    throw new Error(`Station ${station.value.id} is not in review`)
+  return {
+    stationId: station.value.id,
+    manifest: station.value.manifest,
+    proposal: state.proposal,
+    trainHead: train.value.headCommit,
+    revisionCount: station.value.revisionCount,
+  }
+}
+
+/** The Train and Station whose review is still awaiting a verdict, if any. */
+async function pendingReview(
+  ports: TrainPorts,
+  trainId: TrainId
+): Promise<{
+  train: Loaded<Train>
+  station: Loaded<Station>
+  input: ReviewInput
+} | null> {
+  const train = await loadTrain(ports, trainId)
+  if (train.value.state.status !== "reviewing") return null
+  const station = await loadStation(ports, train.value.state.at)
+  if (station.value.state.status !== "in_review") return null
+  const input = reviewInput(train, station)
+  if (
+    await ports.store.conductorReview(
+      input,
+      ports.conductor.config ?? ports.conductor.model
+    )
+  )
+    return null
+  return { train, station, input }
+}
+
+/**
+ * Asks the Conductor for a verdict and records it durably, without changing
+ * Train state. A harness Conductor verifies the candidate in a Sandbox, which
+ * takes minutes, so this runs as its own Workflow step. Safe to repeat.
+ */
+export async function reviewStation(
+  ports: TrainPorts,
+  trainId: TrainId
+): Promise<void> {
+  const pending = await pendingReview(ports, trainId)
+  if (!pending) return
+  const { train, station, input } = pending
+  const network = await ports.store.network(train.networkId)
+  if (!network) throw new Error(`Unknown network ${train.networkId}`)
+  if (station.value.state.status !== "in_review")
+    throw new Error(`Station ${station.value.id} is not in review`)
+  const verdict = conductorVerdictSchema.parse(
+    await ports.conductor.review(input, {
+      repoId: station.value.state.workspace.repoId,
+      validation: network.validation,
+    })
+  )
+  await ports.store.recordConductorReview(
+    train.networkId,
+    input,
+    ports.conductor.config ?? ports.conductor.model,
+    verdict
+  )
+}
+
+/** Review is required before acceptance, so a review that cannot finish blocks the Train. */
+export async function failReview(
+  ports: TrainPorts,
+  trainId: TrainId
+): Promise<void> {
+  const pending = await pendingReview(ports, trainId)
+  if (!pending) return
+  await blockTrainAndStation(ports, pending.train, pending.station, [
+    {
+      kind: "review_escalated",
+      detail:
+        "Conductor review failed or returned invalid structured output; review is required before acceptance",
+    },
+  ])
+}
+
 async function accept(
   ports: TrainPorts,
   train: Loaded<Train>,
@@ -665,7 +727,11 @@ async function accept(
     train: train.value,
     station: station.value,
     carId: ports.newId("car"),
-    review: { ...verdict, model: ports.conductor.model },
+    review: {
+      ...verdict,
+      ...ports.conductor.config,
+      model: ports.conductor.model,
+    },
     acceptedAt: ports.now(),
   })
   if (!result.ok && result.error.code === "not_fast_forward") {

@@ -1,4 +1,5 @@
 import {
+  catalogModel,
   modelCallSchema,
   sandboxNetworkSchema,
   type SandboxNetwork,
@@ -16,7 +17,12 @@ export async function outboundRequest(
   send: typeof fetch = fetch
 ): Promise<Response> {
   const url = new URL(request.url)
-  if (url.protocol !== "https:" || (url.port && url.port !== "443"))
+  if (
+    url.protocol !== "https:" ||
+    (url.port && url.port !== "443") ||
+    url.username ||
+    url.password
+  )
     return denied()
 
   for (const grant of network.repositories) {
@@ -43,16 +49,34 @@ export async function outboundRequest(
       (route === "/git-upload-pack" ||
         (grant.scope === "write" && route === "/git-receive-pack"))
     if (!discovery && !rpc) return denied()
-    const headers = new Headers(request.headers)
+    const headers = cleanHeaders(request.headers)
     headers.set("authorization", `Bearer ${grant.token}`)
     return send(new Request(request, { headers, redirect: "manual" }))
   }
 
-  const modelPath = `/client/v4/accounts/${env.AI_GATEWAY_ACCOUNT_ID}/ai/v1/chat/completions`
+  const provider = network.provider ?? "workers-ai"
+  let apiModel = network.model
+  if (provider !== "workers-ai") {
+    try {
+      const entry = catalogModel(network.model ?? "")
+      if (entry.provider !== provider) return denied()
+      apiModel = entry.apiModel
+    } catch {
+      return denied()
+    }
+  }
+  const modelHost =
+    provider === "workers-ai"
+      ? "api.cloudflare.com"
+      : "gateway.ai.cloudflare.com"
+  const modelPath =
+    provider === "workers-ai"
+      ? `/client/v4/accounts/${env.AI_GATEWAY_ACCOUNT_ID}/ai/v1/chat/completions`
+      : `/v1/${env.AI_GATEWAY_ACCOUNT_ID}/${env.AI_GATEWAY_ID}/${provider}/${provider === "anthropic" ? "v1/messages" : "responses"}`
   if (
     network.allowModel &&
     network.model &&
-    url.hostname === "api.cloudflare.com" &&
+    url.hostname === modelHost &&
     url.pathname === modelPath &&
     request.method === "POST" &&
     !url.search
@@ -65,38 +89,61 @@ export async function outboundRequest(
     )
     if (
       !payload.success ||
-      payload.data.model !== network.model ||
+      payload.data.model !== apiModel ||
       !env.AI_GATEWAY_TOKEN
     )
       return denied()
-    const headers = new Headers(request.headers)
-    headers.delete("x-api-key")
-    headers.set("authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
-    headers.delete("cf-aig-authorization")
-    headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID)
-    headers.delete("content-length")
+    // Hosted tools would run outside our Sandbox role restrictions.
+    const body = payload.data
+    if (
+      Array.isArray(body.tools) &&
+      body.tools.some((tool: unknown) => {
+        if (!tool || typeof tool !== "object") return true
+        const type = "type" in tool ? tool.type : undefined
+        return provider === "openai"
+          ? !["function", "custom"].includes(String(type))
+          : provider === "anthropic" && type !== undefined && type !== "custom"
+      })
+    )
+      return denied()
+    const headers = cleanHeaders(request.headers)
+    if (provider === "workers-ai") {
+      headers.set("authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
+      headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID)
+    } else {
+      headers.set("cf-aig-authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
+    }
     const started = Date.now()
-    // Correlate upstream errors without logging credentials, prompts, or bodies.
     const requestId = crypto.randomUUID()
-    console.info("Station model request started", { requestId })
+    console.info("Station model request started", { requestId, provider })
     try {
       const response = await send(
         new Request(request, {
           headers,
-          body: JSON.stringify({ ...payload.data, reasoning_effort: "low" }),
+          body: JSON.stringify(
+            provider === "workers-ai"
+              ? { ...body, reasoning_effort: "low" }
+              : body
+          ),
           redirect: "manual",
         })
       )
       console.info("Station model response received", {
         requestId,
+        provider,
         status: response.status,
         durationMs: Date.now() - started,
         ray: response.headers.get("cf-ray"),
       })
+      if (response.status >= 300 && response.status < 400)
+        return new Response("Model redirects are not permitted", {
+          status: 502,
+        })
       return response
     } catch (error) {
       console.error("Station model request failed", {
         requestId,
+        provider,
         durationMs: Date.now() - started,
         reference:
           error instanceof Error
@@ -114,7 +161,7 @@ export async function outboundRequest(
     url.hostname === "registry.npmjs.org" &&
     ["GET", "HEAD"].includes(request.method)
   ) {
-    const headers = new Headers(request.headers)
+    const headers = cleanHeaders(request.headers)
     headers.delete("authorization")
     return send(new Request(request, { headers, redirect: "manual" }))
   }
@@ -135,4 +182,24 @@ function denied(): Response {
   return new Response("Destination is not available to this Sandbox", {
     status: 403,
   })
+}
+
+/** Discard caller-controlled credentials, billing, routing and gateway overrides. */
+function cleanHeaders(input: Headers): Headers {
+  const headers = new Headers(input)
+  for (const name of [...headers.keys()]) {
+    if (
+      name.startsWith("cf-aig-") ||
+      [
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "api-key",
+        "cookie",
+        "content-length",
+      ].includes(name)
+    )
+      headers.delete(name)
+  }
+  return headers
 }

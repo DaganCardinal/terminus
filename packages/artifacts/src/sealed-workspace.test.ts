@@ -13,9 +13,10 @@ import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import type { GitWorkspace, RepositoryAccess } from "./git"
 import {
-  checkoutPlanningBaseline,
-  sealPlanningWorkspace,
-} from "./planning-workspace"
+  changedSinceSeal,
+  checkoutSealedWorkspace,
+  sealWorkspace,
+} from "./sealed-workspace"
 
 const execute = promisify(execFile)
 const temporary: string[] = []
@@ -89,7 +90,7 @@ async function fixture() {
   return { commit, workspace, access, repo: join(root, "repo") }
 }
 
-describe("planning workspace", () => {
+describe("sealed workspace", () => {
   it("checks out the exact commit, then removes committed secrets and history before a model reads it", async () => {
     const f = await fixture()
     const planned = await f.commit({
@@ -99,9 +100,9 @@ describe("planning workspace", () => {
       "config/credentials.json": "{}",
     })
     await f.commit({ "README.md": "newer" })
-    await checkoutPlanningBaseline(f.workspace, f.access, planned)
+    await checkoutSealedWorkspace(f.workspace, f.access, planned)
     expect(await readFile(join(f.repo, "README.md"), "utf8")).toBe("planned")
-    await sealPlanningWorkspace(f.workspace)
+    await sealWorkspace(f.workspace)
     const files = await readdir(f.repo, { recursive: true })
     expect(files).toContain("src/App.tsx")
     expect(files).not.toContain(".env")
@@ -109,11 +110,35 @@ describe("planning workspace", () => {
     expect(files.some((path) => path.startsWith(".git"))).toBe(false)
   })
 
+  it("reports tracked files a role changed after sealing, ignoring untracked output", async () => {
+    const f = await fixture()
+    const commit = await f.commit({
+      "src/App.tsx": "export {}",
+      "src/keep.ts": "export const keep = 1",
+      ".env": "SECRET=fixture-secret",
+    })
+    await checkoutSealedWorkspace(f.workspace, f.access, commit)
+    await sealWorkspace(f.workspace, { fingerprint: true })
+    expect(await readdir(f.repo)).not.toContain(".git")
+    expect(await changedSinceSeal(f.workspace)).toEqual({ count: 0, paths: [] })
+
+    await mkdir(join(f.repo, "dist"))
+    await writeFile(join(f.repo, "dist/index.js"), "built")
+    expect(await changedSinceSeal(f.workspace)).toEqual({ count: 0, paths: [] })
+
+    await writeFile(join(f.repo, "src/App.tsx"), "export const fixed = 1")
+    await rm(join(f.repo, "src/keep.ts"))
+    expect(await changedSinceSeal(f.workspace)).toEqual({
+      count: 2,
+      paths: ["src/App.tsx", "src/keep.ts"],
+    })
+  })
+
   it("refuses an abbreviated commit", async () => {
     const f = await fixture()
     await f.commit({ "README.md": "x" })
     await expect(
-      checkoutPlanningBaseline(f.workspace, f.access, "abc123")
+      checkoutSealedWorkspace(f.workspace, f.access, "abc123")
     ).rejects.toThrow("full Git commit")
   })
 })

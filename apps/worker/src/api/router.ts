@@ -1,5 +1,9 @@
 import { layJunction } from "../agents/junctions"
 import {
+  alternativeHarnessesEnabled,
+  unavailableHarnessSettings,
+} from "../integrations/harness-availability"
+import {
   dispatchJunctionRepair,
   approveJunctionRepair,
 } from "../agents/junction-repairs"
@@ -68,11 +72,12 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     new URLPattern({ pathname: "/api/networks/:networkId/demo/junctions" }),
     async (request, env, { networkId }) => {
       const query = new URL(request.url).searchParams
+      const models = await networkModels(env, networkId!)
       return json(
         await layJunctionDemo(
-          junctionDispatchPorts(env),
+          junctionDispatchPorts(env, models),
           networkId!,
-          (await networkModels(env, networkId!)).conductor,
+          models.conductor,
           {
             direct: query.get("direct") === "true",
             crossing: query.get("crossing") === "true",
@@ -85,16 +90,18 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
   [
     "POST",
     new URLPattern({ pathname: "/api/networks/:networkId/junctions" }),
-    async (request, env, { networkId }) =>
-      json(
+    async (request, env, { networkId }) => {
+      const models = await networkModels(env, networkId!)
+      return json(
         await layJunction(
-          junctionDispatchPorts(env),
+          junctionDispatchPorts(env, models),
           networkId!,
           await parse(request, createJunctionRequestSchema),
-          (await networkModels(env, networkId!)).conductor
+          models.conductor
         ),
         201
-      ),
+      )
+    },
   ],
   [
     "GET",
@@ -346,15 +353,26 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     "GET",
     new URLPattern({ pathname: "/api/settings/models" }),
     async (_, env) =>
-      json(await dispatcherPorts(env).store.generalModelSettings()),
+      json({
+        ...(await dispatcherPorts(env).store.generalModelSettings()),
+        alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+      }),
   ],
   [
     "PUT",
     new URLPattern({ pathname: "/api/settings/models" }),
     async (request, env) => {
       const settings = await parse(request, modelSettingsSchema)
+      if (unavailableHarnessSettings(env, settings))
+        throw new DispatchError(
+          409,
+          "Alternative harnesses and providers require live Sandbox verification before enablement"
+        )
       const { store, now } = dispatcherPorts(env)
-      return json(await store.setGeneralModelSettings(settings, now()))
+      return json({
+        ...(await store.setGeneralModelSettings(settings, now())),
+        alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+      })
     },
   ],
   [
@@ -363,7 +381,10 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     async (_, env, { networkId }) => {
       const { store } = dispatcherPorts(env)
       if (!(await store.network(networkId!))) return notFound("Unknown network")
-      return json(await store.networkModelSettings(networkId!))
+      return json({
+        ...(await store.networkModelSettings(networkId!)),
+        alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+      })
     },
   ],
   [
@@ -376,9 +397,15 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       )
       const { store, now } = dispatcherPorts(env)
       if (!(await store.network(networkId!))) return notFound("Unknown network")
-      return json(
-        await store.setNetworkModelSettings(networkId!, override, now())
-      )
+      if (unavailableHarnessSettings(env, override))
+        throw new DispatchError(
+          409,
+          "Alternative harnesses and providers require live Sandbox verification before enablement"
+        )
+      return json({
+        ...(await store.setNetworkModelSettings(networkId!, override, now())),
+        alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+      })
     },
   ],
   [

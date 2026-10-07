@@ -1,5 +1,8 @@
+import { catalogModel, type RoleExecution } from "@terminus/protocol"
 import {
-  harnessOutcome,
+  harnessResult,
+  executionConfig,
+  agentProvenance,
   stationHarnessAgent,
   stationMessage,
   type StationRunner,
@@ -19,7 +22,7 @@ import {
 } from "@terminus/protocol"
 import type { NetworkStore } from "./network-store"
 import { gatewayConfig } from "./execution-config"
-import { prepareHarness } from "./harness"
+import { prepareHarness, runPreparedHarness } from "./harness"
 
 const repoDirectory = stationDirectory
 
@@ -42,29 +45,26 @@ export class SandboxStationRunner implements StationRunner {
   readonly #store: NetworkStore
   readonly #sandbox: (runId: string) => StationSandbox
 
+  private readonly execution: RoleExecution
   constructor(
     env: Env,
     model: string,
     repositories: Pick<ArtifactsRepositoryHost, "access" | "revoke">,
     store: NetworkStore,
-    sandbox?: (runId: string) => StationSandbox
+    sandbox?: (runId: string) => StationSandbox,
+    execution: RoleExecution = executionConfig(model)
   ) {
+    this.execution = execution
     this.#env = env
     this.#repositories = repositories
     this.#store = store
     this.#sandbox =
       sandbox ?? ((runId) => env.SANDBOX.getByName(`station-${runId}`))
-    this.config = {
-      harness: "opencode@1.18.32",
-      model,
-    }
+    this.config = agentProvenance(this.execution)
   }
 
   async run(input: StationRunInput): Promise<StationRunResult> {
-    const checkpoint = await this.#store.agentCheckpoint(
-      input,
-      this.config.model
-    )
+    const checkpoint = await this.#store.agentCheckpoint(input, this.config)
     if (checkpoint?.published) return checkpoint.result
     const config = gatewayConfig(this.#env, this.config.model)
     const validation = validationCommandsSchema.parse(input.validation)
@@ -129,6 +129,9 @@ export class SandboxStationRunner implements StationRunner {
         ],
         allowModel: true,
         model: this.config.model,
+        ...(catalogModel(this.config.model).provider === "workers-ai"
+          ? {}
+          : { provider: catalogModel(this.config.model).provider }),
       })
       // Each run starts from durable Station history, including prior revisions.
       const repository = new StationGit(
@@ -152,7 +155,7 @@ export class SandboxStationRunner implements StationRunner {
             "Recovered candidate differs from its evidence checkpoint"
           )
         await repository.publish(proposal.headCommit)
-        await this.#store.publishAgentRun(input, this.config.model)
+        await this.#store.publishAgentRun(input, this.config)
         saved = true
         return checkpoint.result
       }
@@ -174,15 +177,18 @@ export class SandboxStationRunner implements StationRunner {
       phase = "preflight"
       const prepared = await prepareHarness(this.#env, sandbox, workspace, {
         model: config.model,
+        execution: this.execution,
         agent: stationHarnessAgent,
         directory: repoDirectory,
         assignment: stationMessage(input),
       })
       phase = "harness"
-      const harness = commandResultSchema.parse(
-        await workspace.run(prepared.command, repoDirectory, prepared.env)
+      const harness = await runPreparedHarness(
+        { ...sandbox, run: workspace.run.bind(workspace) },
+        prepared,
+        repoDirectory
       )
-      const outcome = harnessOutcome(harness)
+      const outcome = harnessResult(prepared.harness, harness)
       if (outcome.error) throw new Error(outcome.error)
 
       phase = "candidate"
@@ -226,12 +232,12 @@ export class SandboxStationRunner implements StationRunner {
       await this.#store.recordAgentRun(
         station.networkId,
         input,
-        this.config.model,
+        this.config,
         result
       )
       phase = "publish"
       await repository.publish(headCommit)
-      await this.#store.publishAgentRun(input, this.config.model)
+      await this.#store.publishAgentRun(input, this.config)
       saved = true
       return result
     } finally {

@@ -23,7 +23,9 @@ import {
 } from "../src/workflows/station-operations"
 import {
   advanceTrain,
+  failReview,
   recordStationOutcome,
+  reviewStation,
   type StationRunParams,
   type TrainMove,
   type TrainPorts,
@@ -110,6 +112,12 @@ export async function drive(
       return { kind: "await_terminus" }
     const move = await advanceTrain(ports.train, trainId)
     if (move.kind === "moved") continue
+    if (move.kind === "review") {
+      await reviewStation(ports.train, trainId).catch(() =>
+        failReview(ports.train, trainId)
+      )
+      continue
+    }
     if (move.kind !== "await_station") return move
 
     const run = ports.runs.find((started) => started.runId === move.runId)

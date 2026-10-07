@@ -36,14 +36,16 @@ function fixture(exitCode = 0) {
     write: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
     run: vi.fn(async (command: string[]) =>
-      command[0] === "node"
-        ? { exitCode: 0, stdout: "", stderr: "" }
-        : {
-            exitCode,
-            stdout:
-              '{"type":"text","part":{"text":"Tests passed according to the agent"}}',
-            stderr: "",
-          }
+      command[1] === "--version"
+        ? { exitCode: 0, stdout: "1.18.32", stderr: "" }
+        : command[0] === "node" && command[1] === "-e"
+          ? { exitCode: 0, stdout: "", stderr: "" }
+          : {
+              exitCode: command[0] === "bash" ? exitCode : 0,
+              stdout:
+                '{"type":"text","part":{"text":"Tests passed according to the agent"}}',
+              stderr: "",
+            }
     ),
   }
   const repositories = {
@@ -112,7 +114,8 @@ describe("Sandbox Technician capabilities and completion", () => {
         OPENCODE_CONFIG: "/workspace/opencode.json",
         OPENCODE_DISABLE_PROJECT_CONFIG: "1",
         OPENCODE_DISABLE_CLAUDE_CODE: "1",
-      })
+      }),
+      undefined
     )
     const config = JSON.parse(
       vi
