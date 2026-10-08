@@ -94,7 +94,10 @@ describe("Station execution boundary", () => {
       if (args[0][0] === "bash" && args[0].includes("opencode")) throw error
       return run(...args)
     })
-    await expect(f.runner.run(f.input)).rejects.toBe(error)
+    await expect(f.runner.run(f.input)).rejects.toMatchObject({
+      message: `Station run failed during harness: ${error.message}`,
+      cause: error,
+    })
     expect(failed).toHaveBeenCalledWith(
       "Station command failed",
       expect.objectContaining({

@@ -33,7 +33,7 @@ Keep the role vars on `settings` and the app's model preset on **Extra-light** f
 
 ## 2. Configure secrets and apply migrations
 
-Create account-scoped Cloudflare API tokens with the permissions documented in the README:
+Create account-scoped Cloudflare API tokens with the permissions documented in [Live setup](live-setup.md#configure-and-run):
 
 - `ARTIFACTS_API_TOKEN`: Artifacts Read and Edit.
 - `AI_GATEWAY_TOKEN`: Workers AI Read (AI Gateway permissions alone are insufficient).

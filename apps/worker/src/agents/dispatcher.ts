@@ -84,7 +84,8 @@ function projectExists(network: NetworkSummary): DispatchError {
   )
 }
 
-/** The deterministic Dispatcher forwards exhausted Station retries to the user.
+/** The deterministic Dispatcher forwards exhausted Station retries, and the
+ * Engineer stopping a revision loop early, to the user.
  * These events join the Train's atomic state batch, even with no UI connected. */
 export function stationRetryUserAlert(
   train: Train,
@@ -93,7 +94,9 @@ export function stationRetryUserAlert(
   if (train.state.status !== "blocked" || station.state.status !== "blocked")
     return []
   const issues = train.state.issues.filter(
-    (issue) => issue.kind === "station_retries_exhausted"
+    (issue) =>
+      issue.kind === "station_retries_exhausted" ||
+      issue.kind === "engineer_escalated"
   )
   return issues.length
     ? [

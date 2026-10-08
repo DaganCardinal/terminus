@@ -214,6 +214,14 @@ export type DomainEvent =
     }
   | { type: "station.blocked"; stationId: StationId; issues: Issue[] }
   | { type: "station.reset"; stationId: StationId }
+  | {
+      type: "station.run_retried"
+      stationId: StationId
+      trainId: TrainId
+      issues: Issue[]
+      /** Whether the Engineer waits before starting the run again. */
+      backoff: boolean
+    }
   | { type: "station.cancelled"; stationId: StationId; reason: string }
   | { type: "station.removal_requested"; stationId: StationId; reason: string }
   | { type: "station.removal_refused"; stationId: StationId; reason: string }

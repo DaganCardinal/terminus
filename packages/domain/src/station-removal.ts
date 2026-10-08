@@ -80,6 +80,7 @@ export function removeStation(
         [
           "station_failed",
           "station_retries_exhausted",
+          "engineer_escalated",
           "review_escalated",
           "required_checks_failed",
         ].includes(issue.kind)

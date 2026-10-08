@@ -20,6 +20,7 @@ import {
   recordStationOutcome,
   recordIntegrationOutcome,
   reviewStation,
+  STATION_RETRY_BACKOFF,
 } from "./train-operations"
 
 const stepConfig: WorkflowStepConfig = {
@@ -64,9 +65,17 @@ export class TrainWorkflow extends WorkflowEntrypoint<
           )
           if (payload !== null) {
             const outcome = stationOutcomeSchema.parse(payload)
-            await step.do(`record ${move.runId} (${leg})`, stepConfig, () =>
-              recordStationOutcome(ports, trainId, outcome)
+            const recorded = await step.do(
+              `record ${move.runId} (${leg})`,
+              stepConfig,
+              () => recordStationOutcome(ports, trainId, outcome)
             )
+            // Steps cached before Engineer retries returned nothing.
+            if (recorded?.backoff)
+              await step.sleep(
+                `back off ${move.runId} (${leg})`,
+                STATION_RETRY_BACKOFF
+              )
           }
           break
         }

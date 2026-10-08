@@ -6,6 +6,7 @@ import {
   depart,
   markReadyForPickup,
   recordWorkspace,
+  retryStationRun,
   returnToStation,
   startReview,
 } from "./journey"
@@ -377,5 +378,65 @@ describe("returnToStation", () => {
       unwrap(returnToStation({ ...world, feedback, maxRetries: 4 })).station
         .retryCount
     ).toBe(4)
+  })
+})
+
+describe("retryStationRun", () => {
+  const issues = [
+    {
+      kind: "station_failed" as const,
+      detail: "Station run failed during harness",
+    },
+  ]
+  it("starts a failed run again, using up one automatic retry", () => {
+    const world = active()
+    const result = retryStationRun({ ...world, issues, backoff: true })
+    const station = unwrap(result)
+    expect(station.state).toEqual(world.station.state)
+    expect(station.retryCount).toBe(1)
+    expect(station.runRetries).toBe(1)
+    expect(result.ok && result.events).toEqual([
+      {
+        type: "station.run_retried",
+        stationId: "s1",
+        trainId: world.train.id,
+        issues,
+        backoff: true,
+      },
+    ])
+  })
+  it("retries revisions and runs that failed before starting", () => {
+    expect(
+      unwrap(retryStationRun({ ...revising(), issues, backoff: false }))
+        .runRetries
+    ).toBe(1)
+    expect(
+      unwrap(retryStationRun({ ...inTransit(), issues, backoff: false }))
+        .retryCount
+    ).toBe(1)
+  })
+  it("shares the hard retry cap with Conductor returns", () => {
+    const world = active()
+    const result = retryStationRun({
+      ...withStation(world, { ...world.station, retryCount: 3 }),
+      issues,
+      backoff: false,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toMatchObject({ code: "gate_closed" })
+      expect(
+        result.error.code === "gate_closed" && result.error.decision
+      ).toMatchObject({
+        kind: "block",
+        issues: [{ kind: "station_retries_exhausted" }],
+      })
+    }
+  })
+  it("rejects a Station with no run in progress", () => {
+    expectRejected(
+      retryStationRun({ ...atDepot(), issues, backoff: false }),
+      "invalid_state"
+    )
   })
 })

@@ -1,4 +1,8 @@
-import type { AgentConfig } from "@terminus/domain"
+import type {
+  AgentConfig,
+  RevisionAction,
+  StationFailureAction,
+} from "@terminus/domain"
 import type { ConductorVerdict } from "@terminus/protocol"
 import type {
   Conductor,
@@ -7,6 +11,7 @@ import type {
   StationRunner,
   StationRunResult,
 } from "./roles"
+import type { EngineerAdvice, EngineerAdvisor } from "./engineer"
 
 export interface FakeStationRunnerOptions {
   /** Awaited before each run returns, so the network visibly moves. */
@@ -50,6 +55,35 @@ export class FakeStationRunner implements StationRunner {
           : `Implemented: ${input.manifest.goal}`,
       },
     }
+  }
+}
+
+export interface FakeEngineerOptions {
+  stationFailure?: StationFailureAction
+  revision?: RevisionAction
+  notifyDispatcher?: boolean
+}
+
+/**
+ * Advises with full confidence. By default it keeps the deterministic
+ * behavior: a failed run blocks, returned work is revised, nothing is reported.
+ */
+export class FakeEngineer implements EngineerAdvisor {
+  readonly model = "fake"
+  readonly #options: FakeEngineerOptions
+
+  constructor(options: FakeEngineerOptions = {}) {
+    this.#options = options
+  }
+
+  async stationFailure(): Promise<EngineerAdvice<StationFailureAction>> {
+    return { value: this.#options.stationFailure ?? "escalate", confidence: 1 }
+  }
+  async revision(): Promise<EngineerAdvice<RevisionAction>> {
+    return { value: this.#options.revision ?? "revise", confidence: 1 }
+  }
+  async notifyDispatcher(): Promise<EngineerAdvice<boolean>> {
+    return { value: this.#options.notifyDispatcher ?? false, confidence: 1 }
   }
 }
 

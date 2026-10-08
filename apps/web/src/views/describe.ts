@@ -158,6 +158,8 @@ export function describeEvent(
       return `${name(event.stationId)} blocked: ${describeIssues(event.issues)}`
     case "station.reset":
       return `${name(event.stationId)} reset to run again`
+    case "station.run_retried":
+      return `Engineer ${event.backoff ? "will retry" : "retrying"} ${name(event.stationId)}${event.backoff ? " after a pause" : ""}: ${describeIssues(event.issues)}`
     case "station.cancelled":
       return `${name(event.stationId)} cancelled: ${event.reason}`
     case "station.removal_requested":

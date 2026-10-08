@@ -1,6 +1,11 @@
 import { advanceJunctionTrain } from "./junction-train-operations"
 import { advanceCrossing, recordCrossingOutcome } from "./crossing-operations"
-import type { Conductor, ReviewInput } from "@terminus/agent-runtime"
+import {
+  stationBrief,
+  type Conductor,
+  type EngineerAdvisor,
+  type ReviewInput,
+} from "@terminus/agent-runtime"
 import { RepositoryMovedError, type RepositoryHost } from "@terminus/artifacts"
 import {
   sendToSiding,
@@ -19,6 +24,7 @@ import {
   clearTrainBlock,
   depart,
   evaluateDeparture,
+  evaluateStationRetry,
   evaluateTerminusEntry,
   unmetRequiredChecks,
   holdTrain,
@@ -27,6 +33,7 @@ import {
   releaseTrain,
   resetStation,
   removeStation,
+  retryStationRun,
   returnToStation,
   startReview,
   type DepartureContext,
@@ -63,6 +70,8 @@ export interface TrainPorts {
   store: NetworkStore
   repositories: RepositoryHost
   conductor: Conductor
+  /** Advises on choices the Engineer's hard gates leave open. */
+  engineer: EngineerAdvisor
   stationMaxRetries: number
   /** Starts a Station run. Starting a run that already exists does nothing. */
   startStationRun(params: StationRunParams): Promise<void>
@@ -87,10 +96,20 @@ export type TrainMove =
 
 /**
  * Identifies one run of a Station: each signal starts a fresh workspace, and
- * each revision is another run on the same workspace.
+ * each revision is another run on the same workspace. A failed run the
+ * Engineer retries is another run too.
  */
 export function stationRunId(station: Station, signalCount: number): string {
-  return `${station.id}-s${signalCount}-r${station.revisionCount}`
+  const retries = station.runRetries ? `-f${station.runRetries}` : ""
+  return `${station.id}-s${signalCount}-r${station.revisionCount}${retries}`
+}
+
+/** How long the Train waits before rerunning a Station the Engineer paused. */
+export const STATION_RETRY_BACKOFF = "5 minutes"
+
+/** Whether the Train Workflow waits before its next move. */
+export interface RecordedStationOutcome {
+  backoff: boolean
 }
 
 /**
@@ -389,20 +408,19 @@ export async function recordStationOutcome(
   ports: TrainPorts,
   trainId: TrainId,
   outcome: StationOutcome
-): Promise<void> {
+): Promise<RecordedStationOutcome> {
   const train = await loadTrain(ports, trainId)
   const station = await loadStation(ports, outcome.stationId)
   const { status } = station.value.state
   if (status !== "signaled" && status !== "active" && status !== "revising") {
-    return
+    return { backoff: false }
   }
   const signals = await ports.store.signalCount(station.value.id)
-  if (stationRunId(station.value, signals) !== outcome.runId) return
+  if (stationRunId(station.value, signals) !== outcome.runId)
+    return { backoff: false }
 
-  if (!outcome.result.ok) {
-    await blockTrainAndStation(ports, train, station, outcome.result.issues)
-    return
-  }
+  if (!outcome.result.ok)
+    return retryOrBlock(ports, train, station, outcome.result.issues)
   const ready = applied(
     markReadyForPickup({
       train: train.value,
@@ -418,6 +436,47 @@ export async function recordStationOutcome(
     ],
     ready.events
   )
+  return { backoff: false }
+}
+
+/**
+ * A failed run blocks the Train unless its retry allowance remains and the
+ * Engineer's decision model is confident the failure won't recur.
+ */
+async function retryOrBlock(
+  ports: TrainPorts,
+  train: Loaded<Train>,
+  station: Loaded<Station>,
+  issues: Issue[]
+): Promise<RecordedStationOutcome> {
+  const advice =
+    evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
+    "clear"
+      ? await ports.engineer.stationFailure({
+          station: stationBrief(station.value, ports.stationMaxRetries),
+          issues,
+        })
+      : null
+  if (!advice || advice.value === "escalate") {
+    await blockTrainAndStation(ports, train, station, issues)
+    return { backoff: false }
+  }
+  const backoff = advice.value === "wait"
+  const retried = applied(
+    retryStationRun({
+      train: train.value,
+      station: station.value,
+      issues,
+      backoff,
+      maxRetries: ports.stationMaxRetries,
+    })
+  )
+  await ports.store.commit(
+    train.networkId,
+    [stationWrite(station, retried.value)],
+    retried.events
+  )
+  return { backoff }
 }
 
 /**
@@ -787,6 +846,32 @@ async function returnWork(
   station: Loaded<Station>,
   feedback: ReviewFeedback
 ): Promise<TrainMove> {
+  // Within the allowance, the Engineer may stop a revision loop early.
+  if (
+    evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
+    "clear"
+  ) {
+    const advice = await ports.engineer.revision({
+      station: stationBrief(station.value, ports.stationMaxRetries),
+      feedback,
+      previousFeedback: station.value.lastReview?.feedback ?? null,
+    })
+    if (advice.value === "escalate") {
+      await blockTrainAndStation(
+        ports,
+        train,
+        station,
+        [
+          {
+            kind: "engineer_escalated",
+            detail: `The Engineer judged another automatic revision of Station ${station.value.name} unlikely to succeed${advice.confidence === null ? "" : ` (${Math.round(advice.confidence * 100)}% confident)`}. User intervention is required.`,
+          },
+        ],
+        feedback
+      )
+      return { kind: "moved" }
+    }
+  }
   const result = returnToStation({
     train: train.value,
     station: station.value,

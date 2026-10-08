@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest"
 import type { Conflict } from "./conflict"
 import {
+  confidentChoice,
+  REVISION_ACTIONS,
+  STATION_FAILURE_ACTIONS,
   evaluateDeparture,
   evaluateTerminusEntry,
   evaluateStationRetry,
+  shouldNotifyDispatcher,
   signalFor,
 } from "./engineer"
 import type { Hold } from "./hold"
@@ -274,5 +278,52 @@ describe("signalFor", () => {
     expect(
       signalFor(withState({ status: "unloaded", mergeCommit: "m" }))
     ).toBeNull()
+  })
+})
+
+describe("confidentChoice", () => {
+  const failure = (probabilities: Record<string, number> | null) =>
+    confidentChoice(probabilities, STATION_FAILURE_ACTIONS, "escalate")
+  it("acts on a confident answer", () => {
+    expect(failure({ retry: 0.8, wait: 0.15, escalate: 0.05 })).toBe("retry")
+    expect(failure({ retry: 0.1, wait: 0.7, escalate: 0.2 })).toBe("wait")
+  })
+  it("keeps the deterministic default when no option clears the threshold", () => {
+    expect(failure({ retry: 0.5, wait: 0.4, escalate: 0.1 })).toBe("escalate")
+    expect(
+      confidentChoice(
+        { revise: 0.4, escalate: 0.6 },
+        REVISION_ACTIONS,
+        "revise"
+      )
+    ).toBe("revise")
+  })
+  it("keeps the default without an answer", () => {
+    expect(failure(null)).toBe("escalate")
+    expect(confidentChoice({}, REVISION_ACTIONS, "revise")).toBe("revise")
+  })
+  it("honors a custom threshold", () => {
+    expect(
+      confidentChoice(
+        { revise: 0.5, escalate: 0.5 },
+        REVISION_ACTIONS,
+        "escalate",
+        0.5
+      )
+    ).toBe("revise")
+  })
+})
+
+describe("shouldNotifyDispatcher", () => {
+  it("stays quiet only on a confident no", () => {
+    expect(shouldNotifyDispatcher(0.1)).toBe(false)
+    expect(shouldNotifyDispatcher(0.3)).toBe(false)
+  })
+  it("notifies on a likely yes or on doubt", () => {
+    expect(shouldNotifyDispatcher(0.9)).toBe(true)
+    expect(shouldNotifyDispatcher(0.5)).toBe(true)
+  })
+  it("notifies without an answer", () => {
+    expect(shouldNotifyDispatcher(null)).toBe(true)
   })
 })

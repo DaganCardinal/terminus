@@ -261,14 +261,19 @@ export function StationDetails({
         <ManifestView manifest={manifest} name={name} />
       </Section>
 
-      {(station.revisionCount > 0 || station.lastReview) && (
+      {(station.revisionCount > 0 ||
+        station.lastReview ||
+        station.runRetries) && (
         <Section title="Revisions">
           <p>
             {station.revisionCount === 0
               ? "No revisions requested."
               : `The Conductor asked for ${station.revisionCount} ${station.revisionCount === 1 ? "revision" : "revisions"}.`}
+            {station.runRetries
+              ? ` The Engineer restarted ${station.runRetries} failed ${station.runRetries === 1 ? "run" : "runs"}.`
+              : ""}
             {station.retryCount
-              ? ` ${station.retryCount} since the last restart.`
+              ? ` ${station.retryCount} automatic ${station.retryCount === 1 ? "retry" : "retries"} used since the last restart.`
               : ""}
           </p>
           {/* While revising, the callout above already shows this review. */}

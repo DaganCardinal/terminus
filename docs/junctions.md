@@ -77,7 +77,7 @@ For a scripted input conflict, set the existing `FAKE_INTEGRATION_CONFLICT_PATHS
 
 ## Live verification procedure
 
-No deployment is required for local verification. Use the existing README live Artifacts/Sandbox prerequisites, Docker and a public committed demo baseline. `npm run dev:worker` applies additive `0012_junctions.sql`; both Wrangler environments include `JUNCTION_WORKFLOW`. Keep the configured Extra-light role preset (`@cf/zai-org/glm-5.3-flash`) as the maintainer requires.
+No deployment is required for local verification. Use the existing [live Artifacts/Sandbox prerequisites](live-setup.md), Docker and a public committed demo baseline. `npm run dev:worker` applies additive `0012_junctions.sql`; both Wrangler environments include `JUNCTION_WORKFLOW`. Keep the configured Extra-light role preset (`@cf/zai-org/glm-5.3-flash`) as the maintainer requires.
 
 1. Import a fresh demo Network and launch the same Junction demo. Save baseline B. Verify the Junction and both input repositories start at B, outgoing topology exists, and no outgoing repository/Train executes before release.
 2. Allow the independent Badge Line to advance Terminus. Confirm incoming accepted commits merge only into the Junction and all accepted Car commits remain reachable in Git.

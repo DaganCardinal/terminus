@@ -93,6 +93,8 @@
     "STATION_AGENT_MODEL": "settings",
     "CONDUCTOR_MODEL": "settings",
     "DISPATCHER_MODEL": "settings",
+    // The Engineer's Clef decision model, for choices its hard rules leave open.
+    "ENGINEER_MODEL": "settings",
     "STATION_MAX_RETRIES": "3",
     "AI_GATEWAY_ACCOUNT_ID": "",
     "AI_GATEWAY_ID": "default",
@@ -158,6 +160,7 @@
         "STATION_AGENT_MODEL": "fake",
         "CONDUCTOR_MODEL": "fake",
         "DISPATCHER_MODEL": "fake",
+        "ENGINEER_MODEL": "fake",
         "STATION_MAX_RETRIES": "3",
         "FAKE_INTEGRATION_CONFLICT_PATHS": "",
         "FAKE_AGENT_DELAY_MS": "4000",

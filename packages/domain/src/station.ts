@@ -77,8 +77,16 @@ export interface Station {
   removalRequest?: { reason: string }
   /** How many times the Conductor has returned this Station's work. */
   revisionCount: number
-  /** Automatic revisions since the last explicit restart. Optional for older records. */
+  /**
+   * Automatic revisions and failed-run retries since the last explicit
+   * restart. Optional for older records.
+   */
   retryCount?: number
+  /**
+   * Failed runs the Engineer started again. Part of each run's identity, so a
+   * retry is a new run. Optional for older records.
+   */
+  runRetries?: number
   lastReview?: StationReview
   state: StationState
 }

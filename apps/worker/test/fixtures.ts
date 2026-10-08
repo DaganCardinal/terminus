@@ -2,8 +2,10 @@
 // with Station runs and Train wakes recorded instead of started.
 import {
   FakeConductor,
+  FakeEngineer,
   FakeStationRunner,
   type Conductor,
+  type EngineerAdvisor,
   type StationRunner,
 } from "@terminus/agent-runtime"
 import { FakeRepositoryHost } from "@terminus/artifacts"
@@ -42,7 +44,11 @@ export interface TestPorts {
 }
 
 export function testPorts(
-  roles: { runner?: StationRunner; conductor?: Conductor } = {}
+  roles: {
+    runner?: StationRunner
+    conductor?: Conductor
+    engineer?: EngineerAdvisor
+  } = {}
 ): TestPorts {
   const store = new NetworkStore(env.DB)
   const repositories = new FakeRepositoryHost()
@@ -59,6 +65,7 @@ export function testPorts(
       store,
       repositories,
       conductor: roles.conductor ?? new FakeConductor(),
+      engineer: roles.engineer ?? new FakeEngineer(),
       stationMaxRetries: 3,
       startStationRun: async (params) => {
         if (!runs.some((run) => run.runId === params.runId)) runs.push(params)

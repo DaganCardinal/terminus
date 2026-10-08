@@ -7,6 +7,7 @@ import {
 } from "./engineer"
 import { unmetRequiredChecks } from "./evidence"
 import type { CarId } from "./ids"
+import type { Issue } from "./issue"
 import { lineStations, nextStation, type Line } from "./line"
 import type {
   Proposal,
@@ -349,6 +350,54 @@ export function attachCar(
         trainId: train.id,
         stationId: station.id,
         acceptedCommit: car.acceptedCommit,
+      },
+    ]
+  )
+}
+
+/**
+ * Starts a failed Station run again, from wherever it stopped. The retry
+ * shares the Station's automatic retry allowance with Conductor returns.
+ */
+export function retryStationRun(
+  input: TrainAndStation & {
+    issues: Issue[]
+    backoff: boolean
+    maxRetries?: number
+  }
+): Transition<Station> {
+  const { train, station } = input
+  const { state } = station
+  if (
+    (state.status !== "signaled" &&
+      state.status !== "active" &&
+      state.status !== "revising") ||
+    state.trainId !== train.id
+  ) {
+    return reject(
+      "invalid_state",
+      `Station ${station.id} has no run of Train ${train.id} to retry`
+    )
+  }
+  const decision = evaluateStationRetry(station, input.maxRetries)
+  if (decision.kind !== "clear")
+    return gateClosed(
+      decision,
+      `Station ${station.id} cannot retry: ${decision.kind}`
+    )
+  return accept(
+    {
+      ...station,
+      retryCount: (station.retryCount ?? station.revisionCount) + 1,
+      runRetries: (station.runRetries ?? 0) + 1,
+    },
+    [
+      {
+        type: "station.run_retried",
+        stationId: station.id,
+        trainId: train.id,
+        issues: input.issues,
+        backoff: input.backoff,
       },
     ]
   )

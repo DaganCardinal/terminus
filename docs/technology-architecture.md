@@ -818,7 +818,7 @@ ModelProvider
 Kimi K2.7 Code
 ```
 
-For current implementation and testing, the maintainer has selected **`@cf/zai-org/glm-5.3-flash` for every real agent call**. The Worker role vars and OpenCode primary/small-model configuration use that model, with no automatic fallback. The table below describes future production choices, not testing configuration. See `../README.md` for the implemented execution path and setup.
+For current implementation and testing, the maintainer has selected **`@cf/zai-org/glm-5.3-flash` for every real agent call**. The Worker role vars and OpenCode primary/small-model configuration use that model, with no automatic fallback. The table below describes future production choices, not testing configuration. See [Station execution](station-execution.md) and [Live setup](live-setup.md) for the implemented execution path and setup.
 
 Expected production defaults are approximately:
 
@@ -937,8 +937,13 @@ For choices the hard rules don't settle, the Engineer uses a **decision model**,
 That suits the Engineer well:
 
 - The answer options map directly to Engineer actions, for example `retry | wait | escalate`.
-- The probabilities support confidence thresholds. If no option is above the threshold, the Engineer escalates instead of guessing.
+- The probabilities support confidence thresholds. If no option is above the threshold, or Clef is unavailable, the Engineer keeps its deterministic default instead of guessing.
 - Clef runs only *after* the hard gates pass. It can never override them.
+
+The Engineer currently asks Clef two questions, both within the Station's automatic retry allowance:
+
+- **A Station run failed** (`retry | wait | escalate`). A confident `retry` or `wait` starts the run again, immediately or after a pause, and uses up one automatic retry. The default is to block, as before.
+- **The Conductor returned work** (`revise | escalate`). A confident `escalate` stops the revision loop early and asks the user. The default is another revision, up to the cap.
 
 ## The Engineer as the Train's Voice to Dispatch
 
@@ -1098,7 +1103,7 @@ Dispatcher-owned `train_unload_policies` records in D1 hold each Train's effecti
 
 ## Crossing integration boundary
 
-Crossings are first-class, one-way pickup visits in ordered Line routes. Source Stations retain one implementation owner and a frozen acceptance checkpoint. Cars copied onto receiving Trains preserve their origin and commit identities; compatibility review and merged-candidate evidence are recorded separately. The shared Integration Workflow reserves one target repository, prepares and validates an isolated candidate, and promotes the exact reviewed commit. Only the receiving Train Workflow records pickup completion and changes that Train's state. Terminus remains the sole canonical project state. See README and AGENTS.md for configuration, failure handling, and demonstration instructions.
+Crossings are first-class, one-way pickup visits in ordered Line routes. Source Stations retain one implementation owner and a frozen acceptance checkpoint. Cars copied onto receiving Trains preserve their origin and commit identities; compatibility review and merged-candidate evidence are recorded separately. The shared Integration Workflow reserves one target repository, prepares and validates an isolated candidate, and promotes the exact reviewed commit. Only the receiving Train Workflow records pickup completion and changes that Train's state. Terminus remains the sole canonical project state. See [Crossings](crossings.md) and AGENTS.md for configuration, failure handling, and demonstration instructions.
 
 ## Junction execution
 

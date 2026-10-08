@@ -82,7 +82,12 @@ export function AttentionMessages({
       {blocked.map(({ train }) => {
         if (train.state.status !== "blocked") return null
         const exhausted = train.state.issues.filter(
-          (issue) => issue.kind === "station_retries_exhausted"
+          (issue) =>
+            issue.kind === "station_retries_exhausted" ||
+            issue.kind === "engineer_escalated"
+        )
+        const early = exhausted.some(
+          (issue) => issue.kind === "engineer_escalated"
         )
         const line = name(train.lineId)
         if (!exhausted.length)
@@ -113,14 +118,16 @@ export function AttentionMessages({
             tone="attention"
             meta={
               <>
-                {badge(train.lineId)} {line} · Revisions used up
+                {badge(train.lineId)} {line} ·{" "}
+                {early ? "Revisions stopped" : "Revisions used up"}
               </>
             }
           >
             <p>
-              <strong>{station?.name ?? name(train.id)}</strong> used all its
-              automatic revisions, so the Engineer stopped the Train and flagged
-              me.
+              <strong>{station?.name ?? name(train.id)}</strong>{" "}
+              {early
+                ? "kept getting returned, and the Engineer judged another automatic revision unlikely to help, so it stopped the Train and flagged me."
+                : "used all its automatic revisions, so the Engineer stopped the Train and flagged me."}
             </p>
             {exhausted.map((issue, index) => (
               <p key={index} className="dmsg-quote">

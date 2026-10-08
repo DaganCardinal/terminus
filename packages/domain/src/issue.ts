@@ -5,6 +5,7 @@ export type IssueKind =
   | "station_failed"
   | "station_change_required"
   | "station_retries_exhausted"
+  | "engineer_escalated"
   | "review_escalated"
   | "integration_failed"
   | "needs_user"

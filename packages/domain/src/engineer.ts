@@ -148,6 +148,59 @@ export function signalFor(train: Train): SignalAspect | null {
   }
 }
 
+/** After a failed Station run: run it again now, after a pause, or stop. */
+export type StationFailureAction = "retry" | "wait" | "escalate"
+export const STATION_FAILURE_ACTIONS: readonly StationFailureAction[] = [
+  "retry",
+  "wait",
+  "escalate",
+]
+
+/** After the Conductor returns work: revise again, or stop before the cap. */
+export type RevisionAction = "revise" | "escalate"
+export const REVISION_ACTIONS: readonly RevisionAction[] = [
+  "revise",
+  "escalate",
+]
+
+/** How sure the decision model must be before the Engineer acts on it. */
+export const ENGINEER_CONFIDENCE_THRESHOLD = 0.7
+
+/**
+ * The model's most likely option when it clears the threshold. Otherwise, or
+ * when the model gave no answer, the deterministic `fallback` stands: the
+ * model only changes what the Engineer does when it is confident. The model
+ * is asked only after the hard gates clear, so it can never override them.
+ */
+export function confidentChoice<T extends string>(
+  probabilities: Partial<Record<T, number>> | null,
+  options: readonly T[],
+  fallback: T,
+  threshold = ENGINEER_CONFIDENCE_THRESHOLD
+): T {
+  let best = fallback
+  let confidence = 0
+  for (const option of options) {
+    const probability = probabilities?.[option] ?? 0
+    if (probability > confidence) {
+      best = option
+      confidence = probability
+    }
+  }
+  return confidence >= threshold ? best : fallback
+}
+
+/**
+ * Whether to tell the Dispatcher, given the model's probability that it
+ * should know. Only a confident no stays quiet; doubt or no answer notifies.
+ */
+export function shouldNotifyDispatcher(
+  probability: number | null,
+  threshold = ENGINEER_CONFIDENCE_THRESHOLD
+): boolean {
+  return probability === null || probability > 1 - threshold
+}
+
 export function holdReasons(train: Train, context: GateContext): HoldReason[] {
   return holdsApplyingTo(train, context.holds).map(holdReason)
 }

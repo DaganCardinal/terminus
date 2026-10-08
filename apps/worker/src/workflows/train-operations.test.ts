@@ -1,7 +1,9 @@
 import {
   FakeConductor,
+  FakeEngineer,
   FakeStationRunner,
   type Conductor,
+  type EngineerAdvisor,
   type StationRunner,
 } from "@terminus/agent-runtime"
 import { describe, expect, it, vi } from "vitest"
@@ -33,8 +35,11 @@ async function trainState(ports: TestPorts, trainId: string) {
   return (await ports.store.train(trainId))!.value.state
 }
 
-async function retryFixture(returns = 100) {
-  const ports = testPorts({ conductor: new FakeConductor({ returns }) })
+async function retryFixture(returns = 100, engineer?: EngineerAdvisor) {
+  const ports = testPorts({
+    conductor: new FakeConductor({ returns }),
+    engineer,
+  })
   const network = await seedNetwork(ports)
   const laid = await seedLine(ports, network.id, {
     name: "Retry Line",
@@ -214,6 +219,113 @@ describe("bounded Station revisions and Dispatcher alerts", () => {
         (type) => type === "dispatcher.user_attention_requested"
       )
     ).toHaveLength(1)
+  })
+})
+
+/** A runner that fails its first `failures` runs, then works. */
+function failingRunner(failures: number): StationRunner {
+  const fake = new FakeStationRunner()
+  let calls = 0
+  return {
+    config: fake.config,
+    run: async (input) => {
+      calls += 1
+      if (calls <= failures)
+        return {
+          ok: false,
+          issues: [
+            {
+              kind: "station_failed",
+              detail: "Station run failed during harness: sandbox restarted",
+            },
+          ],
+        }
+      return fake.run(input)
+    },
+  }
+}
+
+describe("Engineer decisions", () => {
+  it("retries a failed run as a new run, using up one automatic retry", async () => {
+    const ports = testPorts({
+      runner: failingRunner(1),
+      engineer: new FakeEngineer({ stationFailure: "retry" }),
+    })
+    const network = await seedNetwork(ports)
+    const { train, stations } = await seedLine(ports, network.id)
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_terminus" })
+    const id = stations[0]!.id
+    expect(ports.runs.map((run) => run.runId).slice(0, 2)).toEqual([
+      `${id}-s1-r0`,
+      `${id}-s1-r0-f1`,
+    ])
+    expect((await ports.store.station(id))!.value).toMatchObject({
+      state: { status: "complete" },
+      retryCount: 1,
+      runRetries: 1,
+    })
+    const types = await eventTypes(ports, network.id)
+    expect(types).toContain("station.run_retried")
+    expect(types).not.toContain("train.blocked")
+  })
+
+  it("asks the Train Workflow to pause before a retry the Engineer waits on", async () => {
+    const ports = testPorts({
+      runner: failingRunner(1),
+      engineer: new FakeEngineer({ stationFailure: "wait" }),
+    })
+    const network = await seedNetwork(ports)
+    const { train } = await seedLine(ports, network.id)
+    let move = await advanceTrain(ports.train, train.id)
+    while (move.kind === "moved")
+      move = await advanceTrain(ports.train, train.id)
+    expect(move.kind).toBe("await_station")
+    const outcome = await runStation(ports, ports.runs[0]!)
+    expect(await recordStationOutcome(ports.train, train.id, outcome)).toEqual({
+      backoff: true,
+    })
+    const event = (await ports.store.eventsAfter(network.id, 0)).at(-1)!.event
+    expect(domainEventSchema.parse(event)).toMatchObject({
+      type: "station.run_retried",
+      backoff: true,
+    })
+  })
+
+  it("never retries past the hard cap, whatever the model advises", async () => {
+    const ports = testPorts({
+      runner: failingRunner(100),
+      engineer: new FakeEngineer({ stationFailure: "retry" }),
+    })
+    const network = await seedNetwork(ports)
+    const { train, stations } = await seedLine(ports, network.id)
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(ports.runs).toHaveLength(4)
+    expect(ports.runs.at(-1)!.runId).toBe(`${stations[0]!.id}-s1-r0-f3`)
+    expect(await trainState(ports, train.id)).toMatchObject({
+      status: "blocked",
+      issues: [{ kind: "station_failed" }],
+    })
+  })
+
+  it("stops a revision loop early, keeping the feedback and alerting the user", async () => {
+    const { ports, network, train, stations } = await retryFixture(
+      100,
+      new FakeEngineer({ revision: "escalate" })
+    )
+    expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+    expect(ports.runs).toHaveLength(1)
+    expect(await trainState(ports, train.id)).toMatchObject({
+      status: "blocked",
+      issues: [{ kind: "engineer_escalated" }],
+    })
+    expect((await ports.store.station(stations[0]!.id))!.value).toMatchObject({
+      state: { status: "blocked" },
+      revisionCount: 0,
+      lastReview: { feedback: { findings: ["Revision 1 requested"] } },
+    })
+    expect((await eventTypes(ports, network.id)).at(-1)).toBe(
+      "dispatcher.user_attention_requested"
+    )
   })
 })
 

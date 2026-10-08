@@ -3,14 +3,18 @@ import {
   FakeRepairConductor,
   ModelRepairConductor,
   FakeConductor,
+  FakeEngineer,
   FakeStationRunner,
+  GatewayDecisionModel,
   GatewayModelProvider,
+  ModelEngineer,
   ModelConductor,
   HarnessConductor,
   HarnessRepairConductor,
   HarnessDispatcher,
   FakeDispatchPlanner,
   type Conductor,
+  type EngineerAdvisor,
   type ModelProvider,
   type RepairConductor,
   type StationRunner,
@@ -161,6 +165,7 @@ export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
     conductor: conductor(env, models.conductor, models.executions?.conductor),
+    engineer: engineer(env, models.engineer),
     stationMaxRetries: stationMaxRetries(env),
     startStationRun: (params) => startStationRun(env, params),
     startIntegration: async (integrationId) => {
@@ -448,6 +453,19 @@ function conductorSessions(
     undefined,
     execution
   )
+}
+
+/** The Engineer's decision model. A misconfigured Gateway fails each call, and
+ * the Engineer escalates rather than guessing. */
+function engineer(env: Env, model: string): EngineerAdvisor {
+  if (env.ENGINEER_MODEL === FAKE) return new FakeEngineer()
+  return new ModelEngineer(model, {
+    decide: (request) =>
+      new GatewayDecisionModel(
+        directGatewayConfig(env, model),
+        gatewayTransport
+      ).decide(request),
+  })
 }
 
 /** Gateway configuration is checked per call, so a misconfigured role fails its own step. */

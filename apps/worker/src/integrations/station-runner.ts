@@ -240,6 +240,12 @@ export class SandboxStationRunner implements StationRunner {
       await this.#store.publishAgentRun(input, this.config)
       saved = true
       return result
+    } catch (error) {
+      // The Engineer triages failed runs, so report where this one stopped.
+      throw new Error(
+        `Station run failed during ${phase}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      )
     } finally {
       // Leave an interrupted workspace available until the Workflow retries.
       try {
