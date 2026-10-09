@@ -1,0 +1,11 @@
+{
+  "$schema": "../../apps/worker/node_modules/wrangler/config-schema.json",
+  "name": "terminus-browser-route-proof",
+  "main": "edge-worker.mjs",
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-10-08",
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
+  "browser": { "binding": "BROWSER" },
+  "exports": { "CandidateOutbound": { "type": "worker" } },
+}

@@ -712,10 +712,11 @@ export function NetworkMap({
                     )
                       return null
                     const label = words(status)
-                    // Icon, label and status dot sized to the label's length.
-                    // Drawn around the Train's track position, which
-                    // useTrainMotion sets as the group's transform.
-                    const half = 30 + label.length * 3.4
+                    // The Train is a dot on the track, tinted by its status,
+                    // with its label hung below. Both are drawn around the
+                    // Train's track position, which useTrainMotion sets as
+                    // the group's transform.
+                    const half = 13 + label.length * 3.4
                     return (
                       <g
                         key={view.train.id}
@@ -734,44 +735,24 @@ export function NetworkMap({
                           x={-half - 4}
                           y={8}
                           width={half * 2 + 8}
-                          height="56"
+                          height="50"
                           fill="transparent"
                         />
-                        <path d="M0,15 V36" className="train-leader" />
+                        <path d="M0,13 V30" className="train-leader" />
                         <rect
                           className="train-body"
                           x={-half}
-                          y={36}
+                          y={30}
                           width={half * 2}
-                          height="26"
-                          rx="13"
+                          height="24"
+                          rx="12"
                         />
-                        <g
-                          transform={`translate(${-half + 11},42)`}
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          className="train-icon"
-                          aria-hidden="true"
-                        >
-                          <rect width="11" height="11" rx="2" />
-                          <path d="M2 3h7v3.5H2z M2.5 14l1.5-2.5 M8.5 14L7 11.5" />
-                        </g>
-                        <text x={0} y={53.5} className="train-label">
+                        <text x={0} y={46.5} className="train-label">
                           {label}
                         </text>
-                        <circle
-                          cx={half - 13}
-                          cy={49}
-                          r="4"
-                          className="train-dot train-dot-pulse"
-                        />
-                        <circle
-                          cx={half - 13}
-                          cy={49}
-                          r="4"
-                          className="train-dot"
-                        />
+                        <circle r="9" className="train-pulse" />
+                        <circle r="9" className="train-body train-car" />
+                        <circle r="5" className="train-dot" />
                       </g>
                     )
                   })}

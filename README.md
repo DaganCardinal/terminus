@@ -59,5 +59,6 @@ See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness
 | [Previews](docs/previews.md) | Previewing a Train or Terminus, preview hostnames |
 | [API examples](docs/api.md) | Creating networks, validation commands, snapshots and events |
 | [Harness selection](docs/harness-selection.md) | Per-role harnesses, frozen configuration, release verification |
+| [Browser Run transport gate](docs/browser-run.md) | Browser testing design, reproducible probes, current transport blockers |
 
 Architecture and ownership rules are in [AGENTS.md](./AGENTS.md), [the outline](./docs/outline-updated.md), and [technology architecture](./docs/technology-architecture.md).

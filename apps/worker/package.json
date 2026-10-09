@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler d1 migrations apply terminus --local && wrangler dev",
     "dev:fake": "wrangler d1 migrations apply terminus --local --env fake && wrangler dev --env fake",
-    "deploy": "wrangler deploy --env \"\"",
+    "deploy": "wrangler d1 migrations apply terminus --remote --env \"\" && wrangler deploy --env \"\"",
     "cf-typegen": "wrangler types --strict-vars=false",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build --workspace @terminus/web",

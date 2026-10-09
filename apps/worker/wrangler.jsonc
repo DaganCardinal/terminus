@@ -1,6 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "terminus",
+  "account_id": "1c4341e1232d9a44116c124bc518a0f6",
   "preview_urls": false,
   // Preserve the protected workers.dev app URL when adding preview routes.
   "workers_dev": true,
@@ -74,7 +75,14 @@
   // ARTIFACTS_API_TOKEN is a Cloudflare API token with Artifacts edit access.
   // Each Project gets its own Artifacts namespace, which the Workers binding
   // (fixed to one namespace) cannot address, so Terminus uses the REST API.
-  "secrets": { "required": ["AI_GATEWAY_TOKEN", "ARTIFACTS_API_TOKEN"] },
+  // ACCESS_ALLOWED_EMAILS is a comma-separated list of the emails allowed in.
+  "secrets": {
+    "required": [
+      "AI_GATEWAY_TOKEN",
+      "ARTIFACTS_API_TOKEN",
+      "ACCESS_ALLOWED_EMAILS",
+    ],
+  },
   "vars": {
     "REPOSITORY_MODE": "artifacts",
     // Enable only after the documented Cloudflare harness acceptance checks.
@@ -82,7 +90,13 @@
     // Exact public app origin, e.g. https://terminus.YOUR_SUBDOMAIN.workers.dev.
     // An empty value permits local development only; Access protects live traffic.
     "APP_ORIGIN": "",
-    "ARTIFACTS_ACCOUNT_ID": "",
+    // Live requests also verify the Cloudflare Access JWT and fail closed until
+    // these are set. Team domain: https://YOUR_TEAM.cloudflareaccess.com. AUD:
+    // the Access application's Audience tag(s), comma-separated.
+    "ACCESS_REQUIRED": "true",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "ARTIFACTS_ACCOUNT_ID": "1c4341e1232d9a44116c124bc518a0f6",
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
     "PREVIEW_BASE_URL": "",
@@ -96,8 +110,8 @@
     // The Engineer's Clef decision model, for choices its hard rules leave open.
     "ENGINEER_MODEL": "settings",
     "STATION_MAX_RETRIES": "3",
-    "AI_GATEWAY_ACCOUNT_ID": "",
-    "AI_GATEWAY_ID": "default",
+    "AI_GATEWAY_ACCOUNT_ID": "1c4341e1232d9a44116c124bc518a0f6",
+    "AI_GATEWAY_ID": "terminus",
     // How long a fake Station Agent takes, so Trains visibly travel.
     "FAKE_INTEGRATION_CONFLICT_PATHS": "",
     "FAKE_AGENT_DELAY_MS": "4000",
@@ -154,6 +168,10 @@
         "REPOSITORY_MODE": "fake",
         "ALTERNATIVE_HARNESSES_ENABLED": "false",
         "APP_ORIGIN": "",
+        // The fake environment is local-only and calls no models.
+        "ACCESS_REQUIRED": "false",
+        "ACCESS_TEAM_DOMAIN": "",
+        "ACCESS_AUD": "",
         "ARTIFACTS_ACCOUNT_ID": "",
         "PREVIEW_BASE_URL": "",
         "TECHNICIAN_MODEL": "fake",

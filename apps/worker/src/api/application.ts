@@ -1,15 +1,35 @@
 import { routeTrainPreview } from "../integrations/train-preview"
+import { verifyAccess } from "./access"
 import { handleApi } from "./router"
 
-/** HTTP routing only. Cloudflare Access owns authentication for the private beta. */
+/**
+ * HTTP routing. Cloudflare Access owns authentication for the private beta;
+ * live requests also verify its JWT here, including application previews.
+ */
 export async function handleApplication(
   request: Request,
   env: Env
 ): Promise<Response> {
+  const url = new URL(request.url)
+  // Only the literal "false" (the local-only fake environment) skips this.
+  if (
+    env.ACCESS_REQUIRED !== "false" &&
+    !isLocal(url) &&
+    !url.hostname.endsWith(".localhost")
+  ) {
+    const access = await verifyAccess(request, env)
+    if (access === "unconfigured")
+      return rejected(
+        503,
+        "Configure Cloudflare Access verification before serving the live app"
+      )
+    if (access !== "allowed")
+      return rejected(403, "Cloudflare Access authentication is required")
+  }
+
   const preview = await routeTrainPreview(request, env)
   if (preview) return preview
 
-  const url = new URL(request.url)
   const local = isLocal(url)
   if (!local) {
     let origin: URL
