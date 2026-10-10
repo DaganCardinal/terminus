@@ -3,7 +3,10 @@ import type { RepositoryAccess } from "@terminus/artifacts"
 import type { SandboxPreviewRequest } from "@terminus/protocol"
 import { seedNetwork, testPorts } from "../../test/fixtures"
 import { prepareTerminusPreview } from "./terminus-preview"
-import { prepareRepositoryPreview } from "./repository-preview"
+import {
+  prepareRepositoryPreview,
+  stopRepositoryPreview,
+} from "./repository-preview"
 
 async function fixture() {
   const ports = testPorts()
@@ -124,6 +127,29 @@ describe("Terminus preview", () => {
     const names = f.sandboxFor.mock.calls.map(([name]) => name)
     expect(names[0]).toBe(names[1])
     expect(new Set([names[0], names[2], names[3]]).size).toBe(3)
+  })
+
+  it("stops the exact snapshot's Sandbox without granting repository access", async () => {
+    const f = await fixture()
+    await f.prepare()
+    const stop = vi.fn(async () => {})
+    const stopFor = vi.fn<(name: string) => { stopTrainPreview: typeof stop }>(
+      () => ({ stopTrainPreview: stop })
+    )
+    const snapshot = {
+      identity: `terminus:${f.network.id}`,
+      repoId: f.network.terminusRepoId,
+      commit: f.network.terminusCommit,
+    }
+    await stopRepositoryPreview(snapshot, stopFor)
+    await stopRepositoryPreview(
+      { ...snapshot, commit: "c".repeat(40) },
+      stopFor
+    )
+    expect(stopFor.mock.calls[0]?.[0]).toBe(f.sandboxFor.mock.calls[0]?.[0])
+    expect(stopFor.mock.calls[1]?.[0]).not.toBe(stopFor.mock.calls[0]?.[0])
+    expect(stop).toHaveBeenCalledTimes(2)
+    expect(f.repositories.access).toHaveBeenCalledTimes(1)
   })
 
   it("revokes access on build failures and invalid Sandbox responses", async () => {

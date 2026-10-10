@@ -122,6 +122,7 @@ export class SandboxStationRunner implements StationRunner {
       close: () => sandbox.close(),
     }
     let saved = false
+    let unpublishedCandidate = !!checkpoint
     try {
       await sandbox.configure({
         repositories: [
@@ -184,7 +185,11 @@ export class SandboxStationRunner implements StationRunner {
       })
       phase = "harness"
       const harness = await runPreparedHarness(
-        { ...sandbox, run: workspace.run.bind(workspace) },
+        {
+          // RPC stub methods are not enumerable; forward calls instead of spreading the stub.
+          write: (path, contents) => sandbox.write(path, contents),
+          run: workspace.run,
+        },
         prepared,
         repoDirectory
       )
@@ -229,6 +234,8 @@ export class SandboxStationRunner implements StationRunner {
         },
       }
       // Checkpoint before pushing so a retry cannot repeat a paid agent call.
+      // Preserve local Git objects even if the D1 write's acknowledgement is lost.
+      unpublishedCandidate = true
       await this.#store.recordAgentRun(
         station.networkId,
         input,
@@ -247,9 +254,20 @@ export class SandboxStationRunner implements StationRunner {
         { cause: error }
       )
     } finally {
-      // Leave an interrupted workspace available until the Workflow retries.
+      // Only a checkpointed, unpublished candidate needs its local Git objects
+      // for recovery. Earlier failures must release capacity before another run.
       try {
-        if (saved) await workspace.close()
+        if (saved || !unpublishedCandidate) {
+          try {
+            await workspace.close()
+          } catch {
+            // Preserve the original run outcome; explicit cleanup can retry.
+            console.error("Station Sandbox cleanup failed", {
+              runId: input.runId,
+              stationId: input.stationId,
+            })
+          }
+        }
       } finally {
         await this.#repositories.revoke(access)
       }

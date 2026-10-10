@@ -11,7 +11,7 @@ const candidate = "b".repeat(40)
 
 afterEach(() => vi.restoreAllMocks())
 
-async function fixture(failedTests = false) {
+async function fixture(failedTests = false, inheritedMethods = false) {
   const ports = testPorts()
   const network = await seedNetwork(ports)
   const { stations } = await seedLine(ports, network.id)
@@ -76,12 +76,29 @@ async function fixture(failedTests = false) {
     model,
     repositories,
     ports.store,
-    () => sandbox
+    () =>
+      inheritedMethods ? (Object.create(sandbox) as StationSandbox) : sandbox
   )
   return { runner, input, sandbox, repositories, store: ports.store }
 }
 
 describe("Station execution boundary", () => {
+  it("runs the harness with inherited Sandbox methods, as exposed by an RPC stub", async () => {
+    const f = await fixture(false, true)
+    const result = await f.runner.run(f.input)
+    expect(result.ok).toBe(true)
+    expect(f.sandbox.write).toHaveBeenCalledWith(
+      "/workspace/harness-events.mjs",
+      expect.any(String)
+    )
+    expect(f.sandbox.run).toHaveBeenCalledWith(
+      expect.arrayContaining(["bash", "opencode"]),
+      "/workspace/repo",
+      expect.any(Object)
+    )
+    expect(await f.store.agentRun(f.input, model)).toEqual(result)
+    expect(f.sandbox.close).toHaveBeenCalledTimes(1)
+  })
   it("identifies the failed phase without logging agent arguments or credentials", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {})
     const failed = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -115,7 +132,44 @@ describe("Station execution boundary", () => {
     ])
       expect(logs).not.toContain(secret)
     expect(f.repositories.revoke).toHaveBeenCalledTimes(1)
+    expect(f.sandbox.close).toHaveBeenCalledTimes(1)
+  })
+  it("releases a Sandbox when configuration fails before any candidate exists", async () => {
+    const f = await fixture()
+    vi.mocked(f.sandbox.configure).mockRejectedValueOnce(
+      new Error("Container setup failed")
+    )
+    await expect(f.runner.run(f.input)).rejects.toThrow(
+      "Station run failed during checkout: Container setup failed"
+    )
+    expect(f.sandbox.close).toHaveBeenCalledTimes(1)
+    expect(f.repositories.revoke).toHaveBeenCalledTimes(1)
+    expect(f.sandbox.run).not.toHaveBeenCalled()
+  })
+  it("preserves the original failure and revokes access when cleanup also fails", async () => {
+    const f = await fixture()
+    vi.mocked(f.sandbox.write).mockRejectedValueOnce(new Error("Write failed"))
+    vi.mocked(f.sandbox.close).mockRejectedValueOnce(
+      new Error("Cleanup failed")
+    )
+    const log = vi.spyOn(console, "error").mockImplementation(() => {})
+    await expect(f.runner.run(f.input)).rejects.toThrow("Write failed")
+    expect(f.repositories.revoke).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith("Station Sandbox cleanup failed", {
+      runId: f.input.runId,
+      stationId: f.input.stationId,
+    })
+  })
+  it("retains candidate Git objects when recording evidence has an uncertain outcome", async () => {
+    const f = await fixture()
+    vi.spyOn(f.store, "recordAgentRun").mockRejectedValueOnce(
+      new Error("Evidence acknowledgement lost")
+    )
+    await expect(f.runner.run(f.input)).rejects.toThrow(
+      "Evidence acknowledgement lost"
+    )
     expect(f.sandbox.close).not.toHaveBeenCalled()
+    expect(f.repositories.revoke).toHaveBeenCalledTimes(1)
   })
   it("collects independent validation, persists evidence before stopping, and reuses a durable result", async () => {
     const f = await fixture(true)

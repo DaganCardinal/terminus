@@ -27,7 +27,7 @@ afterEach(async () => {
   )
 })
 
-async function fixture() {
+async function fixture(options: { readHeadDirectly?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "terminus-git-test-"))
   temporary.push(directory)
   const repos = new Map<string, ArtifactsRepository>()
@@ -146,10 +146,21 @@ async function fixture() {
       return workspace
     },
   }
+  // Stands in for smart-HTTP ref discovery: real refs, no workspace.
+  const readHead = async (access: RepositoryAccess) =>
+    (
+      await execute("git", [
+        "ls-remote",
+        "--",
+        access.remote,
+        `refs/heads/${access.branch}`,
+      ])
+    ).stdout.split(/\s+/)[0] || null
   const host = new ArtifactsRepositoryHost(
     artifacts,
     workspaces,
-    async () => {}
+    async () => {},
+    options.readHeadDirectly ? readHead : undefined
   )
   async function head(name: string) {
     return (
@@ -350,6 +361,35 @@ describe("Artifacts repository transport with real Git", () => {
     const train = await f.host.fork(input)
     await f.change("p/terminus")
     expect(await f.host.fork(input)).toEqual(train)
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("forks and reads heads without opening a workspace when heads are read directly", async () => {
+    const f = await fixture({ readHeadDirectly: true })
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const opened = f.grants.length
+    const train = await f.host.fork({
+      sourceRepoId: "p/terminus",
+      commit: terminus.headCommit,
+      name: "train",
+    })
+    expect(train).toEqual({
+      repoId: "p/train",
+      headCommit: terminus.headCommit,
+    })
+    expect(await f.host.head("p/train")).toBe(terminus.headCommit)
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+
+    await f.change("p/terminus")
+    await expect(
+      f.host.fork({
+        sourceRepoId: "p/terminus",
+        commit: terminus.headCommit,
+        name: "late",
+      })
+    ).rejects.toBeInstanceOf(RepositoryMovedError)
+    expect(f.repos.has("p/late")).toBe(false)
     expect(f.tokens.size).toBe(0)
   })
 

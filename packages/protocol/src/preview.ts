@@ -27,6 +27,13 @@ export type TerminusPreviewRequest = z.infer<
   typeof terminusPreviewRequestSchema
 >
 
+/** Stops the preview of one exact commit. Only live previews can be running,
+ * so the commit is a full Git hash. */
+export const stopPreviewRequestSchema = z
+  .object({ commit: commitSchema })
+  .strict()
+export type StopPreviewRequest = z.infer<typeof stopPreviewRequestSchema>
+
 export const sandboxPreviewRequestSchema = z.object({
   remote: z.url({ protocol: /^https$/ }),
   token: z.string().min(1),

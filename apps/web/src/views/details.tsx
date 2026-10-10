@@ -35,7 +35,7 @@ import {
 } from "./detail-parts"
 import { describeEvent, describeLocation, namesFor } from "./describe"
 import { JunctionDetails } from "./junctions"
-import { UnloadModeSelect } from "./unload-mode-select"
+import { UnloadModeSwitch } from "./unload-mode-switch"
 import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
 
@@ -258,7 +258,7 @@ export function StationDetails({
       )}
 
       <Section title="Work manifest">
-        <ManifestView manifest={manifest} name={name} />
+        <ManifestView manifest={manifest} name={name} met={!!car} />
       </Section>
 
       {(station.revisionCount > 0 ||
@@ -298,7 +298,7 @@ export function StationDetails({
             <p>Removal requested. Waiting for the Train to apply it.</p>
           ) : (
             <form
-              className="dispatcher-form"
+              className="removal-form"
               onSubmit={(event) => {
                 event.preventDefault()
                 if (reason.trim())
@@ -317,6 +317,7 @@ export function StationDetails({
                 rows={2}
                 maxLength={2000}
                 required
+                placeholder="e.g. Redundant with an earlier Station"
                 value={reason}
                 onChange={(event) => setReason(event.target.value)}
                 disabled={pending}
@@ -478,7 +479,7 @@ export function TrainDetails({
             </p>
             <TrainPreviewButton trainId={train.id} commit={train.headCommit} />
             {train.destination?.kind !== "junction" && (
-              <UnloadModeSelect
+              <UnloadModeSwitch
                 mode={policy?.mode ?? "auto"}
                 recommendation={policy?.recommendation}
                 disabled={pending || closed}
@@ -610,7 +611,7 @@ export function TrainDetails({
                   </p>
                   <List items={car.review.findings} />
                   <CheckRow checks={car.evidence.checks} />
-                  <ManifestView manifest={car.manifest} name={name} />
+                  <ManifestView manifest={car.manifest} name={name} met />
                   <TechnicalDetails
                     facts={[
                       { label: "Accepted commit", value: car.acceptedCommit },

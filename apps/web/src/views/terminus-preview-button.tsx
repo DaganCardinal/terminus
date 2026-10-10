@@ -1,8 +1,15 @@
-import { ArrowUpRight, LoaderCircle, MonitorPlay, RotateCw } from "lucide-react"
+import {
+  ArrowUpRight,
+  LoaderCircle,
+  MonitorPlay,
+  RotateCw,
+  Square,
+} from "lucide-react"
 import { Button, buttonVariants } from "@terminus/ui/components/button"
 import { cn } from "@terminus/ui/lib/utils"
 import {
   prepareTerminusPreview,
+  stopTerminusPreview,
   useTerminusPreview,
 } from "@/state/terminus-previews"
 
@@ -23,9 +30,11 @@ export function TerminusPreviewButton({
 }) {
   const preview = useTerminusPreview(networkId, commit)
   const preparing = preview.status === "preparing"
+  const stopping = preview.status === "stopping"
   const error = preview.status === "idle" ? preview.error : undefined
   const size = compact ? "lg" : "sm"
   const start = () => void prepareTerminusPreview(networkId, commit)
+  const stop = () => void stopTerminusPreview(networkId, commit)
 
   const note =
     error ??
@@ -33,13 +42,17 @@ export function TerminusPreviewButton({
       ? compact
         ? "Building this snapshot; keep reading while it prepares."
         : "Installing dependencies and building this snapshot. You can close this panel while it prepares."
-      : preview.status === "ready"
+      : stopping
         ? compact
           ? null
-          : "Opens this canonical snapshot in a new tab. Refresh the preview if it has expired."
-        : compact
-          ? null
-          : "Opens the combined application after successful integration.")
+          : "Stopping the preview Sandbox."
+        : preview.status === "ready"
+          ? compact
+            ? null
+            : "Opens this canonical snapshot in a new tab. It stops after five minutes without requests; refresh it if it has expired."
+          : compact
+            ? null
+            : "Opens the combined application after successful integration.")
 
   return (
     <div className={compact ? "terminus-preview-compact" : "train-preview"}>
@@ -62,19 +75,36 @@ export function TerminusPreviewButton({
             <ArrowUpRight size={15} />
           </a>
           {compact ? (
-            <Button
-              size="icon-lg"
-              variant="ghost"
-              aria-label="Refresh preview"
-              title="Refresh preview"
-              onClick={start}
-            >
-              <RotateCw size={15} />
-            </Button>
+            <>
+              <Button
+                size="icon-lg"
+                variant="ghost"
+                aria-label="Refresh preview"
+                title="Refresh preview"
+                onClick={start}
+              >
+                <RotateCw size={15} />
+              </Button>
+              <Button
+                size="icon-lg"
+                variant="ghost"
+                aria-label="Stop preview"
+                title="Stop preview"
+                onClick={stop}
+              >
+                <Square size={14} />
+              </Button>
+            </>
           ) : (
-            <Button size="sm" variant="ghost" onClick={start}>
-              Refresh preview
-            </Button>
+            <>
+              <Button size="sm" variant="ghost" onClick={start}>
+                Refresh preview
+              </Button>
+              <Button size="sm" variant="ghost" onClick={stop}>
+                <Square size={13} />
+                Stop preview
+              </Button>
+            </>
           )}
         </div>
       ) : (
@@ -82,15 +112,19 @@ export function TerminusPreviewButton({
           size={size}
           variant={compact ? "outline" : "default"}
           className={compact ? "px-4" : undefined}
-          disabled={preparing}
+          disabled={preparing || stopping}
           onClick={start}
         >
-          {preparing ? (
+          {preparing || stopping ? (
             <LoaderCircle className="animate-spin" size={16} />
           ) : (
             <MonitorPlay size={16} />
           )}
-          {preparing ? "Starting Preview…" : "Start Preview"}
+          {preparing
+            ? "Starting Preview…"
+            : stopping
+              ? "Stopping Preview…"
+              : "Start Preview"}
         </Button>
       )}
       {note && (

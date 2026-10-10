@@ -8,6 +8,8 @@ import {
 } from "react"
 import { Minus, Plus, Scan } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
+import logomark from "@/assets/terminus-logomark.svg"
+import logomarkWhite from "@/assets/terminus-logomark-white.svg"
 import { BULLET_OFFSET, HUB_RADIUS, TRACK_WIDTH, layoutNetwork } from "./layout"
 import { useTrainMotion } from "./use-train-motion"
 
@@ -791,14 +793,6 @@ export function NetworkMap({
                     stroke="var(--map-ink)"
                     strokeWidth="4"
                   />
-                  <rect
-                    x={hub.x - HUB_RADIUS + 9}
-                    y={hub.y - hubHalfHeight + 9}
-                    width={HUB_RADIUS * 2 - 18}
-                    height={hubHalfHeight * 2 - 18}
-                    rx={HUB_RADIUS - 9}
-                    fill="var(--map-ink)"
-                  />
                 </>
               ) : (
                 <>
@@ -810,17 +804,28 @@ export function NetworkMap({
                     stroke="var(--map-ink)"
                     strokeWidth="4"
                   />
-                  <circle
-                    cx={hub.x}
-                    cy={hub.y}
-                    r={HUB_RADIUS - 9}
-                    fill="var(--map-ink)"
-                  />
                 </>
               )}
-              <text x={hub.x} y={hub.y + 10} className="hub-letter">
-                T
-              </text>
+              <image
+                className="logomark-light"
+                href={logomark}
+                x={hub.x - 32}
+                y={hub.y - 32}
+                width="64"
+                height="64"
+                aria-hidden="true"
+                pointerEvents="none"
+              />
+              <image
+                className="logomark-dark"
+                href={logomarkWhite}
+                x={hub.x - 32}
+                y={hub.y - 32}
+                width="64"
+                height="64"
+                aria-hidden="true"
+                pointerEvents="none"
+              />
               <text
                 x={hub.x}
                 y={hub.y + hubHalfHeight + 32}

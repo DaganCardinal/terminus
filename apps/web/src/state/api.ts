@@ -9,6 +9,7 @@ import {
   dispatchPlanSchema,
   trainPreviewSchema,
   terminusPreviewSchema,
+  emergencyBrakeResultSchema,
   trainUnloadPolicySchema,
   type UnloadMode,
   type CreateDispatchPlanRequest,
@@ -28,6 +29,16 @@ import {
 
 /** Application-level commands and queries against the Worker API. */
 export const api = {
+  emergencyBrake: async (networkId: string) =>
+    emergencyBrakeResultSchema.parse(
+      await request(
+        `/networks/${encodeURIComponent(networkId)}/emergency-brake`,
+        {
+          method: "POST",
+          body: { discardUnfinishedWork: true },
+        }
+      )
+    ),
   layJunctionDemo: (id: string) =>
     request(`/networks/${id}/demo/junctions`, { method: "POST" }),
   createJunction: async (
@@ -233,6 +244,16 @@ export const api = {
         body: { commit },
       })
     ),
+  stopTrainPreview: (trainId: string, commit: string) =>
+    request<void>(`/trains/${trainId}/preview`, {
+      method: "DELETE",
+      body: { commit },
+    }),
+  stopTerminusPreview: (networkId: string, commit: string) =>
+    request<void>(`/networks/${networkId}/preview`, {
+      method: "DELETE",
+      body: { commit },
+    }),
 }
 
 /** A refused request, with the server's structured details when it sent any. */

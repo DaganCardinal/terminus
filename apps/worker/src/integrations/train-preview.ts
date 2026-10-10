@@ -2,6 +2,7 @@ import type { Train } from "@terminus/domain"
 import { trainPreviewSchema, type TrainPreview } from "@terminus/protocol"
 import { NetworkStore } from "./network-store"
 import {
+  haltRepositoryPreview,
   launchRepositoryPreview,
   prepareRepositoryPreview,
   PreviewError,
@@ -45,6 +46,23 @@ export async function launchTrainPreview(
       "Train"
     )),
   })
+}
+
+/** Takes the commit the preview was built from, since the Train may have
+ * moved on since then. */
+export async function stopTrainPreview(
+  env: Env,
+  trainId: string,
+  commit: string
+): Promise<void> {
+  const record = await new NetworkStore(env.DB).train(trainId)
+  if (!record) throw new PreviewError(404, "Unknown Train")
+  const train = record.value
+  await haltRepositoryPreview(
+    env,
+    { identity: train.id, repoId: train.repoId, commit },
+    "Train"
+  )
 }
 
 /** Preview hostnames reach only their fixed preview port, including /api paths. */

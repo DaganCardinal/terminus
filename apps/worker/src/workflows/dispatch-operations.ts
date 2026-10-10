@@ -170,6 +170,21 @@ export async function layDispatchLines(
     topologyContext.stations
   )
   if (topologyErrors.length) throw new Error(topologyErrors.join("; "))
+  // Forks are independent and named stably, so they run together. All settle
+  // before a failure is reported, so a retry never races a fork still running.
+  const settled = await Promise.allSettled(
+    proposal.lines.map((_, index) =>
+      ports.repositories.fork({
+        sourceRepoId: snapshot.network.terminusRepoId,
+        commit: plan.terminusCommit,
+        name: `${plan.id}-t${index}`,
+      })
+    )
+  )
+  const repos = settled.map((fork) => {
+    if (fork.status === "rejected") throw fork.reason
+    return fork.value
+  })
   for (const [index, planned] of proposal.lines.entries()) {
     const lineId = `${plan.id}-l${index}`
     const trainId = `${plan.id}-t${index}`
@@ -195,11 +210,7 @@ export async function layDispatchLines(
     )
     const resolved = resolveLineRoute(created.value.line, planned.route, ids)
     created.value.line = resolved.line
-    const repo = await ports.repositories.fork({
-      sourceRepoId: snapshot.network.terminusRepoId,
-      commit: plan.terminusCommit,
-      name: trainId,
-    })
+    const repo = repos[index]!
     const train = applied(
       createTrain({
         id: trainId,

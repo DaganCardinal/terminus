@@ -110,6 +110,9 @@ export async function outboundRequest(
     if (provider === "workers-ai") {
       headers.set("authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
       headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID)
+      // Workers AI prefix caching: faster prefill, and cached input costs less.
+      if (network.sessionAffinity)
+        headers.set("x-session-affinity", network.sessionAffinity)
     } else {
       headers.set("cf-aig-authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
     }
@@ -197,6 +200,7 @@ function cleanHeaders(input: Headers): Headers {
         "api-key",
         "cookie",
         "content-length",
+        "x-session-affinity",
       ].includes(name)
     )
       headers.delete(name)

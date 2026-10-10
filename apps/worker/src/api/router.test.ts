@@ -419,6 +419,33 @@ describe("API validation", () => {
     })
     expect(await snapshot(network.id)).toEqual(before)
   })
+
+  it("validates preview stop requests and reports fake mode", async () => {
+    const network = await createNetwork()
+    await post(`/networks/${network.id}/demo`)
+    const { trains } = await snapshot(network.id)
+    const stop = (path: string, body: unknown) =>
+      api(path, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    const commit = { commit: "a".repeat(40) }
+    for (const path of [
+      `/networks/${network.id}/preview`,
+      `/trains/${trains[0]!.train.id}/preview`,
+    ]) {
+      expect((await stop(path, {})).status).toBe(400)
+      expect((await stop(path, { commit: "main" })).status).toBe(400)
+      const simulated = await stop(path, commit)
+      expect(simulated.status).toBe(503)
+      expect(await simulated.json()).toMatchObject({
+        error: expect.stringContaining("fake mode"),
+      })
+    }
+    expect((await stop("/networks/missing/preview", commit)).status).toBe(404)
+    expect((await stop("/trains/missing/preview", commit)).status).toBe(404)
+  })
 })
 
 describe("model settings", () => {

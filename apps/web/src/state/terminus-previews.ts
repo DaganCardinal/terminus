@@ -5,6 +5,7 @@ export type TerminusPreviewState =
   | { status: "idle"; error?: string }
   | { status: "preparing" }
   | { status: "ready"; url: string }
+  | { status: "stopping" }
 
 const idle: TerminusPreviewState = { status: "idle" }
 const previews = new Map<string, TerminusPreviewState>()
@@ -48,6 +49,26 @@ export async function prepareTerminusPreview(
         caught instanceof Error
           ? caught.message
           : "Could not start the Terminus preview.",
+    })
+  }
+}
+
+/** A failed stop returns to idle with the error. Starting again reuses the
+ * Sandbox if it is still running. */
+export async function stopTerminusPreview(networkId: string, commit: string) {
+  const key = keyFor(networkId, commit)
+  if (previews.get(key)?.status !== "ready") return
+  set(key, { status: "stopping" })
+  try {
+    await api.stopTerminusPreview(networkId, commit)
+    set(key, idle)
+  } catch (caught) {
+    set(key, {
+      status: "idle",
+      error:
+        caught instanceof Error
+          ? caught.message
+          : "Could not stop the Terminus preview.",
     })
   }
 }

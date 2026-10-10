@@ -5,6 +5,7 @@ import {
 } from "@terminus/protocol"
 import { NetworkStore } from "./network-store"
 import {
+  haltRepositoryPreview,
   launchRepositoryPreview,
   prepareRepositoryPreview,
   PreviewError,
@@ -18,10 +19,14 @@ function snapshotFor(network: NetworkSummary, commit: string) {
       409,
       "Terminus changed. Refresh the network and preview its current commit."
     )
+  return snapshotAt(network, commit)
+}
+
+function snapshotAt(network: NetworkSummary, commit: string) {
   return {
     identity: `terminus:${network.id}`,
     repoId: network.terminusRepoId,
-    commit: network.terminusCommit,
+    commit,
   }
 }
 
@@ -60,4 +65,16 @@ export async function launchTerminusPreview(
       "Terminus"
     )),
   })
+}
+
+/** Unlike starting, stopping accepts an older commit: a preview of it may
+ * still be running after a canonical promotion. */
+export async function stopTerminusPreview(
+  env: Env,
+  networkId: string,
+  commit: string
+): Promise<void> {
+  const network = await new NetworkStore(env.DB).network(networkId)
+  if (!network) throw new PreviewError(404, "Unknown network")
+  await haltRepositoryPreview(env, snapshotAt(network, commit), "Terminus")
 }

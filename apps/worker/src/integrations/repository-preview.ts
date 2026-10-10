@@ -18,6 +18,10 @@ export interface PreviewSandbox {
   prepareTrainPreview(input: SandboxPreviewRequest): Promise<unknown>
 }
 
+export interface StoppablePreviewSandbox {
+  stopTrainPreview(): Promise<void>
+}
+
 /** Local previews go directly to Wrangler, even when the API is proxied by Vite. */
 export function previewBaseUrl(requestUrl: string, configured?: string): URL {
   const request = new URL(requestUrl)
@@ -64,6 +68,20 @@ export interface PreviewRepositories {
   revoke(access: RepositoryAccess): Promise<void>
 }
 
+/** One Sandbox per previewed snapshot, so the same snapshot is reused. */
+async function previewSandboxName(snapshot: RepositoryPreviewSnapshot) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(
+      `${snapshot.identity}:${snapshot.repoId}:${snapshot.commit}`
+    )
+  )
+  return `preview-${Array.from(new Uint8Array(digest))
+    .slice(0, 12)
+    .map((v) => v.toString(16).padStart(2, "0"))
+    .join("")}`
+}
+
 /** Read-only preparation shared by Train and canonical Terminus previews. */
 export async function prepareRepositoryPreview(
   snapshot: RepositoryPreviewSnapshot,
@@ -71,16 +89,7 @@ export async function prepareRepositoryPreview(
   repositories: PreviewRepositories,
   sandboxFor: (name: string) => PreviewSandbox
 ) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(
-      `${snapshot.identity}:${snapshot.repoId}:${snapshot.commit}`
-    )
-  )
-  const name = `preview-${Array.from(new Uint8Array(digest))
-    .slice(0, 12)
-    .map((v) => v.toString(16).padStart(2, "0"))
-    .join("")}`
+  const name = await previewSandboxName(snapshot)
   const access = await repositories.access(snapshot.repoId, "read")
   try {
     const { token } = sandboxPreviewResultSchema.parse(
@@ -128,4 +137,25 @@ export async function launchRepositoryPreview(
       `Could not start the ${label} preview. Check the demo app installs and builds, then try again.`
     )
   }
+}
+
+/** Stopping is idempotent: an expired or never-started preview is a no-op. */
+export async function stopRepositoryPreview(
+  snapshot: RepositoryPreviewSnapshot,
+  sandboxFor: (name: string) => StoppablePreviewSandbox
+): Promise<void> {
+  await sandboxFor(await previewSandboxName(snapshot)).stopTrainPreview()
+}
+
+export async function haltRepositoryPreview(
+  env: Env,
+  snapshot: RepositoryPreviewSnapshot,
+  label: "Train" | "Terminus"
+): Promise<void> {
+  if (env.REPOSITORY_MODE !== "artifacts" || !env.SANDBOX)
+    throw new PreviewError(
+      503,
+      `${label} previews require real Artifacts repositories and Cloudflare Sandboxes; fake mode has no app to run`
+    )
+  await stopRepositoryPreview(snapshot, (name) => env.SANDBOX.getByName(name))
 }

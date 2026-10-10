@@ -190,6 +190,20 @@ export async function prepareJunctionTopology(
     { kind: "junction", junction: created.value, version: null },
   ]
   const events: DomainEvent[] = [...created.events]
+  // Input Train forks are independent; all settle before a failure is reported.
+  const settled = await Promise.allSettled(
+    created.value.incomingTrainIds.map((name) =>
+      ports.repositories.fork({
+        sourceRepoId: repo.repoId,
+        commit: repo.headCommit,
+        name,
+      })
+    )
+  )
+  const forks = settled.map((fork) => {
+    if (fork.status === "rejected") throw fork.reason
+    return fork.value
+  })
   for (const [i, t] of topology.entries()) {
     writes.push(
       { kind: "line", line: t.line },
@@ -207,11 +221,7 @@ export async function prepareJunctionTopology(
     events.push(...t.events)
     if (i === request.incoming.length) continue
     const trainId = created.value.incomingTrainIds[i]!
-    const fork = await ports.repositories.fork({
-      sourceRepoId: repo.repoId,
-      commit: repo.headCommit,
-      name: trainId,
-    })
+    const fork = forks[i]!
     const train = applied(
       createTrain({
         id: trainId,

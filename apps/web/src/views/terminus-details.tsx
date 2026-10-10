@@ -2,6 +2,7 @@ import { ArrowUpRight, CircleCheck } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
 import { shortCommit, TechnicalDetails } from "./detail-parts"
 import { TerminusPreviewButton } from "./terminus-preview-button"
+import { EmergencyBrakeButton } from "./emergency-brake-button"
 
 export function TerminusDetails({
   snapshot,
@@ -84,6 +85,10 @@ export function TerminusDetails({
       <TechnicalDetails
         facts={[{ label: "Canonical commit", value: network.terminusCommit }]}
       />
+      <section className="detail-section">
+        <h3>Station controls</h3>
+        <EmergencyBrakeButton networkId={network.id} />
+      </section>
     </>
   )
 }

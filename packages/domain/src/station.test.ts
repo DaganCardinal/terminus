@@ -4,6 +4,7 @@ import {
   cancelStation,
   resetStation,
   startStation,
+  requestStationStop,
 } from "./station"
 import {
   active,
@@ -14,6 +15,54 @@ import {
   reviewing,
   unwrap,
 } from "./testing"
+
+describe("requestStationStop", () => {
+  it("records user intent without changing lifecycle state, and blocks a subsequent start", () => {
+    const original = active().station
+    if (original.state.status !== "active")
+      throw new Error("Expected active Station")
+    const station = {
+      ...original,
+      state: { ...original.state, status: "signaled" as const },
+    }
+    const result = requestStationStop(station, "Emergency Brake")
+    const stopped = unwrap(result)
+    expect(stopped.state).toEqual(station.state)
+    expect(eventTypes(result)).toEqual(["station.stop_requested"])
+    expectRejected(startStation(stopped), "invalid_state")
+    expect(requestStationStop(stopped, "Emergency Brake")).toMatchObject({
+      ok: true,
+      events: [],
+    })
+  })
+  it("clears the request only through explicit restart and preserves lifetime history", () => {
+    const stopped = unwrap(
+      requestStationStop(
+        { ...active().station, revisionCount: 2, runRetries: 3 },
+        "Emergency Brake"
+      )
+    )
+    const reset = unwrap(
+      resetStation(
+        unwrap(
+          blockStation(stopped, [
+            { kind: "needs_user", detail: "Emergency Brake" },
+          ])
+        )
+      )
+    )
+    expect(reset.stopRequest).toBeUndefined()
+    expect(reset.revisionCount).toBe(2)
+    expect(reset.runRetries).toBe(3)
+  })
+  it("rejects empty reasons and Stations without an unfinished run", () => {
+    expectRejected(requestStationStop(active().station, " "), "invalid_input")
+    expectRejected(
+      requestStationStop(atDepot().station, "Emergency Brake"),
+      "invalid_state"
+    )
+  })
+})
 
 const issue = { kind: "station_failed" as const, detail: "agent crashed" }
 

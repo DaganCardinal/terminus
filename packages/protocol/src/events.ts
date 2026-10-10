@@ -230,6 +230,7 @@ export const domainEventSchema = z.discriminatedUnion("type", [
   }),
   stationEvent("station.blocked").extend({ issues }),
   stationEvent("station.reset"),
+  stationEvent("station.stop_requested").extend({ reason: z.string() }),
   stationEvent("station.run_retried").extend({
     trainId: z.string(),
     issues,

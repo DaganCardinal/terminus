@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import type { GitWorkspace, RepositoryAccess } from "./git"
@@ -87,7 +88,7 @@ async function fixture() {
     tokenId: "unused",
     scope: "read",
   }
-  return { commit, workspace, access, repo: join(root, "repo") }
+  return { commit, workspace, access, source, repo: join(root, "repo") }
 }
 
 describe("sealed workspace", () => {
@@ -132,6 +133,25 @@ describe("sealed workspace", () => {
       count: 2,
       paths: ["src/App.tsx", "src/keep.ts"],
     })
+  })
+
+  it("clones only the tip commit when it is current, and full history for an older commit", async () => {
+    const f = await fixture()
+    const older = await f.commit({ "README.md": "older" })
+    const tip = await f.commit({ "README.md": "tip" })
+    // Local paths ignore --depth; a file:// URL negotiates like a remote.
+    const access = { ...f.access, remote: pathToFileURL(f.source).href }
+    const shallow = async () =>
+      (await readdir(join(f.repo, ".git"))).includes("shallow")
+
+    await checkoutSealedWorkspace(f.workspace, access, tip)
+    expect(await readFile(join(f.repo, "README.md"), "utf8")).toBe("tip")
+    expect(await shallow()).toBe(true)
+
+    await rm(f.repo, { recursive: true, force: true })
+    await checkoutSealedWorkspace(f.workspace, access, older)
+    expect(await readFile(join(f.repo, "README.md"), "utf8")).toBe("older")
+    expect(await shallow()).toBe(false)
   })
 
   it("refuses an abbreviated commit", async () => {

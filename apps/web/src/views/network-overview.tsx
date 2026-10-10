@@ -37,6 +37,7 @@ import {
   ReaderPath,
 } from "./repository-reader"
 import { TerminusPreviewButton } from "./terminus-preview-button"
+import { EmergencyBrakeButton } from "./emergency-brake-button"
 
 const POLL_MS = 15_000
 const FILES_OPEN_KEY = "terminus.overview.files-open"
@@ -252,6 +253,7 @@ export function NetworkOverview({
             </ul>
           </div>
           <div className="overview-actions">
+            <EmergencyBrakeButton networkId={networkId} compact />
             <TerminusPreviewButton
               networkId={networkId}
               commit={summary.terminusCommit}

@@ -6,7 +6,8 @@ import { api } from "./api"
 export type TrainPreviewState =
   | { status: "idle"; error?: string }
   | { status: "preparing" }
-  | { status: "ready"; url: string }
+  | { status: "ready"; url: string; commit: string }
+  | { status: "stopping" }
 
 const idle: TrainPreviewState = { status: "idle" }
 const previews = new Map<string, TrainPreviewState>()
@@ -30,7 +31,7 @@ export async function prepareTrainPreview(trainId: string, commit: string) {
   set(key, { status: "preparing" })
   try {
     const result = await api.previewTrain(trainId)
-    set(key, { status: "ready", url: result.url })
+    set(key, { status: "ready", url: result.url, commit: result.commit })
   } catch (caught) {
     set(key, {
       status: "idle",
@@ -38,6 +39,27 @@ export async function prepareTrainPreview(trainId: string, commit: string) {
         caught instanceof Error
           ? caught.message
           : "Could not start the Train preview.",
+    })
+  }
+}
+
+/** Stops the Sandbox built for the commit the server returned, which can
+ * differ from the drawer's commit if the Train moved during preparation. */
+export async function stopTrainPreview(trainId: string, commit: string) {
+  const key = keyFor(trainId, commit)
+  const current = previews.get(key)
+  if (current?.status !== "ready") return
+  set(key, { status: "stopping" })
+  try {
+    await api.stopTrainPreview(trainId, current.commit)
+    set(key, idle)
+  } catch (caught) {
+    set(key, {
+      status: "idle",
+      error:
+        caught instanceof Error
+          ? caught.message
+          : "Could not stop the Train preview.",
     })
   }
 }

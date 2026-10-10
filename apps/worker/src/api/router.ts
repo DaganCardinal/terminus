@@ -1,4 +1,5 @@
 import { layJunction } from "../agents/junctions"
+import { emergencyBrake } from "../agents/emergency-brake"
 import {
   alternativeHarnessesEnabled,
   unavailableHarnessSettings,
@@ -19,6 +20,9 @@ import {
   releaseJunctionRequestSchema,
   junctionRepairRequestSchema,
   terminusPreviewRequestSchema,
+  stopPreviewRequestSchema,
+  stopStationSandboxRequestSchema,
+  emergencyBrakeRequestSchema,
   setUnloadModeRequestSchema,
   approveUnloadRequestSchema,
   createNetworkRequestSchema,
@@ -34,8 +38,19 @@ import {
   type EventsResponse,
 } from "@terminus/protocol"
 import type { z } from "zod"
-import { launchTrainPreview, PreviewError } from "../integrations/train-preview"
-import { launchTerminusPreview } from "../integrations/terminus-preview"
+import {
+  SandboxCleanupError,
+  stopStationSandbox,
+} from "../integrations/sandbox-cleanup"
+import {
+  launchTrainPreview,
+  PreviewError,
+  stopTrainPreview,
+} from "../integrations/train-preview"
+import {
+  launchTerminusPreview,
+  stopTerminusPreview,
+} from "../integrations/terminus-preview"
 import {
   layCrossingDemoLines,
   layDemoLines,
@@ -67,6 +82,26 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/emergency-brake" }),
+    async (request, env, { networkId }) => {
+      await parse(request, emergencyBrakeRequestSchema)
+      return json(await emergencyBrake(env, networkId!))
+    },
+  ],
+  [
+    "DELETE",
+    new URLPattern({ pathname: "/api/stations/:stationId/sandbox" }),
+    async (request, env, { stationId }) => {
+      await stopStationSandbox(
+        env,
+        stationId!,
+        await parse(request, stopStationSandboxRequestSchema)
+      )
+      return new Response(null, { status: 204 })
+    },
+  ],
   [
     "POST",
     new URLPattern({ pathname: "/api/networks/:networkId/demo/junctions" }),
@@ -425,6 +460,15 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     },
   ],
   [
+    "DELETE",
+    new URLPattern({ pathname: "/api/networks/:networkId/preview" }),
+    async (request, env, { networkId }) => {
+      const { commit } = await parse(request, stopPreviewRequestSchema)
+      await stopTerminusPreview(env, networkId!, commit)
+      return new Response(null, { status: 204 })
+    },
+  ],
+  [
     "PUT",
     new URLPattern({ pathname: "/api/trains/:trainId/unload-mode" }),
     async (request, env, { trainId }) =>
@@ -517,6 +561,15 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       return Response.json(preview, {
         headers: { "cache-control": "no-store" },
       })
+    },
+  ],
+  [
+    "DELETE",
+    new URLPattern({ pathname: "/api/trains/:trainId/preview" }),
+    async (request, env, { trainId }) => {
+      const { commit } = await parse(request, stopPreviewRequestSchema)
+      await stopTrainPreview(env, trainId!, commit)
+      return new Response(null, { status: 204 })
     },
   ],
   [
@@ -753,6 +806,8 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
       if (caught instanceof DispatchError)
         return error(caught.status, caught.message, caught.details)
       if (caught instanceof PreviewError)
+        return error(caught.status, caught.message)
+      if (caught instanceof SandboxCleanupError)
         return error(caught.status, caught.message)
       throw caught
     }

@@ -141,6 +141,7 @@ export async function advanceTrain(
     return { kind: "finished", status: "siding" }
   }
   if (await applyStationRemoval(ports, loaded)) return { kind: "moved" }
+  if (await applyStationStop(ports, loaded)) return { kind: "moved" }
   const junctionMove = await advanceJunctionTrain(ports, loaded)
   if (junctionMove) return junctionMove
   const crossingMove = await advanceCrossing(ports, loaded)
@@ -411,6 +412,8 @@ export async function recordStationOutcome(
 ): Promise<RecordedStationOutcome> {
   const train = await loadTrain(ports, trainId)
   const station = await loadStation(ports, outcome.stationId)
+  if (station.value.stopRequest && (await applyStationStop(ports, train)))
+    return { backoff: false }
   const { status } = station.value.state
   if (status !== "signaled" && status !== "active" && status !== "revising") {
     return { backoff: false }
@@ -905,6 +908,34 @@ async function returnWork(
   return { kind: "moved" }
 }
 
+/** Stop requests are hard user decisions, never Engineer model choices. */
+async function applyStationStop(
+  ports: TrainPorts,
+  train: Loaded<Train>
+): Promise<boolean> {
+  const state = train.value.state
+  const stationId =
+    state.status === "in_transit" || state.status === "approaching"
+      ? state.toward
+      : state.status === "docked" || state.status === "reviewing"
+        ? state.at
+        : null
+  if (!stationId) return false
+  const station = await loadStation(ports, stationId)
+  if (
+    !station.value.stopRequest ||
+    ["blocked", "complete", "cancelled"].includes(station.value.state.status)
+  )
+    return false
+  await blockTrainAndStation(ports, train, station, [
+    {
+      kind: "needs_user",
+      detail: station.value.stopRequest.reason,
+    },
+  ])
+  return true
+}
+
 async function blockTrainAndStation(
   ports: TrainPorts,
   train: Loaded<Train>,
@@ -946,6 +977,10 @@ async function awaitStation(
   stationId: StationId
 ): Promise<TrainMove> {
   const station = await loadStation(ports, stationId)
+  if (station.value.stopRequest) {
+    await applyStationStop(ports, await loadTrain(ports, trainId))
+    return { kind: "moved" }
+  }
   const { status } = station.value.state
   if (status !== "signaled" && status !== "active" && status !== "revising") {
     throw new Error(

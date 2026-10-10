@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
 import type { TerminusPreview } from "@terminus/protocol"
 import { api } from "./api"
-import { getTerminusPreview, prepareTerminusPreview } from "./terminus-previews"
+import {
+  getTerminusPreview,
+  prepareTerminusPreview,
+  stopTerminusPreview,
+} from "./terminus-previews"
 
-vi.mock("./api", () => ({ api: { previewTerminus: vi.fn() } }))
+vi.mock("./api", () => ({
+  api: { previewTerminus: vi.fn(), stopTerminusPreview: vi.fn() },
+}))
 
 describe("Terminus preview state", () => {
   it("deduplicates requests and keeps a late old preview separate from a newer canonical commit", async () => {
@@ -55,6 +61,33 @@ describe("Terminus preview state", () => {
     expect(getTerminusPreview(networkId, commit)).toEqual({
       status: "idle",
       error: "Terminus changed",
+    })
+  })
+
+  it("stops only ready previews and reports a failed stop", async () => {
+    const networkId = "stop-network"
+    const commit = "a".repeat(40)
+    const stop = vi.mocked(api.stopTerminusPreview)
+    await stopTerminusPreview(networkId, commit)
+    expect(stop).not.toHaveBeenCalled()
+    vi.mocked(api.previewTerminus).mockResolvedValue({
+      networkId,
+      commit,
+      url: "https://stop.preview.test",
+    })
+    await prepareTerminusPreview(networkId, commit)
+    stop.mockResolvedValueOnce(undefined)
+    const stopping = stopTerminusPreview(networkId, commit)
+    expect(getTerminusPreview(networkId, commit).status).toBe("stopping")
+    await stopping
+    expect(stop).toHaveBeenCalledWith(networkId, commit)
+    expect(getTerminusPreview(networkId, commit)).toEqual({ status: "idle" })
+    await prepareTerminusPreview(networkId, commit)
+    stop.mockRejectedValueOnce(new Error("Sandbox unavailable"))
+    await stopTerminusPreview(networkId, commit)
+    expect(getTerminusPreview(networkId, commit)).toEqual({
+      status: "idle",
+      error: "Sandbox unavailable",
     })
   })
 })

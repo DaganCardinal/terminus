@@ -17,7 +17,7 @@ import type {
 import { Button } from "@terminus/ui/components/button"
 import { lineColor } from "@/map/layout"
 import { crossingScope } from "./crossing-scope"
-import { UnloadModeSelect } from "./unload-mode-select"
+import { UnloadModeSwitch } from "./unload-mode-switch"
 import { api } from "@/state/api"
 import {
   ManifestView,
@@ -307,7 +307,7 @@ function Proposal({
                 {j.name} → {j.outgoing.stations.map((s) => s.name).join(" → ")}
                 {j.outgoing.stations.length ? " → " : ""}Terminus
               </p>
-              <UnloadModeSelect
+              <UnloadModeSwitch
                 mode={j.outgoing.unloadMode ?? "auto"}
                 disabled={pending || state.status !== "ready"}
                 onChange={(mode) => void selectMode(`${j.key}-outgoing`, mode)}
@@ -881,7 +881,7 @@ function PlanFooter({
         <p className="dmsg-status" role="status">
           <LoaderCircle size={14} className="spin" />
           {state.status === "launching"
-            ? "Laying Lines on the map…"
+            ? "Laying tracks…"
             : "Starting Trains at their depots…"}
         </p>
         <button

@@ -60,6 +60,15 @@ export const sandboxNetworkSchema = z.object({
   /** The one model this Sandbox's harness may call, resolved by orchestration. */
   model: z.string().min(1).optional(),
   provider: modelProviderSchema.optional(),
+  /**
+   * Routes the Sandbox's Workers AI requests to one model instance, so the
+   * prompt prefix every harness turn repeats is read from its cache. The
+   * Sandbox sets it from its own identity.
+   */
+  sessionAffinity: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,128}$/)
+    .optional(),
 })
 export type SandboxNetwork = z.infer<typeof sandboxNetworkSchema>
 

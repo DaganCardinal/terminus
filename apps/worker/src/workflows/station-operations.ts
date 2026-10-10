@@ -2,7 +2,7 @@ import type { StationRunner, StationRunResult } from "@terminus/agent-runtime"
 import type { RepositoryHost } from "@terminus/artifacts"
 import { recordWorkspace, startStation } from "@terminus/domain"
 import type { NetworkStore } from "../integrations/network-store"
-import type { StationRunParams } from "./train-operations"
+import { stationRunId, type StationRunParams } from "./train-operations"
 import { applied } from "./transitions"
 
 export interface StationPorts {
@@ -22,6 +22,15 @@ export async function prepareStation(
   const train = await ports.store.train(params.trainId)
   let station = await ports.store.station(params.stationId)
   if (!train || !station) throw new Error(`Unknown run ${params.runId}`)
+  if (station.value.stopRequest)
+    throw new Error(station.value.stopRequest.reason)
+  if (
+    stationRunId(
+      station.value,
+      await ports.store.signalCount(params.stationId)
+    ) !== params.runId
+  )
+    throw new Error("Station run is no longer current")
   if (station.value.state.status !== "signaled") return
 
   if (station.value.state.workspace === null) {
@@ -64,6 +73,15 @@ export async function runStationAgent(
 ): Promise<StationRunResult> {
   const station = await ports.store.station(params.stationId)
   if (!station) throw new Error(`Unknown Station ${params.stationId}`)
+  if (station.value.stopRequest)
+    throw new Error(station.value.stopRequest.reason)
+  if (
+    stationRunId(
+      station.value,
+      await ports.store.signalCount(params.stationId)
+    ) !== params.runId
+  )
+    throw new Error("Station run is no longer current")
   const { state } = station.value
   if (state.status !== "active" && state.status !== "revising") {
     throw new Error(

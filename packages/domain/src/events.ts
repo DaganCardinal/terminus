@@ -214,6 +214,7 @@ export type DomainEvent =
     }
   | { type: "station.blocked"; stationId: StationId; issues: Issue[] }
   | { type: "station.reset"; stationId: StationId }
+  | { type: "station.stop_requested"; stationId: StationId; reason: string }
   | {
       type: "station.run_retried"
       stationId: StationId

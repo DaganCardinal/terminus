@@ -2,6 +2,8 @@
 
 Vite proxies `/api` to the Worker at port 8787. Feature-specific endpoints are documented alongside each feature: [planning](dispatcher-planning.md), [unloading](unloading.md), [previews](previews.md), [integration recovery](terminus-integration.md#conflicts-and-recovery), [Technician repairs](technician.md#api), [Crossings](crossings.md) and [Junctions](junctions.md).
 
+Use **Emergency Brake** in Network Overview or the Terminus tab to stop all Station work in that network and discard unfinished Sandbox contents. Its endpoint is `POST /api/networks/:networkId/emergency-brake` with JSON `{ "discardUnfinishedWork": true }`; see [Emergency Brake](station-execution.md#emergency-brake) for scope, partial failures and recovery. For targeted cleanup, `DELETE /api/stations/:stationId/sandbox` takes JSON `{ "runId": "STATION_ID-s1-r0" }`; see [Station Sandbox cleanup](station-execution.md#stopping-one-leftover-station-sandbox) for Workflow gates and unpublished-candidate protection.
+
 ## Creating a network
 
 Create a network and import a project:

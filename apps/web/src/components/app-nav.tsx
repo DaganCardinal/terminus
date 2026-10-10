@@ -1,7 +1,9 @@
-import { ChevronRight, TrainFront } from "lucide-react"
+import { ChevronRight } from "lucide-react"
 import { Fragment, type ReactNode } from "react"
 import { AppMenu } from "@/components/app-menu"
 import { routes } from "@/state/route"
+import logomark from "@/assets/terminus-logomark.svg"
+import logomarkWhite from "@/assets/terminus-logomark-white.svg"
 
 /** The app bar for pages outside the map, with a breadcrumb trail. */
 export function AppNav({
@@ -18,8 +20,21 @@ export function AppNav({
   return (
     <nav className="app-nav" aria-label="Main navigation">
       <a href={routes.networks()} className="app-brand">
-        <span>
-          <TrainFront size={17} />
+        <span className="app-logomark" aria-hidden="true">
+          <img
+            className="logomark-light"
+            src={logomark}
+            alt=""
+            width="36"
+            height="36"
+          />
+          <img
+            className="logomark-dark"
+            src={logomarkWhite}
+            alt=""
+            width="36"
+            height="36"
+          />
         </span>
         terminus<span className="brand-dot">.</span>
       </a>

@@ -11,6 +11,9 @@ function fakeContainer() {
     )
   const container = {
     running: true,
+    setInactivityTimeout: vi.fn(async () => {}),
+    interceptAllOutboundHttp: vi.fn(async () => {}),
+    interceptOutboundHttps: vi.fn(async () => {}),
     getTcpPort: vi.fn(() => ({ fetch })),
     destroy: vi.fn(async () => {}),
   }
@@ -49,6 +52,23 @@ async function withSandbox(
 }
 
 describe("Sandbox preview routing", () => {
+  it("installs an idle timeout before outbound setup and destroys a failed setup", async () => {
+    await withSandbox(async (sandbox, f) => {
+      f.container.interceptAllOutboundHttp.mockRejectedValueOnce(
+        new Error("Outbound setup failed")
+      )
+      await expect(
+        sandbox.configure({ repositories: [], allowModel: false })
+      ).rejects.toThrow("Outbound setup failed")
+      expect(f.container.setInactivityTimeout).toHaveBeenCalledWith(30 * 60_000)
+      expect(
+        f.container.setInactivityTimeout.mock.invocationCallOrder[0]
+      ).toBeLessThan(
+        f.container.interceptAllOutboundHttp.mock.invocationCallOrder[0]!
+      )
+      expect(f.container.destroy).toHaveBeenCalledTimes(1)
+    })
+  })
   it("reuses a running exact snapshot without reconfiguring its credentials", async () => {
     await withSandbox(async (sandbox, f) => {
       const result = await sandbox.prepareTrainPreview({
@@ -73,6 +93,22 @@ describe("Sandbox preview routing", () => {
       )
       expect(response.status).toBe(404)
       expect(f.container.getTcpPort).not.toHaveBeenCalled()
+    })
+  })
+
+  it("stops a running preview so open tabs report it stopped", async () => {
+    await withSandbox(async (sandbox, f) => {
+      f.container.destroy.mockImplementation(async () => {
+        f.container.running = false
+      })
+      await sandbox.stopTrainPreview()
+      await sandbox.stopTrainPreview()
+      expect(f.container.destroy).toHaveBeenCalledTimes(1)
+      const response = await sandbox.fetchTrainPreview(
+        new Request("https://preview.test/"),
+        saved.token
+      )
+      expect(response.status).toBe(410)
     })
   })
 

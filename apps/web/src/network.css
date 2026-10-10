@@ -2,6 +2,59 @@
  * Spacing scale: 4 8 12 16 20 24 32 48. Radii: 6 (controls), 10 (panels).
  * Elevation: panels rest on a tinted page with a hairline and a tight shadow. */
 
+.emergency-brake-trigger {
+  color: var(--danger-ink);
+}
+.emergency-brake-dialog {
+  width: min(520px, calc(100vw - 32px));
+  margin: auto;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--foreground);
+  box-shadow: var(--float-shadow);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+.emergency-brake-dialog::backdrop {
+  background: oklch(0.15 0 0 / 50%);
+}
+.emergency-brake-dialog h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.emergency-brake-dialog > p,
+.emergency-brake-dialog [role="status"] p {
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.emergency-brake-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+.emergency-brake-error {
+  color: var(--danger-ink);
+}
+.emergency-brake-failures {
+  display: grid;
+  gap: 12px;
+  font-size: 13px;
+}
+.emergency-brake-failures code,
+.emergency-brake-failures span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .app-shell {
   --page: oklch(0.975 0.004 150);
   --panel: var(--card);
@@ -95,15 +148,23 @@ button:disabled {
   font-weight: 700;
   letter-spacing: -0.5px;
 }
-.app-brand > span:first-child {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  color: white;
-  background: #263e32;
-  border-radius: 6px;
-  margin-right: 10px;
+.app-logomark {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+.logomark-light {
+  display: block;
+}
+.logomark-dark {
+  display: none;
+}
+.dark .logomark-light {
+  display: none;
+}
+.dark .logomark-dark {
+  display: block;
 }
 .brand-dot {
   color: #538167;
@@ -722,12 +783,6 @@ button:disabled {
 .dark .train-blocked .train-body {
   fill: #a82538;
 }
-.hub-letter {
-  fill: var(--map-paper);
-  font-size: 28px;
-  font-weight: 700;
-  text-anchor: middle;
-}
 .hub-title {
   fill: var(--map-ink);
   font-size: 22px;
@@ -1178,46 +1233,175 @@ button:disabled {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11.5px;
 }
-/* Work Manifest: what changes, when it is done, what must stay true.
- * Labels are supporting text; the content is what people read. */
-.manifest-fields {
+/* Work Manifest, laid out like a shipping manifest: the change as the
+ * headline, hazards marked with a hatched edge (after the red hatching on
+ * dangerous-goods declarations), criteria as a checklist, scope as cargo
+ * lines. Labels are small and consistent; the content is what people read. */
+.manifest {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
-.manifest-fields dt {
+.manifest-change {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.manifest-kind {
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--brand) 12%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: color-mix(in oklch, var(--brand) 85%, var(--foreground));
+}
+.manifest .manifest-change p {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--foreground);
+}
+.manifest-block h4 {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 4px;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted-foreground);
 }
-.manifest-fields dt span {
+.manifest-count {
   padding: 0 6px;
-  border-radius: 4px;
+  border-radius: 999px;
   background: var(--muted);
   font-size: 11px;
   font-weight: 500;
+  line-height: 18px;
 }
-.manifest-fields dd,
-.manifest-fields p,
-.manifest-fields li,
-.prose p,
-.prose li {
+.manifest-block li,
+.manifest-block p {
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.55;
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
-.manifest-fields ul,
-.prose ul {
-  list-style: disc;
+.manifest-hazard > ul {
   padding-left: 18px;
+  list-style: disc;
 }
-.manifest-fields li + li,
-.prose li + li {
-  margin-top: 2px;
+.manifest-hazard > ul > li + li,
+.manifest-checklist > li + li {
+  margin-top: 4px;
+}
+.manifest-avoid .detail-tags li {
+  font-size: 12px;
+}
+/* Must stay true: the one block that has to be seen. */
+.manifest-hazard {
+  --tone: var(--tone-review);
+  position: relative;
+  padding: 10px 12px 12px 22px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklch, var(--tone) 28%, transparent);
+  background: color-mix(in oklch, var(--tone) 6%, transparent);
+  overflow: hidden;
+}
+.manifest-hazard::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 8px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--tone) 0 3px,
+    transparent 3px 6px
+  );
+  opacity: 0.75;
+}
+.manifest-hazard h4 {
+  color: color-mix(in oklch, var(--tone) 80%, var(--foreground));
+}
+.manifest-avoid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed color-mix(in oklch, var(--tone) 30%, transparent);
+}
+.manifest-avoid > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: color-mix(in oklch, var(--tone) 80%, var(--foreground));
+}
+/* Done when: a checklist, ticked once the Conductor accepts the work. */
+ul.manifest-checklist,
+ul.manifest-cargo,
+ul.manifest-route {
+  padding: 0;
+  list-style: none;
+}
+.manifest-checklist > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.manifest-checklist svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: var(--muted-foreground);
+}
+.manifest-checklist.is-met svg {
+  color: #25865a;
+}
+.dark .manifest-checklist.is-met svg {
+  color: #4fbf8a;
+}
+/* Scope: one line per item of cargo, the file it lands in set first. */
+.manifest-cargo {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.manifest-cargo > li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+}
+.manifest-cargo > li + li {
+  border-top: 1px solid var(--border);
+}
+.manifest-cargo code {
+  justify-self: start;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  font-weight: 500;
+  word-break: break-all;
+  color: var(--foreground);
+}
+.manifest-cargo code + span {
+  color: var(--muted-foreground);
+}
+/* Builds on: the Stations this one waits for, drawn as stops. */
+ul.manifest-route {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.manifest-route > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 2px 9px 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.manifest-route li > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--muted-foreground);
 }
 /* An agent's written report, kept readable in a narrow drawer. */
 .prose {
@@ -1951,14 +2135,17 @@ button:disabled {
 }
 .starters-demo {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-top: 8px;
   padding-top: 12px;
   border-top: 1px dashed var(--border);
   font-size: 12px;
   color: var(--muted-foreground);
+}
+.starters-demo > span {
+  flex-basis: 100%;
 }
 
 /* A proposed plan, drawn in the map's own language. */
@@ -2673,25 +2860,115 @@ button.pstop-row:focus-visible {
   }
 }
 
-.unload-control {
+.unload-switch {
   display: grid;
   gap: 8px;
-  margin-block: 20px;
+  margin-block: 16px;
 }
-.unload-control label {
+.unload-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.unload-switch-row label {
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+}
+.unload-switch-row strong {
+  font-size: 13px;
   font-weight: 600;
 }
-.unload-control select {
-  max-width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
+.unload-switch-row label span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+.drawer-body .unload-switch .detail-note {
+  margin: 0;
+}
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--foreground) 18%, transparent);
+  transition: background-color 150ms ease;
+}
+.switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 25%);
+  transition: transform 150ms ease;
+}
+.switch[aria-checked="true"] {
+  background: var(--brand);
+}
+.switch[aria-checked="true"] > span {
+  transform: translateX(16px);
+}
+.switch:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--brand) 60%, transparent);
+  outline-offset: 2px;
+}
+.switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .switch,
+  .switch > span {
+    transition: none;
+  }
+}
+/* Remove Station: label over a full-width reason, the action under it. */
+.removal-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+.removal-form label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.removal-form textarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 10px;
+  border: 1px solid var(--input, var(--border));
   border-radius: 6px;
   background: var(--background);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
   color: var(--foreground);
+  resize: vertical;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
 }
-.unload-control p {
-  max-width: 65ch;
-  margin: 0;
+.removal-form textarea::placeholder {
+  color: var(--muted-foreground);
+}
+.removal-form textarea:focus {
+  outline: none;
+  border-color: color-mix(in oklch, var(--brand) 60%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand) 16%, transparent);
+}
+.removal-form button {
+  justify-self: end;
+  margin-top: 2px;
 }
 .unload-diff {
   max-height: 360px;

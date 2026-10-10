@@ -1,6 +1,12 @@
 import type { Station } from "@terminus/protocol"
 import type { ReactNode } from "react"
-import { CircleCheck, CircleMinus, CircleX } from "lucide-react"
+import {
+  CircleCheck,
+  CircleMinus,
+  CircleX,
+  Square,
+  TriangleAlert,
+} from "lucide-react"
 
 type Manifest = Station["manifest"]
 type Checks = { name: string; status: string; required: boolean }[]
@@ -128,60 +134,108 @@ export const changeKinds: Record<
   verification: "Verification",
 }
 
-/** The human-readable half of a Work Manifest: what changes, when it is done,
- * and what must stay true. Files, contracts and evidence live in
- * {@link manifestFacts} for a Technical details disclosure. */
+/** A scope line often names its file first ("src/app.tsx: wire the route").
+ * Split that path off so it reads like a cargo line: what, then where. */
+export function splitScope(item: string): { path?: string; text: string } {
+  const match = /^`?([\w@.~-]*[/.][\w@./~*-]*\w)`?\s*[:—–-]\s+(.+)$/.exec(item)
+  return match ? { path: match[1], text: match[2] ?? "" } : { text: item }
+}
+
+/** The human-readable half of a Work Manifest, laid out like a shipping
+ * manifest: the change up front, hazards marked so they cannot be missed,
+ * then the checklist, the cargo, and what it depends on. Contracts and
+ * evidence live in {@link manifestFacts} for a Technical details disclosure. */
 export function ManifestView({
   manifest,
   name,
+  met = false,
 }: {
   manifest: Manifest
   name: (id: string) => string
+  /** The Conductor accepted this work, so every criterion is met. */
+  met?: boolean
 }) {
   const change = manifest.repositoryChange
-  const rows: { label: ReactNode; body: ReactNode }[] = []
-  if (change)
-    rows.push({
-      label: (
-        <>
-          What changes <span>{changeKinds[change.kind]}</span>
-        </>
-      ),
-      body: <p>{change.description}</p>,
-    })
-  if (manifest.acceptanceCriteria.length)
-    rows.push({
-      label: "Done when",
-      body: <List items={manifest.acceptanceCriteria} />,
-    })
-  if (manifest.invariants.length)
-    rows.push({
-      label: "Must stay true",
-      body: <List items={manifest.invariants} />,
-    })
-  if (manifest.scope.length)
-    rows.push({ label: "Scope", body: <List items={manifest.scope} /> })
-  if (manifest.dependencies.length)
-    rows.push({
-      label: "Builds on",
-      body: <List items={manifest.dependencies.map(name)} />,
-    })
+  const MetIcon = met ? CircleCheck : Square
   return (
-    <dl className="manifest-fields">
-      {rows.map((row, i) => (
-        <div key={i}>
-          <dt>{row.label}</dt>
-          <dd>{row.body}</dd>
+    <div className="manifest">
+      {change && (
+        <div className="manifest-change">
+          <span className="manifest-kind">{changeKinds[change.kind]}</span>
+          <p>{change.description}</p>
         </div>
-      ))}
-    </dl>
+      )}
+      {(manifest.invariants.length > 0 || manifest.avoidAreas.length > 0) && (
+        <section className="manifest-block manifest-hazard">
+          <h4>
+            <TriangleAlert size={13} aria-hidden="true" /> Must stay true
+          </h4>
+          <List items={manifest.invariants} />
+          {manifest.avoidAreas.length > 0 && (
+            <div className="manifest-avoid">
+              <span>Do not touch</span>
+              <Tags items={manifest.avoidAreas} />
+            </div>
+          )}
+        </section>
+      )}
+      {manifest.acceptanceCriteria.length > 0 && (
+        <section className="manifest-block">
+          <h4>
+            Done when
+            <span className="manifest-count">
+              {met ? "All met" : manifest.acceptanceCriteria.length}
+            </span>
+          </h4>
+          <ul className={`manifest-checklist${met ? "is-met" : ""}`}>
+            {manifest.acceptanceCriteria.map((item, i) => (
+              <li key={i}>
+                <MetIcon size={14} aria-hidden="true" />
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {manifest.scope.length > 0 && (
+        <section className="manifest-block">
+          <h4>
+            Scope
+            <span className="manifest-count">{manifest.scope.length}</span>
+          </h4>
+          <ul className="manifest-cargo">
+            {manifest.scope.map((item, i) => {
+              const { path, text } = splitScope(item)
+              return (
+                <li key={i}>
+                  {path && <code>{path}</code>}
+                  <span>{text}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      )}
+      {manifest.dependencies.length > 0 && (
+        <section className="manifest-block">
+          <h4>Builds on</h4>
+          <ul className="manifest-route">
+            {manifest.dependencies.map((id) => (
+              <li key={id}>
+                <span aria-hidden="true" />
+                {name(id)}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
   )
 }
 
 export function manifestFacts(manifest: Manifest): Fact[] {
   return [
     { label: "Expected areas", value: manifest.expectedAreas },
-    { label: "Areas to avoid", value: manifest.avoidAreas },
     {
       label: "Contracts",
       value: manifest.contracts.map(

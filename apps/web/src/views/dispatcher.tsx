@@ -313,9 +313,10 @@ export function DispatcherPanel({
                   }
                 >
                   <Sparkles size={14} />
-                  {pending ? "Laying Lines…" : "Lay demo Lines"}
+                  {pending ? "Laying tracks…" : "Lay demo Lines"}
                 </Button>
                 <Button
+                  size="sm"
                   variant="outline"
                   disabled={pending}
                   onClick={() =>
@@ -325,6 +326,7 @@ export function DispatcherPanel({
                   Lay Crossing demo
                 </Button>
                 <Button
+                  size="sm"
                   variant="outline"
                   disabled={pending}
                   onClick={() =>

@@ -138,7 +138,7 @@ export class ExecutionSandbox extends DurableObject<Env> {
       return new Response("Not found", { status: 404 })
     if (!this.container().running)
       return new Response(
-        "This preview has expired. Open the network and prepare the preview again.",
+        "This preview has stopped or expired. Open the network and prepare the preview again.",
         { status: 410 }
       )
     const url = new URL(request.url)
@@ -161,6 +161,14 @@ export class ExecutionSandbox extends DurableObject<Env> {
         { status: 502 }
       )
     }
+  }
+
+  /** Stops the preview server now instead of waiting for the inactivity
+   * timeout. The token is kept, so open tabs report a stopped preview. */
+  async stopTrainPreview(): Promise<void> {
+    this.#network = null
+    this.#setup = null
+    if (this.container().running) await this.container().destroy()
   }
 
   async configure(network: SandboxNetwork): Promise<void> {
@@ -221,10 +229,18 @@ export class ExecutionSandbox extends DurableObject<Env> {
       this.#setup = (async () => {
         const container = this.container()
         if (!container.running) container.start({ enableInternet: false })
-        const outbound = this.ctx.exports.SandboxOutbound({ props: network })
+        // Install the idle limit before network setup, which may fail or hang.
+        await container.setInactivityTimeout(30 * 60_000)
+        // One affinity per Sandbox keeps a harness session's turns on one
+        // model instance, which caches their shared prompt prefix.
+        const outbound = this.ctx.exports.SandboxOutbound({
+          props: {
+            ...network,
+            sessionAffinity: `ses_${this.ctx.id.toString()}`,
+          },
+        })
         await container.interceptAllOutboundHttp(outbound)
         await container.interceptOutboundHttps("*", outbound)
-        await container.setInactivityTimeout(30 * 60_000)
       })().catch(async (error: unknown) => {
         this.#setup = null
         await this.container().destroy()

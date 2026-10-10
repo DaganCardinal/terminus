@@ -5,6 +5,10 @@
   "preview_urls": false,
   // Preserve the protected workers.dev app URL when adding preview routes.
   "workers_dev": true,
+  // Train/Terminus previews: preview-<snapshot>-<token>.terminusdev.com.
+  "routes": [
+    { "pattern": "*.terminusdev.com/*", "zone_name": "terminusdev.com" },
+  ],
   "main": "src/index.ts",
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat"],
@@ -24,6 +28,7 @@
       "binding": "DB",
       "database_name": "terminus",
       "migrations_dir": "migrations",
+      "database_id": "9f3f0c50-943c-4181-aea4-1f0bfb1e245f",
     },
   ],
   "workflows": [
@@ -89,17 +94,17 @@
     "ALTERNATIVE_HARNESSES_ENABLED": "false",
     // Exact public app origin, e.g. https://terminus.YOUR_SUBDOMAIN.workers.dev.
     // An empty value permits local development only; Access protects live traffic.
-    "APP_ORIGIN": "",
+    "APP_ORIGIN": "https://terminus.dagan-1c4.workers.dev/",
     // Live requests also verify the Cloudflare Access JWT and fail closed until
     // these are set. Team domain: https://YOUR_TEAM.cloudflareaccess.com. AUD:
     // the Access application's Audience tag(s), comma-separated.
     "ACCESS_REQUIRED": "true",
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "https://bpm-web-dev.cloudflareaccess.com",
+    "ACCESS_AUD": "bce6d76282855381ea1371683d67aac327cd9f9936b93286f5272b2210c9a01b",
     "ARTIFACTS_ACCOUNT_ID": "1c4341e1232d9a44116c124bc518a0f6",
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
-    "PREVIEW_BASE_URL": "",
+    "PREVIEW_BASE_URL": "https://terminusdev.com",
     // `fake` runs a role without a model. Any other value runs the model chosen
     // in Settings (General, or the network's override). The default preset,
     // Extra-light, uses @cf/zai-org/glm-5.3-flash for every text role.

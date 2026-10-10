@@ -48,6 +48,41 @@ export function requireCommit(value: string): string {
   return value
 }
 
+/**
+ * A detached checkout of one exact commit, for roles that never use history.
+ * The commit is usually the default-branch tip, so a depth-1 clone suffices;
+ * otherwise the full history is cloned, as before.
+ */
+export async function checkoutExactCommit(
+  workspace: GitWorkspace,
+  remote: string,
+  commit: string,
+  directory: string
+): Promise<void> {
+  requireCommit(commit)
+  await git(workspace, [
+    "clone",
+    "--depth",
+    "1",
+    "--no-checkout",
+    "--",
+    remote,
+    directory,
+  ])
+  const tip = (await git(workspace, ["rev-parse", "HEAD"], directory)).trim()
+  if (tip !== commit) {
+    const removed = await workspace.run(["rm", "-rf", "--", directory])
+    if (removed.exitCode !== 0)
+      throw new Error("Could not replace the shallow checkout")
+    await git(workspace, ["clone", "--no-checkout", "--", remote, directory])
+  }
+  await git(workspace, ["checkout", "--detach", commit], directory)
+  if (
+    (await git(workspace, ["rev-parse", "HEAD"], directory)).trim() !== commit
+  )
+    throw new Error("Checkout did not match the requested commit")
+}
+
 export async function remoteHead(
   workspace: GitWorkspace,
   access: RepositoryAccess

@@ -206,6 +206,46 @@ describe("Sandbox outbound capabilities", () => {
       model,
       reasoning_effort: "low",
     })
+    expect(forwarded.headers.has("x-session-affinity")).toBe(false)
+  })
+  it("pins Workers AI requests to the Sandbox's own session affinity, ignoring the caller's", async () => {
+    const send = vi.fn<typeof fetch>(async () => new Response("ok"))
+    const request = (url: string, model: string) =>
+      new Request(url, {
+        method: "POST",
+        headers: { "x-session-affinity": "ses_chosen-by-harness" },
+        body: JSON.stringify({ model }),
+      })
+    const sessionAffinity = "ses_sandbox"
+    await outboundRequest(
+      request(
+        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
+        model
+      ),
+      env,
+      { ...network, sessionAffinity },
+      send
+    )
+    await outboundRequest(
+      request(
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic/v1/messages",
+        "claude-haiku-4-5-20251001"
+      ),
+      env,
+      {
+        repositories: [],
+        allowModel: true,
+        provider: "anthropic",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        sessionAffinity,
+      },
+      send
+    )
+    const [workersAi, anthropic] = send.mock.calls.map(
+      ([forwarded]) => forwarded as Request
+    )
+    expect(workersAi!.headers.get("x-session-affinity")).toBe(sessionAffinity)
+    expect(anthropic!.headers.has("x-session-affinity")).toBe(false)
   })
   it("blocks attempts to use a different model or access the model from a Git-only Sandbox", async () => {
     const send = vi.fn<typeof fetch>()

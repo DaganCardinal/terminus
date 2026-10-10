@@ -1,5 +1,9 @@
-import { git, type GitWorkspace, type RepositoryAccess } from "./git"
-import { IntegrationGit } from "./integration-git"
+import {
+  checkoutExactCommit,
+  git,
+  type GitWorkspace,
+  type RepositoryAccess,
+} from "./git"
 import { isSecretPath } from "./repository-browse"
 
 /** Where a harness role explores a sealed checkout of one exact commit. */
@@ -14,7 +18,7 @@ export async function checkoutSealedWorkspace(
   access: RepositoryAccess,
   commit: string
 ): Promise<void> {
-  await new IntegrationGit(workspace, access, commit).checkout()
+  await checkoutExactCommit(workspace, access.remote, commit, sealedDirectory)
 }
 
 /**

@@ -75,6 +75,8 @@ export interface Station {
   manifest: WorkManifest
   /** Durable command, consumed and revalidated by the Train Workflow. */
   removalRequest?: { reason: string }
+  /** User interruption, applied by the owning Train Workflow. */
+  stopRequest?: { reason: string }
   /** How many times the Conductor has returned this Station's work. */
   revisionCount: number
   /**
@@ -92,6 +94,8 @@ export interface Station {
 }
 
 export function startStation(station: Station): Transition<Station> {
+  if (station.stopRequest)
+    return reject("invalid_state", station.stopRequest.reason)
   const { state } = station
   if (state.status !== "signaled") {
     return reject(
@@ -168,8 +172,28 @@ export function resetStation(station: Station): Transition<Station> {
       `Station ${station.id} can only be reset while blocked`
     )
   }
-  return accept({ ...station, retryCount: 0, state: { status: "waiting" } }, [
+  const cleared = { ...station }
+  delete cleared.stopRequest
+  return accept({ ...cleared, retryCount: 0, state: { status: "waiting" } }, [
     { type: "station.reset", stationId: station.id },
+  ])
+}
+
+export function requestStationStop(
+  station: Station,
+  reason: string
+): Transition<Station> {
+  if (!reason.trim())
+    return reject("invalid_input", "Stopping a Station requires a reason")
+  if (
+    ["waiting", "blocked", "complete", "cancelled"].includes(
+      station.state.status
+    )
+  )
+    return reject("invalid_state", "Station has no unfinished run to stop")
+  if (station.stopRequest) return accept(station, [])
+  return accept({ ...station, stopRequest: { reason } }, [
+    { type: "station.stop_requested", stationId: station.id, reason },
   ])
 }
 

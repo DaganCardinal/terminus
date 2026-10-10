@@ -228,7 +228,7 @@ export class HarnessSession {
 
 /** Capture potentially large tool events locally; only normalized outcomes leave the Sandbox. */
 export async function runPreparedHarness(
-  sandbox: StationSandbox,
+  sandbox: Pick<StationSandbox, "write" | "run">,
   prepared: PreparedHarness,
   directory: string,
   timeoutMs?: number,

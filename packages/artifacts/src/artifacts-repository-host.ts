@@ -11,6 +11,7 @@ import {
 import { TechnicianGit, type RepairGitInput } from "./technician-git"
 import { prepareMerge } from "./integration-git"
 import { readRepositoryFile, readRepositoryOverview } from "./repository-browse"
+import type { HeadReader } from "./smart-http"
 import {
   git,
   remoteHead,
@@ -65,14 +66,18 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   private readonly artifacts: ArtifactsNamespaces
   private readonly workspaces: GitWorkspaceFactory
   private readonly pause: () => Promise<void>
+  private readonly readHead: HeadReader | undefined
+  /** Without `readHead`, reading a head opens a workspace to run `git ls-remote`. */
   constructor(
     artifacts: ArtifactsNamespaces,
     workspaces: GitWorkspaceFactory,
-    pause: () => Promise<void>
+    pause: () => Promise<void>,
+    readHead?: HeadReader
   ) {
     this.artifacts = artifacts
     this.workspaces = workspaces
     this.pause = pause
+    this.readHead = readHead
   }
 
   async inspectRepair(input: RepairGitInput, candidate: RepoRef) {
@@ -96,15 +101,9 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async head(repoId: string): Promise<string> {
-    return this.withWorkspace(
-      [{ repoId, scope: "read" }],
-      async (workspace, [access]) => {
-        if (!access) throw new Error("Missing repository access")
-        const head = await remoteHead(workspace, access)
-        if (!head) throw new Error("Repository has no default-branch commit")
-        return head
-      }
-    )
+    const head = await this.currentHead(repoId)
+    if (!head) throw new Error("Repository has no default-branch commit")
+    return head
   }
 
   async readOverview(repoId: string, commit: string) {
@@ -301,27 +300,20 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         using source = await this.ready(input.sourceRepoId)
         let initialToken: string | undefined
         try {
-          await this.withWorkspace(
-            [{ repoId: input.sourceRepoId, scope: "read" }],
-            async (workspace, [access]) => {
-              if (!access) throw new Error("Missing repository access")
-              if ((await remoteHead(workspace, access)) !== input.commit) {
-                throw new RepositoryMovedError(
-                  "Fork source moved from the requested commit; reload and review"
-                )
-              }
-              try {
-                initialToken = (
-                  await source.fork(input.name, {
-                    description,
-                    defaultBranchOnly: true,
-                  })
-                ).token
-              } catch (error) {
-                if (!hasCode(error, "ALREADY_EXISTS")) throw error
-              }
-            }
-          )
+          if ((await this.currentHead(input.sourceRepoId)) !== input.commit)
+            throw new RepositoryMovedError(
+              "Fork source moved from the requested commit; reload and review"
+            )
+          try {
+            initialToken = (
+              await source.fork(input.name, {
+                description,
+                defaultBranchOnly: true,
+              })
+            ).token
+          } catch (error) {
+            if (!hasCode(error, "ALREADY_EXISTS")) throw error
+          }
         } finally {
           if (initialToken) {
             target = await this.ready(id)
@@ -332,18 +324,11 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
       }
       if ((await target.info()).description !== description)
         throw new Error("Repository name belongs to a different fork operation")
-      return await this.withWorkspace(
-        [{ repoId: id, scope: "read" }],
-        async (workspace, [access]) => {
-          if (!access) throw new Error("Missing repository access")
-          if ((await remoteHead(workspace, access)) !== input.commit) {
-            throw new RepositoryMovedError(
-              "Fork did not preserve the requested commit"
-            )
-          }
-          return { repoId: id, headCommit: input.commit }
-        }
-      )
+      if ((await this.currentHead(id)) !== input.commit)
+        throw new RepositoryMovedError(
+          "Fork did not preserve the requested commit"
+        )
+      return { repoId: id, headCommit: input.commit }
     } finally {
       target?.[Symbol.dispose]()
     }
@@ -456,6 +441,24 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   async revoke(access: RepositoryAccess): Promise<void> {
     using repo = await this.ready(access.repoId)
     await repo.revokeToken(access.tokenId)
+  }
+
+  /** The default-branch head, read without a Sandbox when the host can. */
+  private async currentHead(repoId: string): Promise<string | null> {
+    if (!this.readHead)
+      return this.withWorkspace(
+        [{ repoId, scope: "read" }],
+        async (workspace, [access]) => {
+          if (!access) throw new Error("Missing repository access")
+          return remoteHead(workspace, access)
+        }
+      )
+    const access = await this.access(repoId, "read")
+    try {
+      return await this.readHead(access)
+    } finally {
+      await this.revoke(access)
+    }
   }
 
   private async withWorkspace<T>(
