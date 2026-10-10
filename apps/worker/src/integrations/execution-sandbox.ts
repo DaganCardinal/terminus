@@ -24,11 +24,42 @@ export class ExecutionSandbox extends DurableObject<Env> {
   #network: SandboxNetwork | null = null
   #setup: Promise<void> | null = null
   #previewSetup: Promise<SandboxPreviewResult> | null = null
+  #purged = false
+
+  /** Register ownership before a container can start. Random sessions and
+   * preview snapshots must be discoverable even after their Workflow exits. */
+  private async register(remote?: string): Promise<void> {
+    if (this.#purged) throw new Error("Sandbox was deleted")
+    const previous = await this.ctx.storage.get<string>("namespace")
+    const match =
+      remote && /^\/git\/([^/]+)\/[^/]+$/.exec(new URL(remote).pathname)
+    const namespace = match ? decodeURIComponent(match[1]!) : previous
+    if (remote && !match) throw new Error("Invalid Artifacts remote")
+    if (!namespace) return
+    if (previous && previous !== namespace)
+      throw new Error("Sandbox cannot change network ownership")
+    const permitted = await this.env.DB.prepare(
+      "SELECT id FROM networks WHERE terminus_repo_id = ? AND deleting = 0 UNION ALL SELECT namespace FROM repository_provisions WHERE namespace = ?"
+    )
+      .bind(`${namespace}/terminus`, namespace)
+      .first()
+    if (!permitted) throw new Error("Network is deleting or no longer exists")
+    if (this.#purged) throw new Error("Sandbox was deleted")
+    if (previous) return
+    await this.env.DB.prepare(
+      "INSERT OR IGNORE INTO network_sandboxes (object_id, namespace) VALUES (?, ?)"
+    )
+      .bind(this.ctx.id.toString(), namespace)
+      .run()
+    if (this.#purged) throw new Error("Sandbox was deleted")
+    await this.ctx.storage.put("namespace", namespace)
+  }
 
   async prepareTrainPreview(
     input: SandboxPreviewRequest
   ): Promise<SandboxPreviewResult> {
     const parsed = sandboxPreviewRequestSchema.parse(input)
+    await this.register(parsed.remote)
     if (!this.#previewSetup) {
       this.#previewSetup = this.startTrainPreview(parsed).finally(() => {
         this.#previewSetup = null
@@ -172,7 +203,11 @@ export class ExecutionSandbox extends DurableObject<Env> {
   }
 
   async configure(network: SandboxNetwork): Promise<void> {
-    this.#network = sandboxNetworkSchema.parse(network)
+    const parsed = sandboxNetworkSchema.parse(network)
+    for (const repo of parsed.repositories) await this.register(repo.remote)
+    await this.register()
+    if (this.#purged) throw new Error("Sandbox was deleted")
+    this.#network = parsed
     this.#setup = null
     await this.ready()
   }
@@ -215,6 +250,14 @@ export class ExecutionSandbox extends DurableObject<Env> {
     if (this.container().running) await this.container().destroy()
   }
 
+  /** Permanent deletion removes the container and all Durable Object storage. */
+  async purge(): Promise<void> {
+    this.#purged = true
+    await this.#setup?.catch(() => {})
+    await this.close()
+    await this.ctx.storage.deleteAll()
+  }
+
   private container(): Container {
     if (!this.ctx.container)
       throw new Error("Sandbox container binding is missing")
@@ -222,6 +265,8 @@ export class ExecutionSandbox extends DurableObject<Env> {
   }
 
   private async ready(): Promise<void> {
+    await this.register()
+    if (this.#purged) throw new Error("Sandbox was deleted")
     if (!this.#network)
       throw new Error("Sandbox network capabilities have not been configured")
     if (!this.#setup || !this.container().running) {

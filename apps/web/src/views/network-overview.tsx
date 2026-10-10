@@ -37,7 +37,7 @@ import {
   ReaderPath,
 } from "./repository-reader"
 import { TerminusPreviewButton } from "./terminus-preview-button"
-import { EmergencyBrakeButton } from "./emergency-brake-button"
+import { NetworkActionsMenu } from "./network-actions-menu"
 
 const POLL_MS = 15_000
 const FILES_OPEN_KEY = "terminus.overview.files-open"
@@ -253,7 +253,6 @@ export function NetworkOverview({
             </ul>
           </div>
           <div className="overview-actions">
-            <EmergencyBrakeButton networkId={networkId} compact />
             <TerminusPreviewButton
               networkId={networkId}
               commit={summary.terminusCommit}
@@ -269,8 +268,24 @@ export function NetworkOverview({
               <MapIcon size={16} />
               Network Map
             </a>
+            <NetworkActionsMenu
+              networkId={networkId}
+              name={summary.name}
+              deleting={summary.deleting}
+              onDeleted={() => {
+                for (const key of overviewCache.keys())
+                  if (key.startsWith(`${networkId}\0`))
+                    overviewCache.delete(key)
+              }}
+            />
           </div>
         </header>
+        {summary.deleting && (
+          <p className="network-deletion-notice" role="status">
+            Network deletion is incomplete. New work is disabled. Use Network
+            actions → Retry Delete Network to finish cleanup.
+          </p>
+        )}
 
         <div className="overview-body">
           <nav

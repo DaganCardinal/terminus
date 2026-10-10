@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { CircleStop, LoaderCircle } from "lucide-react"
 import { Button } from "@terminus/ui/components/button"
 import type { EmergencyBrakeResult } from "@terminus/protocol"
@@ -7,9 +7,14 @@ import { api } from "@/state/api"
 export function EmergencyBrakeButton({
   networkId,
   compact = false,
+  open,
+  onOpenChange,
 }: {
   networkId: string
   compact?: boolean
+  /** A menu can control the dialog while keeping it outside the popup. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
@@ -17,6 +22,12 @@ export function EmergencyBrakeButton({
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<EmergencyBrakeResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    if (open === undefined) return
+    if (open) {
+      dialog.current?.showModal()
+    } else dialog.current?.close()
+  }, [open])
 
   const stop = async () => {
     setBusy(true)
@@ -33,25 +44,31 @@ export function EmergencyBrakeButton({
 
   return (
     <div className={compact ? "emergency-brake-compact" : "emergency-brake"}>
-      <Button
-        variant="outline"
-        size={compact ? "lg" : "sm"}
-        className="emergency-brake-trigger"
-        disabled={busy}
-        onClick={() => {
-          setResult(null)
-          setError(null)
-          dialog.current?.showModal()
-        }}
-      >
-        {busy ? (
-          <LoaderCircle size={16} className="animate-spin" aria-hidden="true" />
-        ) : (
-          <CircleStop size={16} aria-hidden="true" />
-        )}
-        {busy ? "Stopping Stations…" : "Emergency Brake"}
-      </Button>
-      {!compact && (
+      {open === undefined && (
+        <Button
+          variant="outline"
+          size={compact ? "lg" : "sm"}
+          className="emergency-brake-trigger"
+          disabled={busy}
+          onClick={() => {
+            setResult(null)
+            setError(null)
+            dialog.current?.showModal()
+          }}
+        >
+          {busy ? (
+            <LoaderCircle
+              size={16}
+              className="animate-spin"
+              aria-hidden="true"
+            />
+          ) : (
+            <CircleStop size={16} aria-hidden="true" />
+          )}
+          {busy ? "Stopping Stations…" : "Emergency Brake"}
+        </Button>
+      )}
+      {open === undefined && !compact && (
         <p className="detail-note">
           Stop this network’s Station agents and free their containers.
         </p>
@@ -61,6 +78,11 @@ export function EmergencyBrakeButton({
         className="emergency-brake-dialog"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
+        onClose={() => {
+          setResult(null)
+          setError(null)
+          onOpenChange?.(false)
+        }}
         onCancel={(event) => {
           if (busy) event.preventDefault()
         }}

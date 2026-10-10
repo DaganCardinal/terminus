@@ -624,9 +624,40 @@
 .overview-actions {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: auto auto auto;
   align-items: start;
   gap: 8px;
+}
+.network-actions-menu {
+  grid-column: 3;
+  grid-row: 1;
+}
+.network-danger-action,
+.network-deletion-notice {
+  color: var(--danger-ink, var(--destructive));
+}
+.network-deletion-notice {
+  margin: 0 0 24px;
+  font-size: 14px;
+}
+@media (max-width: 480px) {
+  .overview-actions {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px;
+  }
+  .overview-actions > .overview-map-button,
+  .overview-actions > .terminus-preview-compact > button {
+    min-width: 0;
+    padding-inline: 8px;
+    font-size: 13px;
+    gap: 4px;
+  }
+}
+@media (max-width: 360px) {
+  .overview-actions > .overview-map-button > svg,
+  .overview-actions > .terminus-preview-compact > button > svg {
+    display: none;
+  }
 }
 .overview-map-button {
   grid-row: 1;

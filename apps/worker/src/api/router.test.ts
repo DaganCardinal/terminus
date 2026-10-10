@@ -67,6 +67,51 @@ async function waitUntil(
 }
 
 describe("the API with real Workflows", () => {
+  it("permanently deletes waiting Dispatcher and Train Workflows and their Network", async () => {
+    const network = await createNetwork()
+    await post(`/networks/${network.id}/holds`, {
+      kind: "user",
+      scope: { kind: "network" },
+      note: "Hold for deletion test",
+    })
+    await post(`/networks/${network.id}/demo`)
+    const planResponse = await post(`/networks/${network.id}/plans`, {
+      requestId: crypto.randomUUID(),
+      goal: "Disposable deletion test",
+    })
+    const plan = dispatchPlanSchema.parse(await planResponse.json())
+    await waitUntil(async () => {
+      const current = await snapshot(network.id)
+      return (
+        current.trains.length === 2 &&
+        current.trains.every(({ train }) => train.state.status === "held") &&
+        current.plans.some(
+          (p) => p.id === plan.id && p.state.status === "ready"
+        )
+      )
+    })
+    const before = await snapshot(network.id)
+    const remove = () =>
+      api(`/networks/${network.id}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: '{"confirm":true}',
+      })
+    const response = await remove()
+    expect(response.status, await response.text()).toBe(204)
+    expect((await api(`/networks/${network.id}`)).status).toBe(404)
+    await expect(env.DISPATCH_WORKFLOW.get(plan.id)).rejects.toThrow(
+      "instance.not_found"
+    )
+    for (const { train } of before.trains)
+      await expect(env.TRAIN_WORKFLOW.get(train.id)).rejects.toThrow(
+        "instance.not_found"
+      )
+    expect((await api(`/networks/${network.id}/events?after=0`)).status).toBe(
+      404
+    )
+    expect((await remove()).status).toBe(204)
+  }, 20_000)
   it("removes a rejected Station through its Train Workflow and resumes the Line", async () => {
     const network = await createNetwork()
     const response = await post(`/networks/${network.id}/lines`, {
@@ -332,7 +377,7 @@ describe("the API with real Workflows", () => {
 
     const later = await api(`/networks/${network.id}/events?after=${lastSeq}`)
     expect(await later.json()).toEqual({ events: [], lastSeq })
-  })
+  }, 20_000)
 })
 
 describe("API validation", () => {

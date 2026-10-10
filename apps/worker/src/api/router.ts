@@ -1,5 +1,7 @@
 import { layJunction } from "../agents/junctions"
 import { emergencyBrake } from "../agents/emergency-brake"
+import { deleteNetwork } from "../agents/delete-network"
+import { NetworkStore } from "../integrations/network-store"
 import {
   alternativeHarnessesEnabled,
   unavailableHarnessSettings,
@@ -23,6 +25,7 @@ import {
   stopPreviewRequestSchema,
   stopStationSandboxRequestSchema,
   emergencyBrakeRequestSchema,
+  deleteNetworkRequestSchema,
   setUnloadModeRequestSchema,
   approveUnloadRequestSchema,
   createNetworkRequestSchema,
@@ -82,6 +85,15 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "DELETE",
+    new URLPattern({ pathname: "/api/networks/:networkId" }),
+    async (request, env, { networkId }) => {
+      await parse(request, deleteNetworkRequestSchema)
+      await deleteNetwork(env, networkId!)
+      return new Response(null, { status: 204 })
+    },
+  ],
   [
     "POST",
     new URLPattern({ pathname: "/api/networks/:networkId/emergency-brake" }),
@@ -739,6 +751,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
         return error(400, "`after` must be a non-negative integer")
       }
       const { store } = dispatcherPorts(env)
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
       const events = await store.eventsAfter(networkId!, after)
       const body: EventsResponse = {
         events,
@@ -795,12 +808,47 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
     if (!match) continue
     if (request.method !== method) continue
     try {
-      return await handler(
-        request,
-        env,
-        match.pathname.groups as Record<string, string>
-      )
+      const params = match.pathname.groups as Record<string, string>
+      const deleting =
+        method === "DELETE" &&
+        new URL(request.url).pathname ===
+          `/api/networks/${encodeURIComponent(params.networkId ?? "")}`
+      if (
+        !deleting &&
+        (method !== "GET" ||
+          new URL(request.url).pathname.includes("/repository"))
+      ) {
+        let networkId: string | undefined = params.networkId
+        for (const [key, table] of Object.entries({
+          trainId: "trains",
+          stationId: "stations",
+          planId: "dispatch_plans",
+          junctionId: "junctions",
+          integrationId: "integration_attempts",
+          crossingId: "crossings",
+        })) {
+          if (networkId || !params[key]) continue
+          networkId = (
+            await env.DB.prepare(`SELECT network_id FROM ${table} WHERE id = ?`)
+              .bind(params[key])
+              .first<{ network_id: string }>()
+          )?.network_id
+        }
+        if (networkId) {
+          const store = new NetworkStore(env.DB)
+          if (await store.network(networkId))
+            await store.assertActive(networkId)
+        }
+      }
+      return await handler(request, env, params)
     } catch (caught) {
+      if (String(caught).includes("network_deleting"))
+        return error(
+          409,
+          "This network is being deleted. Retry Delete Network to finish cleanup."
+        )
+      if (caught instanceof Error && caught.message === "Unknown network")
+        return error(404, "Unknown network")
       if (caught instanceof RequestError)
         return error(400, caught.message, caught.details)
       if (caught instanceof DispatchError)

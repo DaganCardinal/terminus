@@ -1,10 +1,4 @@
-import type {
-  Car,
-  EventEnvelope,
-  Line,
-  NetworkSnapshot,
-  Station,
-} from "@terminus/protocol"
+import type { Car, Line, NetworkSnapshot, Station } from "@terminus/protocol"
 import type { CSSProperties, ReactNode } from "react"
 import { useId, useState } from "react"
 import {
@@ -33,7 +27,7 @@ import {
   manifestFacts,
   shortCommit,
 } from "./detail-parts"
-import { describeEvent, describeLocation, namesFor } from "./describe"
+import { describeLocation, namesFor } from "./describe"
 import { JunctionDetails } from "./junctions"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { Crossings } from "./crossings"
@@ -653,7 +647,9 @@ export function TrainDetails({
                   }
                 >
                   <span>{i + 1}</span>
-                  {stop.kind === "crossing" ? `Pickup at ${s.name}` : s.name}
+                  <span>
+                    {stop.kind === "crossing" ? `Pickup at ${s.name}` : s.name}
+                  </span>
                   <StatusBadge
                     status={
                       stop.kind === "crossing"
@@ -692,40 +688,5 @@ export function TrainDetails({
       </Button>
       <p className="detail-note">Holds take effect at the next gate.</p>
     </>
-  )
-}
-
-export function ActivityFeed({
-  events,
-  snapshot,
-}: {
-  events: EventEnvelope[]
-  snapshot: NetworkSnapshot
-}) {
-  const name = namesFor(snapshot)
-  if (events.length === 0)
-    return (
-      <p className="detail-lead">
-        No events yet. Activity appears here as the network changes.
-      </p>
-    )
-  return (
-    <ol className="event-feed">
-      {[...events]
-        .reverse()
-        .slice(0, 100)
-        .map((envelope) => (
-          <li key={envelope.seq}>
-            <time dateTime={envelope.occurredAt}>
-              {new Date(envelope.occurredAt).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              })}
-            </time>
-            <span>{describeEvent(envelope.event, name)}</span>
-          </li>
-        ))}
-    </ol>
   )
 }

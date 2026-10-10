@@ -37,6 +37,7 @@ interface Envelope<T> {
   result: T | null
   success: boolean
   errors: { code: number; message: string }[]
+  result_info?: { cursor?: string; has_more?: boolean }
 }
 
 interface RepoWithRemote {
@@ -81,6 +82,40 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
         (error.code !== "ALREADY_EXISTS" && error.status !== 409)
       )
         throw error
+    }
+  }
+
+  /** Delete every repository, including candidates that were never recorded
+   * after a failed fork. The namespace belongs exclusively to one Network. */
+  async deleteRepositories(namespace: string): Promise<void> {
+    const at = `/${encodeURIComponent(namespace)}/repos`
+    const names: string[] = []
+    let cursor: string | undefined
+    do {
+      let page: Envelope<{ name: string }[]>
+      try {
+        page = await this.requestEnvelope(
+          "GET",
+          `${at}?limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+        )
+      } catch (error) {
+        if (error instanceof ArtifactsApiError && error.code === "NOT_FOUND")
+          return
+        throw error
+      }
+      names.push(...page.result!.map((repo) => repo.name))
+      const next = page.result_info?.cursor
+      if (page.result_info?.has_more && (!next || next === cursor))
+        throw new Error("Artifacts repository pagination did not advance")
+      cursor = page.result_info?.has_more === false ? undefined : next
+    } while (cursor)
+    for (const name of names) {
+      try {
+        await this.request("DELETE", `${at}/${encodeURIComponent(name)}`)
+      } catch (error) {
+        if (!(error instanceof ArtifactsApiError) || error.code !== "NOT_FOUND")
+          throw error
+      }
     }
   }
 
@@ -183,6 +218,14 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
     path: string,
     body?: unknown
   ): Promise<T> {
+    return (await this.requestEnvelope<T>(method, path, body)).result!
+  }
+
+  private async requestEnvelope<T = unknown>(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body?: unknown
+  ): Promise<Envelope<T>> {
     const response = await this.fetch(`${this.base}${path}`, {
       method,
       headers: {
@@ -195,7 +238,7 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
       .json()
       .catch(() => null)) as Envelope<T> | null
     if (response.ok && envelope?.success && envelope.result !== null)
-      return envelope.result
+      return envelope
     const first = envelope?.errors?.[0]
     const code =
       (first && errorCodes[first.code]) ??

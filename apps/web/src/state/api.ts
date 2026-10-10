@@ -29,6 +29,11 @@ import {
 
 /** Application-level commands and queries against the Worker API. */
 export const api = {
+  deleteNetwork: (networkId: string) =>
+    request<void>(`/networks/${encodeURIComponent(networkId)}`, {
+      method: "DELETE",
+      body: { confirm: true },
+    }),
   emergencyBrake: async (networkId: string) =>
     emergencyBrakeResultSchema.parse(
       await request(

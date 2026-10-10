@@ -19,12 +19,8 @@ import {
 import { api } from "@/state/api"
 import { routes } from "@/state/route"
 import { useNetwork } from "@/state/use-network"
-import {
-  ActivityFeed,
-  LineHeading,
-  StationDetails,
-  TrainDetails,
-} from "./details"
+import { ActivityFeed } from "./activity-feed"
+import { LineHeading, StationDetails, TrainDetails } from "./details"
 import { DispatcherButton, DispatcherPanel } from "./dispatcher"
 import { JunctionDetails } from "./junctions"
 import { TerminusDetails } from "./terminus-details"

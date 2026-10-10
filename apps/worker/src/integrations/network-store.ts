@@ -125,6 +125,7 @@ interface VersionedRow extends RecordRow {
 }
 
 interface NetworkRow {
+  deleting: number
   id: string
   name: string
   terminus_repo_id: string
@@ -1062,6 +1063,15 @@ export class NetworkStore {
     return row ? toNetwork(row) : null
   }
 
+  async assertActive(networkId: string): Promise<void> {
+    const row = await this.#db
+      .prepare("SELECT deleting FROM networks WHERE id = ?")
+      .bind(networkId)
+      .first<{ deleting: number }>()
+    if (!row) throw new Error("Unknown network")
+    if (row.deleting) throw new Error("network_deleting")
+  }
+
   /** The Network for an imported project, by its normalized source URL. */
   async networkForProject(
     projectSource: string
@@ -1244,6 +1254,8 @@ export class NetworkStore {
     writes: Write[],
     events: DomainEvent[]
   ): Promise<void> {
+    if (!writes.some((write) => write.kind === "network"))
+      await this.assertActive(networkId)
     const occurredAt = new Date().toISOString()
     const created = writes.filter(
       (write) =>
@@ -1708,6 +1720,7 @@ function toNetwork(row: NetworkRow): NetworkSummary {
     terminusRepoId: row.terminus_repo_id,
     terminusCommit: row.terminus_commit,
     createdAt: row.created_at,
+    ...(row.deleting ? { deleting: true } : {}),
     validation: validationCommandsSchema.parse(JSON.parse(row.validation)),
     ...(row.source_url ? { sourceUrl: row.source_url } : {}),
   }

@@ -47,10 +47,14 @@ export interface DispatcherPorts {
 
 /** A command the Dispatcher refused, with the HTTP status that fits it. */
 export class DispatchError extends Error {
-  readonly status: 400 | 404 | 409
+  readonly status: 400 | 404 | 409 | 503
   readonly details: unknown
 
-  constructor(status: 400 | 404 | 409, message: string, details?: unknown) {
+  constructor(
+    status: 400 | 404 | 409 | 503,
+    message: string,
+    details?: unknown
+  ) {
     super(message)
     this.name = "DispatchError"
     this.status = status

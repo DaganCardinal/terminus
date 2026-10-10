@@ -69,7 +69,7 @@ export interface PreviewRepositories {
 }
 
 /** One Sandbox per previewed snapshot, so the same snapshot is reused. */
-async function previewSandboxName(snapshot: RepositoryPreviewSnapshot) {
+export async function previewSandboxName(snapshot: RepositoryPreviewSnapshot) {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(

@@ -32,6 +32,9 @@ async function withSandbox(
     f: ReturnType<typeof fakeContainer>
   ) => Promise<void>
 ) {
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO repository_provisions VALUES ('default')"
+  ).run()
   const stub = env.SANDBOX.getByName(`preview-test-${crypto.randomUUID()}`)
   await runInDurableObject(stub, async (instance, state) => {
     // The test environment adds TEST_MIGRATIONS to Env; the bound production
@@ -52,6 +55,32 @@ async function withSandbox(
 }
 
 describe("Sandbox preview routing", () => {
+  it("registers reused previews and permanently purges the container and stored data", async () => {
+    await withSandbox(async (sandbox, f) => {
+      await sandbox.prepareTrainPreview({ ...saved, hostname: "localhost" })
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) FROM network_sandboxes WHERE namespace='default'"
+        ).first("COUNT(*)")
+      ).toBeGreaterThan(0)
+      f.container.destroy.mockImplementation(async () => {
+        f.container.running = false
+      })
+      await sandbox.purge()
+      expect(f.container.destroy).toHaveBeenCalledOnce()
+      expect(
+        (
+          await sandbox.fetchTrainPreview(
+            new Request("https://preview.test/"),
+            saved.token
+          )
+        ).status
+      ).toBe(404)
+      await expect(
+        sandbox.configure({ repositories: [], allowModel: false })
+      ).rejects.toThrow("Sandbox was deleted")
+    })
+  })
   it("installs an idle timeout before outbound setup and destroys a failed setup", async () => {
     await withSandbox(async (sandbox, f) => {
       f.container.interceptAllOutboundHttp.mockRejectedValueOnce(

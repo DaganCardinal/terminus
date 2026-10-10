@@ -30,6 +30,10 @@ export const createNetworkRequestSchema = z.object({
 
 export type CreateNetworkRequest = z.infer<typeof createNetworkRequestSchema>
 
+export const deleteNetworkRequestSchema = z
+  .object({ confirm: z.literal(true) })
+  .strict()
+
 /**
  * A Station to lay on a new Line. Manifest dependencies may name another
  * plan's `key` in the same request, or an existing Station's id.
@@ -89,6 +93,8 @@ export interface NetworkSummary {
   validation?: ValidationCommand[]
   /** The public Git URL Terminus was imported from, when there was one. */
   sourceUrl?: string
+  /** Cleanup is incomplete; only permanent deletion may be retried. */
+  deleting?: boolean
 }
 
 /** What the networks list shows about each network, without its full snapshot. */

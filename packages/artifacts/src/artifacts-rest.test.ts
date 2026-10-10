@@ -9,7 +9,12 @@ function client(
     method: string,
     path: string,
     body: unknown
-  ) => { status?: number; result?: unknown; errors?: unknown[] }
+  ) => {
+    status?: number
+    result?: unknown
+    errors?: unknown[]
+    result_info?: unknown
+  }
 ) {
   const calls: { method: string; path: string; body: unknown }[] = []
   const rest = new ArtifactsRestClient({
@@ -35,6 +40,7 @@ function client(
           success: status < 400,
           errors: reply.errors ?? [],
           messages: [],
+          result_info: reply.result_info,
         },
         { status }
       )
@@ -51,6 +57,44 @@ const repo = {
 }
 
 describe("Artifacts REST client", () => {
+  it("deletes all namespace repositories across pages, including unrecorded candidates", async () => {
+    const { rest, calls } = client((method, path) => {
+      if (method === "DELETE") return { status: 202, result: { id: path } }
+      if (path.includes("cursor="))
+        return {
+          result: [{ name: "unrecorded-candidate" }],
+          result_info: { has_more: false },
+        }
+      return {
+        result: [{ name: "terminus" }, { name: "station-a" }],
+        result_info: { cursor: "next/page", has_more: true },
+      }
+    })
+    await rest.deleteRepositories("tn-1")
+    expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "GET /tn-1/repos?limit=200",
+      "GET /tn-1/repos?limit=200&cursor=next%2Fpage",
+      "DELETE /tn-1/repos/terminus",
+      "DELETE /tn-1/repos/station-a",
+      "DELETE /tn-1/repos/unrecorded-candidate",
+    ])
+  })
+
+  it("allows repository cleanup retries after some repositories are already deleted", async () => {
+    const { rest } = client((method) =>
+      method === "GET"
+        ? { result: [{ name: "station-a" }] }
+        : { status: 404, errors: [{ code: 10200, message: "Already deleted" }] }
+    )
+    await expect(rest.deleteRepositories("tn-1")).resolves.toBeUndefined()
+    const failed = client(() => ({
+      status: 403,
+      errors: [{ code: 10400, message: "Not authorized" }],
+    }))
+    await expect(failed.rest.deleteRepositories("tn-1")).rejects.toThrow(
+      "Not authorized"
+    )
+  })
   it("addresses repos, forks and tokens inside the requested namespace", async () => {
     const { rest, calls } = client((method, path) => {
       if (method === "GET") return { result: repo }

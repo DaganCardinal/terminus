@@ -1,4 +1,8 @@
 import {
+  createWorkflow,
+  NetworkUnavailableError,
+} from "../integrations/workflow-start"
+import {
   FakeTechnicianRunner,
   FakeRepairConductor,
   ModelRepairConductor,
@@ -170,11 +174,18 @@ export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
     startStationRun: (params) => startStationRun(env, params),
     startIntegration: async (integrationId) => {
       try {
-        await env.INTEGRATION_WORKFLOW.create({
-          id: integrationId,
-          params: { integrationId },
-        })
+        await createWorkflow(
+          env,
+          env.INTEGRATION_WORKFLOW,
+          "integration_attempts",
+          integrationId,
+          {
+            id: integrationId,
+            params: { integrationId },
+          }
+        )
       } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
         await env.INTEGRATION_WORKFLOW.get(integrationId).catch(() => {
           throw error
         })
@@ -244,11 +255,18 @@ export function technicianPorts(
         : new FakeIntegrationValidator(),
     startRepair: async (repairId) => {
       try {
-        await env.TECHNICIAN_WORKFLOW.create({
-          id: repairId,
-          params: { repairId },
-        })
+        await createWorkflow(
+          env,
+          env.TECHNICIAN_WORKFLOW,
+          "technician_repairs",
+          repairId,
+          {
+            id: repairId,
+            params: { repairId },
+          }
+        )
       } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
         await env.TECHNICIAN_WORKFLOW.get(repairId).catch(() => {
           throw error
         })
@@ -278,8 +296,12 @@ export function dispatcherPorts(
     repositories: repositories(env),
     startTrain: async (trainId) => {
       try {
-        await env.TRAIN_WORKFLOW.create({ id: trainId, params: { trainId } })
+        await createWorkflow(env, env.TRAIN_WORKFLOW, "trains", trainId, {
+          id: trainId,
+          params: { trainId },
+        })
       } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
         await env.TRAIN_WORKFLOW.get(trainId).catch(() => {
           throw error
         })
@@ -346,8 +368,15 @@ export function dispatchPlanningPorts(
           ),
     startPlanning: async (planId) => {
       try {
-        await env.DISPATCH_WORKFLOW.create({ id: planId, params: { planId } })
+        await createWorkflow(
+          env,
+          env.DISPATCH_WORKFLOW,
+          "dispatch_plans",
+          planId,
+          { id: planId, params: { planId } }
+        )
       } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
         await env.DISPATCH_WORKFLOW.get(planId).catch(() => {
           throw error
         })
@@ -493,8 +522,15 @@ async function startStationRun(
   params: StationRunParams
 ): Promise<void> {
   try {
-    await env.STATION_WORKFLOW.create({ id: params.runId, params })
+    await createWorkflow(
+      env,
+      env.STATION_WORKFLOW,
+      "stations",
+      params.stationId,
+      { id: params.runId, params }
+    )
   } catch (error) {
+    if (error instanceof NetworkUnavailableError) throw error
     // The run already exists if it can be fetched; otherwise creation failed.
     await env.STATION_WORKFLOW.get(params.runId).catch(() => {
       throw error
@@ -519,8 +555,12 @@ export function junctionDispatchPorts(
     ...dispatcherPorts(env, models),
     startJunction: async (id) => {
       try {
-        await env.JUNCTION_WORKFLOW.create({ id, params: { junctionId: id } })
+        await createWorkflow(env, env.JUNCTION_WORKFLOW, "junctions", id, {
+          id,
+          params: { junctionId: id },
+        })
       } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
         await env.JUNCTION_WORKFLOW.get(id).catch(() => {
           throw error
         })
@@ -543,11 +583,18 @@ export function junctionExecutionPorts(
     conductor: conductor(env, execution?.model ?? model, execution),
     startIntegration: async (id: string) => {
       try {
-        await env.INTEGRATION_WORKFLOW.create({
+        await createWorkflow(
+          env,
+          env.INTEGRATION_WORKFLOW,
+          "integration_attempts",
           id,
-          params: { integrationId: id },
-        })
+          {
+            id,
+            params: { integrationId: id },
+          }
+        )
       } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
         const workflow = await env.INTEGRATION_WORKFLOW.get(id).catch(() => {
           throw error
         })
