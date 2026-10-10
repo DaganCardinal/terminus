@@ -7,9 +7,10 @@ import {
   type PlanningContext,
 } from "@terminus/domain"
 import type { DispatchPlanner } from "@terminus/agent-runtime"
-import type {
-  CreateDispatchPlanRequest,
-  NetworkSnapshot,
+import {
+  lineIdentities,
+  type CreateDispatchPlanRequest,
+  type NetworkSnapshot,
 } from "@terminus/protocol"
 import { DispatchError, type DispatcherPorts } from "./dispatcher"
 import { StaleWriteError } from "../integrations/network-store"
@@ -29,7 +30,38 @@ export interface DispatchPlanningPorts extends Pick<
 
 /** Existing Lines still own unintegrated code, even when individual Stations are complete. */
 export function planningContext(snapshot: NetworkSnapshot): PlanningContext {
+  // Finished as the map draws it: Lines joined by a Crossing or Junction
+  // finish together, so work collected in an unreleased Junction stays live.
+  const identities = lineIdentities(snapshot)
+  const junctions = snapshot.junctions ?? []
+  const outcome = (line: NetworkSnapshot["lines"][number]) => {
+    const junction = junctions.find(
+      (j) =>
+        j.id ===
+        (line.destination?.kind === "junction"
+          ? line.destination.junctionId
+          : line.origin?.kind === "junction"
+            ? line.origin.junctionId
+            : undefined)
+    )
+    return junction?.state.status !== "abandoned" &&
+      snapshot.trains.some(
+        ({ train }) =>
+          train.lineId === line.id && train.state.status === "unloaded"
+      )
+      ? ("integrated" as const)
+      : ("abandoned" as const)
+  }
+  const finishedLines = snapshot.lines
+    .filter((line) => identities.get(line.id)?.live === false)
+    .sort((a, b) =>
+      identities
+        .get(b.id)!
+        .finishedAt!.localeCompare(identities.get(a.id)!.finishedAt!)
+    )
+    .map((line) => ({ lineId: line.id, outcome: outcome(line) }))
   return {
+    finishedLines,
     junctions: snapshot.junctions ?? [],
     lines: snapshot.lines,
     stations: snapshot.stations,
@@ -37,13 +69,20 @@ export function planningContext(snapshot: NetworkSnapshot): PlanningContext {
     validationNames: (snapshot.network.validation ?? defaultValidation).map(
       (check) => check.name
     ),
+    // Live as the map draws it, except Lines whose own work already unloaded
+    // into Terminus: a live receiver keeps its Crossing source live, but that
+    // source's code is in the baseline and must not forecast collisions.
     activeLines: snapshot.lines
-      .filter((line) =>
-        snapshot.trains.some(
-          ({ train }) =>
-            train.lineId === line.id &&
-            !["unloaded", "siding"].includes(train.state.status)
-        )
+      .filter(
+        (line) =>
+          identities.get(line.id)?.live !== false &&
+          !(
+            line.destination?.kind !== "junction" &&
+            snapshot.trains.some(
+              ({ train }) =>
+                train.lineId === line.id && train.state.status === "unloaded"
+            )
+          )
       )
       .map((line) => ({
         name: line.name,

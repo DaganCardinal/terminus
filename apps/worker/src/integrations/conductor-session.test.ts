@@ -7,7 +7,9 @@ import type { StationSandbox } from "./station-runner"
 const model = "@cf/zai-org/glm-5.3"
 const commit = "c".repeat(40)
 
-function fixture(options: { installExit?: number; changed?: string[] } = {}) {
+function fixture(
+  options: { installExit?: number; testExit?: number; changed?: string[] } = {}
+) {
   const calls: {
     command: string[]
     cwd?: string
@@ -15,6 +17,10 @@ function fixture(options: { installExit?: number; changed?: string[] } = {}) {
   }[] = []
   const order: string[] = []
   const sandbox: StationSandbox = {
+    // The real Sandbox restores a cache first; the install itself is the same.
+    installDependencies: vi.fn(async (cwd: string) =>
+      sandbox.run(["npm", "ci", "--no-audit", "--no-fund"], cwd)
+    ),
     configure: vi.fn(async (network) => {
       order.push(`configure:${network.allowModel ? "model" : "git"}`)
     }),
@@ -38,6 +44,13 @@ function fixture(options: { installExit?: number; changed?: string[] } = {}) {
         return { ...ok, stdout: `${commit}\n` }
       if (command[0] === "git" && command[1] === "ls-files")
         return { ...ok, stdout: ".env\0src/App.tsx\0" }
+      if (command[0] === "npm" && command[1] === "test")
+        return {
+          ...ok,
+          exitCode: options.testExit ?? 0,
+          stdout: options.testExit ? "" : "1 test passed",
+          stderr: options.testExit ? "Expected footer" : "",
+        }
       if (command[0] === "npm")
         return {
           ...ok,
@@ -98,9 +111,14 @@ describe("Sandbox Conductor session", () => {
   it("installs with read access only, fingerprints and seals, then allows only the model", async () => {
     const f = fixture()
     const session = f.open()
-    expect(await session.prepare(f.material)).toEqual({
+    expect(await session.prepare()).toEqual({
       install: { exitCode: 0, outputTail: "" },
     })
+    expect(f.sandbox.configure).toHaveBeenLastCalledWith({
+      repositories: [],
+      allowModel: false,
+    })
+    await session.start("S", "Review", f.material)
     expect(f.repositories.access).toHaveBeenCalledWith("n/station-a", "read")
     expect(f.sandbox.configure).toHaveBeenNthCalledWith(1, {
       repositories: [
@@ -138,16 +156,55 @@ describe("Sandbox Conductor session", () => {
 
   it("reports a failed install instead of hiding it", async () => {
     const f = fixture({ installExit: 1 })
-    expect(await f.open().prepare(f.material)).toEqual({
+    expect(await f.open().prepare()).toEqual({
       install: { exitCode: 1, outputTail: "npm ERR! ERESOLVE" },
     })
+  })
+
+  it("runs requested validation in the sealed checkout without repository or model access", async () => {
+    const f = fixture({ testExit: 1 })
+    const preparation = await f
+      .open()
+      .prepare([{ name: "test", command: ["npm", "test"] }])
+    expect(preparation.evidence).toEqual({
+      checks: [
+        {
+          name: "test",
+          command: ["npm", "test"],
+          required: true,
+          status: "failed",
+          exitCode: 1,
+          stdout: "",
+          stderr: "Expected footer",
+          outputTruncated: false,
+        },
+      ],
+    })
+    const check = f.calls.find((c) => c.command[1] === "test")!
+    expect(check.cwd).toBe("/workspace/repo")
+    // Checks run after access is dropped, and their changes are detected.
+    const at = (entry: string) => f.order.lastIndexOf(entry)
+    expect(f.repositories.revoke).toHaveBeenCalledOnce()
+    expect(at("rm -rf")).toBeLessThan(at("npm test"))
+    expect(at("configure:git")).toBeLessThan(at("npm test"))
+    expect(at("npm test")).toBeLessThan(at("fingerprint:compare"))
+    expect(f.order).not.toContain("configure:model")
+  })
+
+  it("discards validation that changed tracked files", async () => {
+    const f = fixture({ changed: ["src/App.tsx"] })
+    await expect(
+      f.open().prepare([{ name: "test", command: ["npm", "test"] }])
+    ).rejects.toThrow(
+      "Project validation changed 1 tracked file(s) in the candidate checkout (src/App.tsx)"
+    )
   })
 
   it("runs the Conductor agent with commands allowed and checks the candidate is unchanged", async () => {
     const f = fixture()
     const session = f.open()
-    await session.prepare(f.material)
-    expect(await session.start("SYSTEM PROMPT", "Review it")).toBe(
+    await session.prepare()
+    expect(await session.start("SYSTEM PROMPT", "Review it", f.material)).toBe(
       '{"verdict":"accept"}'
     )
     const config = JSON.parse(
@@ -176,8 +233,8 @@ describe("Sandbox Conductor session", () => {
   it("discards a review that changed tracked files", async () => {
     const f = fixture({ changed: ["src/App.tsx"] })
     const session = f.open()
-    await session.prepare(f.material)
-    await expect(session.start("S", "Review")).rejects.toThrow(
+    await session.prepare()
+    await expect(session.start("S", "Review", f.material)).rejects.toThrow(
       "changed 1 tracked file(s) in the candidate checkout (src/App.tsx)"
     )
   })
@@ -186,7 +243,7 @@ describe("Sandbox Conductor session", () => {
     const f = fixture()
     vi.mocked(f.sandbox.run).mockRejectedValueOnce(new Error("lost"))
     const session = f.open()
-    await expect(session.prepare(f.material)).rejects.toThrow("lost")
+    await expect(session.prepare()).rejects.toThrow("lost")
     await session.close()
     expect(f.repositories.revoke).toHaveBeenCalledOnce()
     expect(f.sandbox.close).toHaveBeenCalledOnce()

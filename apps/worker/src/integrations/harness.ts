@@ -125,6 +125,8 @@ export function loggedWorkspace(
       })
       return result
     },
+    install: async (cwd) =>
+      commandResultSchema.parse(await sandbox.installDependencies(cwd)),
     close: () => sandbox.close(),
   }
 }

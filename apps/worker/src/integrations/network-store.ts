@@ -29,6 +29,7 @@ import {
   rejectApprovedRepair,
 } from "@terminus/domain"
 import {
+  lineIdentities,
   roleExecutions,
   roleExecutionsSchema,
   type RoleExecutions,
@@ -37,8 +38,8 @@ import {
   trainUnloadPolicySchema,
   crossingSchema,
   checkpointSchema,
-  conductorVerdictSchema,
-  type ConductorVerdict,
+  stationVerdictSchema,
+  type StationVerdict,
   stationRunResultSchema,
   validationCommandsSchema,
   integrationAttemptSchema,
@@ -139,7 +140,6 @@ interface NetworkListingRow extends NetworkRow {
   line_count: number
   train_counts: string | null
   junction_counts: string | null
-  active_lines: string | null
   station_total: number
   station_complete: number
   car_count: number
@@ -847,7 +847,7 @@ export class NetworkStore {
   async conductorReview(
     input: ReviewInput,
     model: string | AgentConfig
-  ): Promise<ConductorVerdict | null> {
+  ): Promise<StationVerdict | null> {
     const row = await this.#db
       .prepare("SELECT input, result FROM conductor_reviews WHERE id = ?")
       .bind(reviewId(input))
@@ -857,16 +857,16 @@ export class NetworkStore {
       throw new Error(
         "Conductor review identity was reused with different input or configuration"
       )
-    return conductorVerdictSchema.parse(JSON.parse(row.result))
+    return stationVerdictSchema.parse(JSON.parse(row.result))
   }
 
   async recordConductorReview(
     networkId: string,
     input: ReviewInput,
     model: string | AgentConfig,
-    verdict: ConductorVerdict
+    verdict: StationVerdict
   ): Promise<void> {
-    const validated = conductorVerdictSchema.parse(verdict)
+    const validated = stationVerdictSchema.parse(verdict)
     await this.#db
       .prepare(
         "INSERT INTO conductor_reviews (id, station_id, network_id, input, result, recorded_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING"
@@ -1099,13 +1099,6 @@ export class NetworkStore {
           (SELECT json_group_object(status, total) FROM (
             SELECT status, COUNT(*) AS total FROM trains
             WHERE network_id = n.id GROUP BY status)) AS train_counts,
-          (SELECT json_group_array(json_object(
-              'name', json_extract(l.record, '$.name'),
-              'index', l.position, 'status', t.status))
-            FROM (SELECT id, record, ROW_NUMBER() OVER (ORDER BY rowid) - 1
-                AS position FROM lines WHERE network_id = n.id) l
-            JOIN trains t ON t.line_id = l.id
-            WHERE t.status NOT IN ('unloaded', 'siding')) AS active_lines,
           (SELECT COUNT(*) FROM stations
             WHERE network_id = n.id AND status <> 'cancelled') AS station_total,
           (SELECT COUNT(*) FROM stations
@@ -1127,10 +1120,92 @@ export class NetworkStore {
         ${networkId ? "WHERE n.id = ?" : ""}
         ORDER BY n.created_at DESC`
     )
-    const { results } = await (
-      networkId ? statement.bind(networkId) : statement
-    ).all<NetworkListingRow>()
-    return results.map((row) => ({
+    const scoped = (sql: string) =>
+      networkId
+        ? this.#db.prepare(`${sql} WHERE network_id = ?`).bind(networkId)
+        : this.#db.prepare(sql)
+    const [listings, lineRows, trainRows, junctionRows] = await this.#db.batch([
+      networkId ? statement.bind(networkId) : statement,
+      this.#db
+        .prepare(
+          `SELECT network_id, record, created_at FROM lines
+            ${networkId ? "WHERE network_id = ?" : ""} ORDER BY rowid`
+        )
+        .bind(...(networkId ? [networkId] : [])),
+      scoped(
+        `SELECT network_id, line_id, status, COALESCE(state_entered_at, (
+             SELECT max(occurred_at) FROM events
+             WHERE events.network_id = trains.network_id AND events.train_id = trains.id
+           )) AS state_entered_at FROM trains`
+      ),
+      scoped("SELECT network_id, record FROM junctions"),
+    ])
+    const byNetwork = <T extends { network_id: string }>(
+      result: D1Result | undefined
+    ) => {
+      const groups = new Map<string, T[]>()
+      for (const row of (result?.results ?? []) as T[])
+        groups.set(row.network_id, [...(groups.get(row.network_id) ?? []), row])
+      return groups
+    }
+    const lines = byNetwork<
+      RecordRow & { network_id: string; created_at: string | null }
+    >(lineRows)
+    const trains = byNetwork<{
+      network_id: string
+      line_id: string
+      status: TrainState["status"]
+      state_entered_at: string | null
+    }>(trainRows)
+    const junctions = byNetwork<RecordRow & { network_id: string }>(
+      junctionRows
+    )
+    /** The Lines the map draws with a running Train, numbered and coloured
+     * as the map draws them. */
+    const activeLines = (network: NetworkRow) => {
+      const rows = lines.get(network.id) ?? []
+      const records = rows.map((row) => {
+        const line = parse<Line>(row)
+        return { ...line, stops: lineStops(line) }
+      })
+      const views = (trains.get(network.id) ?? []).map((row) => ({
+        train: { lineId: row.line_id, state: { status: row.status } },
+        stateEnteredAt: row.state_entered_at ?? network.created_at,
+      }))
+      const identities = lineIdentities({
+        network: { createdAt: network.created_at },
+        lines: records,
+        lineCreatedAt: Object.fromEntries(
+          rows.flatMap((row, i) =>
+            row.created_at ? [[records[i]!.id, row.created_at]] : []
+          )
+        ),
+        trains: views,
+        junctions: (junctions.get(network.id) ?? []).map((row) =>
+          parse<Junction>(row)
+        ),
+      })
+      return records.flatMap((line) => {
+        const status = views.find(
+          (view) =>
+            view.train.lineId === line.id &&
+            view.train.state.status !== "unloaded" &&
+            view.train.state.status !== "siding"
+        )?.train.state.status
+        const identity = identities.get(line.id)!
+        return status
+          ? [
+              {
+                name: line.name,
+                number: identity.slot + 1,
+                color: identity.color,
+                status,
+              },
+            ]
+          : []
+      })
+    }
+    return (listings!.results as NetworkListingRow[]).map((row) => ({
       ...toNetwork(row),
       activity: {
         lines: row.line_count,
@@ -1140,9 +1215,7 @@ export class NetworkStore {
         trains: JSON.parse(
           row.train_counts ?? "{}"
         ) as NetworkActivity["trains"],
-        activeLines: (
-          JSON.parse(row.active_lines ?? "[]") as NetworkActivity["activeLines"]
-        ).sort((a, b) => a.index - b.index),
+        activeLines: activeLines(row),
         stations: { total: row.station_total, complete: row.station_complete },
         cars: row.car_count,
         openConflicts: row.open_conflicts,
@@ -1369,7 +1442,11 @@ export class NetworkStore {
       junctionApprovals,
     ] = await this.#db.batch([
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
-      select("lines"),
+      this.#db
+        .prepare(
+          "SELECT record, created_at FROM lines WHERE network_id = ? ORDER BY rowid"
+        )
+        .bind(networkId),
       select("stations"),
       this.#db
         .prepare(
@@ -1421,6 +1498,11 @@ export class NetworkStore {
         ...line,
         stops: lineStops(line),
       })),
+      lineCreatedAt: Object.fromEntries(
+        (lines!.results as (RecordRow & { created_at: string | null })[])
+          .filter((row) => row.created_at)
+          .map((row) => [(JSON.parse(row.record) as Line).id, row.created_at!])
+      ),
       stations: records<Station>(stations),
       trains: (trains!.results as TrainRow[]).map((row) => {
         const train = parse<Train>(row)
@@ -1608,9 +1690,14 @@ export class NetworkStore {
       case "line":
         return db
           .prepare(
-            "INSERT INTO lines (id, network_id, record) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET record = excluded.record"
+            "INSERT INTO lines (id, network_id, record, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET record = excluded.record"
           )
-          .bind(write.line.id, networkId, JSON.stringify(write.line))
+          .bind(
+            write.line.id,
+            networkId,
+            JSON.stringify(write.line),
+            occurredAt
+          )
       case "station": {
         const { station, version } = write
         const record = JSON.stringify(station)

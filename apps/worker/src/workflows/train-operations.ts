@@ -28,6 +28,7 @@ import {
   evaluateTerminusEntry,
   unmetRequiredChecks,
   holdTrain,
+  recordStationEvidence,
   markReadyForPickup,
   nextStation,
   releaseTrain,
@@ -49,7 +50,7 @@ import {
   type TrainId,
 } from "@terminus/domain"
 import {
-  conductorVerdictSchema,
+  stationVerdictSchema,
   type StationOutcome,
   type IntegrationOutcome,
 } from "@terminus/protocol"
@@ -660,36 +661,47 @@ async function review(
   }
 
   // Failed required checks return the work without asking the Conductor:
-  // no review can accept it.
-  const failing = unmetRequiredChecks(
-    state.proposal.evidence,
-    station.value.manifest.expectedEvidence
-  )
-  if (failing.length > 0) {
-    return returnWork(ports, train, station, {
-      summary: "Required checks did not pass",
-      findings: failing.map((check) => `${check.name}: ${check.status}`),
-    })
+  // no review can accept it. Work without evidence gets it during review.
+  if (state.proposal.evidence.checks.length) {
+    const failing = unmetRequiredChecks(
+      state.proposal.evidence,
+      station.value.manifest.expectedEvidence
+    )
+    if (failing.length > 0) {
+      return returnWork(ports, train, station, {
+        summary: "Required checks did not pass",
+        findings: failing.map((check) => `${check.name}: ${check.status}`),
+      })
+    }
   }
 
   // The verdict is recorded by its own long-running step (`reviewStation`);
   // this step only applies it.
-  const verdict = await ports.store.conductorReview(
+  const recorded = await ports.store.conductorReview(
     reviewInput(train, station),
     ports.conductor.config ?? ports.conductor.model
   )
-  if (!verdict) return { kind: "review", stationId: station.value.id }
+  if (!recorded) return { kind: "review", stationId: station.value.id }
+  const { evidence, ...verdict } = recorded
+  // Evidence the review collected is applied with its verdict, never before:
+  // the review's identity includes the proposal it was given.
+  const reviewed = evidence
+    ? {
+        ...station,
+        value: applied(recordStationEvidence(station.value, evidence)).value,
+      }
+    : station
 
   switch (verdict.verdict) {
     case "return":
-      return returnWork(ports, train, station, verdict)
+      return returnWork(ports, train, reviewed, verdict)
     case "escalate":
-      await blockTrainAndStation(ports, train, station, [
+      await blockTrainAndStation(ports, train, reviewed, [
         { kind: "review_escalated", detail: verdict.summary },
       ])
       return { kind: "moved" }
     case "accept":
-      return accept(ports, train, station, verdict)
+      return accept(ports, train, reviewed, verdict)
   }
 }
 
@@ -749,7 +761,7 @@ export async function reviewStation(
   if (!network) throw new Error(`Unknown network ${train.networkId}`)
   if (station.value.state.status !== "in_review")
     throw new Error(`Station ${station.value.id} is not in review`)
-  const verdict = conductorVerdictSchema.parse(
+  const verdict = stationVerdictSchema.parse(
     await ports.conductor.review(input, {
       repoId: station.value.state.workspace.repoId,
       validation: network.validation,

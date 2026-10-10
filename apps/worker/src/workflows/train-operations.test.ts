@@ -600,6 +600,70 @@ describe("a Train on its Line", () => {
     expect((await ports.store.train(train.id))!.value.carIds).toHaveLength(1)
   })
 
+  describe("evidence collected during review", () => {
+    /** A Station run that leaves its evidence to the Conductor's checkout. */
+    const unvalidated: StationRunner = {
+      config: { harness: "fake", model: "fake" },
+      run: async (input) => {
+        const result = await new FakeStationRunner().run(input)
+        return result.ok
+          ? {
+              ...result,
+              proposal: { ...result.proposal, evidence: { checks: [] } },
+            }
+          : result
+      },
+    }
+    const checks = (status: "passed" | "failed") => ({
+      checks: [{ name: "test", required: true, status }],
+    })
+
+    it("attaches it to the accepted Car", async () => {
+      const review = vi.fn<Conductor["review"]>(async () => ({
+        verdict: "accept",
+        summary: "Footer renders",
+        findings: [],
+        evidence: checks("passed"),
+      }))
+      const ports = testPorts({
+        runner: unvalidated,
+        conductor: { model: "spy", review },
+      })
+      const network = await seedNetwork(ports)
+      const { train } = await seedLine(ports, network.id)
+
+      expect(await drive(ports, train.id)).toEqual({ kind: "await_terminus" })
+      // Empty evidence goes to review instead of being returned as missing.
+      expect(review.mock.calls[0]![0].proposal.evidence).toEqual({
+        checks: [],
+      })
+      const [car] = (await ports.store.snapshot(network.id))!.cars
+      expect(car!.evidence).toEqual(checks("passed"))
+    })
+
+    it("keeps it with the rejected candidate when the review escalates", async () => {
+      const ports = testPorts({
+        runner: unvalidated,
+        conductor: {
+          model: "spy",
+          review: async () => ({
+            verdict: "escalate",
+            summary: "Needs a contract decision",
+            findings: [],
+            evidence: checks("failed"),
+          }),
+        },
+      })
+      const network = await seedNetwork(ports)
+      const { train, stations } = await seedLine(ports, network.id)
+
+      expect(await drive(ports, train.id)).toEqual({ kind: "await_clear" })
+      const station = (await ports.store.station(stations[0]!.id))!.value
+      expect(station.state.status).toBe("blocked")
+      expect(station.lastReview?.proposal.evidence).toEqual(checks("failed"))
+    })
+  })
+
   it("blocks for intervention when the review step cannot produce a verdict", async () => {
     const ports = testPorts({
       conductor: {

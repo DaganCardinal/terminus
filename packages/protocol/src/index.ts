@@ -19,3 +19,4 @@ export * from "./technician"
 export * from "./junction"
 
 export * from "./junction-details"
+export * from "./line-identity"

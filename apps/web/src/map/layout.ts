@@ -1,4 +1,11 @@
-import type { Line, TrainState, TrainView } from "@terminus/protocol"
+import {
+  lineIdentities,
+  type Line,
+  type LineIdentity,
+  type NetworkSnapshot,
+  type TrainState,
+  type TrainView,
+} from "@terminus/protocol"
 import {
   pointOnTrack,
   roundTrack,
@@ -18,18 +25,6 @@ export const routeShapes = [
 ] as const
 export type RouteShape = (typeof routeShapes)[number]
 
-/** Dispatcher IDs contain random UUID entropy. Using it as a seed gives each
- * newly laid Line a random shape that survives polling, reloads and browsers.
- * Geometry is presentation only; it never becomes orchestration state. */
-export function shapeForLine(
-  id: string,
-  choices: readonly RouteShape[] = routeShapes
-): RouteShape {
-  let hash = 2166136261
-  for (const char of id) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
-  return choices[(hash >>> 0) % choices.length]!
-}
-
 const colors = [
   "#ce3548",
   "#176ab5",
@@ -40,18 +35,14 @@ const colors = [
   "#55762a",
   "#407e92",
 ]
-export function lineColor(line: Pick<Line, "name">, index: number): string {
-  const named: Record<string, string> = {
-    red: colors[0]!,
-    blue: colors[1]!,
-    green: colors[2]!,
-    purple: colors[3]!,
-    orange: colors[4]!,
-  }
-  return (
-    named[line.name.split(" ")[0]!.toLowerCase()] ??
-    colors[index % colors.length]!
-  )
+/** A Line's route colour, from the palette index in its identity. */
+export function lineColor(color: number): string {
+  return colors[color % colors.length]!
+}
+
+/** Every Line's identity when all of them are live, in order. */
+function freshIdentities(lines: Line[]) {
+  return lineIdentities({ network: { createdAt: "" }, lines, trains: [] })
 }
 
 // Diagram units. Curves follow transit-map practice: a radius of roughly
@@ -226,30 +217,50 @@ export interface NetworkLayout {
 /** Lines enter Terminus as a parallel bundle: each side's upper Lines curve
  * down into it and lower Lines curve up, on concentric curves, so no Line
  * crosses another and none needs a short jog. A middle row runs straight in.
- * Extra Stations widen the canvas; extra Lines make it taller. */
-export function layoutNetwork(lines: Line[]): NetworkLayout {
+ * Extra Stations widen the canvas; extra Lines make it taller.
+ *
+ * Each Line's number, colour and shape come from its identity. Its row comes
+ * from its identity's slot, so a new Line takes a finished Line's place, or,
+ * with `placement: "order"`, from its position in `lines`. */
+export function layoutNetwork(
+  lines: Line[],
+  identities?: Map<string, LineIdentity>,
+  placement: "slot" | "order" = "slot"
+): NetworkLayout {
+  let fresh: Map<string, LineIdentity> | undefined
+  const identity = (line: Line) =>
+    identities?.get(line.id) ?? (fresh ??= freshIdentities(lines)).get(line.id)!
+  const placed =
+    placement === "slot"
+      ? [...lines].sort((a, b) => identity(a).slot - identity(b).slot)
+      : lines
+  const keys = placed.map((line, i) =>
+    placement === "slot" ? identity(line).slot : i
+  )
   if (
-    lines.some(
+    placed.some(
       (l) =>
         l.destination?.kind === "junction" ||
         l.origin?.kind === "junction" ||
         l.stops?.some((s) => s.kind === "crossing")
     )
   )
-    return layoutGraph(lines)
-  let availableShapes: RouteShape[] = [...routeShapes]
-  const shapes = lines.map((line) => {
-    if (availableShapes.length === 0) availableShapes = [...routeShapes]
-    const shape = shapeForLine(line.id, availableShapes)
-    availableShapes = availableShapes.filter((candidate) => candidate !== shape)
-    return shape
-  })
+    return layoutGraph(placed, identity)
+  return layoutBundle(placed, identity, keys)
+}
+
+function layoutBundle(
+  lines: Line[],
+  identity: (line: Line) => LineIdentity,
+  keys: number[]
+): NetworkLayout {
+  const shapes = lines.map((line) => routeShapes[identity(line).shape]!)
   const span = Math.max(
     260,
     ...lines.map((line, i) => spanFor(shapes[i]!, line.stationIds.length))
   )
   const sides = [0, 1].map((side) =>
-    lines.map((_, i) => i).filter((i) => i % 2 === side)
+    lines.map((_, i) => i).filter((i) => keys[i]! % 2 === side)
   )
   const perSide = Math.max(1, ...sides.map((s) => s.length))
   const lanes = Math.max(1, Math.floor(perSide / 2))
@@ -377,10 +388,10 @@ export function layoutNetwork(lines: Line[]): NetworkLayout {
       )
       return {
         line,
-        number: index + 1,
-        color: lineColor(line, index),
+        number: identity(line).slot + 1,
+        color: lineColor(identity(line).color),
         shape: shapes[index]!,
-        side: index % 2 === 0 ? "left" : "right",
+        side: keys[index]! % 2 === 0 ? "left" : "right",
         points,
         stationTrack: points.slice(0, trackLength),
         track,
@@ -463,7 +474,10 @@ function fanIn(feeders: { index: number; y: number }[], center?: number): Fan {
   }
 }
 
-function layoutGraph(lines: Line[]): NetworkLayout {
+function layoutGraph(
+  lines: Line[],
+  identity: (line: Line) => LineIdentity
+): NetworkLayout {
   const stopsOf = (line: Line) =>
     line.stops ??
     line.stationIds.map((stationId) => ({
@@ -917,8 +931,8 @@ function layoutGraph(lines: Line[]): NetworkLayout {
     const stations = d.stationVertices.map((v) => points[v]!)
     return {
       line,
-      number: index + 1,
-      color: lineColor(line, index),
+      number: identity(line).slot + 1,
+      color: lineColor(identity(line).color),
       shape: "direct",
       side: "left",
       points,
@@ -976,6 +990,11 @@ function transitDistance(route: RouteLayout, toward: string, seconds: number) {
   return from + (wait - from) * (1 - 0.5 ** (seconds / TRANSIT_HALF_LIFE))
 }
 
+/** True while a Train waits for the user to approve its unload. */
+export const awaitingApproval = (state: TrainState) =>
+  state.status === "held" &&
+  state.reasons.some((reason) => reason.kind === "awaiting_user_approval")
+
 /** Where a Train is drawn while it is not moving. */
 function restingDistance(state: TrainState, route: RouteLayout): number | null {
   const station = (id: string) =>
@@ -984,14 +1003,11 @@ function restingDistance(state: TrainState, route: RouteLayout): number | null {
     ] ?? 0
   switch (state.status) {
     case "unloaded":
+      // Into Terminus (or the Junction), where the track ends.
+      return route.track.length
     case "siding":
       return null
     case "held":
-      if (
-        state.reasons.some((reason) => reason.kind === "awaiting_user_approval")
-      )
-        return null
-      return restingDistance(state.resume, route)
     case "blocked":
       return restingDistance(state.resume, route)
     case "ready":
@@ -1048,4 +1064,26 @@ export function trainDistance(
 /** True while a Train's target position changes over time. */
 export function isMoving(motion: TrainMotion): boolean {
   return motion.state.status === "in_transit"
+}
+
+const snapshotIdentities = new WeakMap<
+  Pick<NetworkSnapshot, "lines">,
+  Map<string, LineIdentity>
+>()
+/** Every Line's identity in this snapshot, computed once per snapshot. */
+export function identitiesOf(snapshot: NetworkSnapshot) {
+  let identities = snapshotIdentities.get(snapshot)
+  if (!identities) {
+    identities = lineIdentities(snapshot)
+    snapshotIdentities.set(snapshot, identities)
+  }
+  return identities
+}
+
+/** The number and colour a Line is drawn with. */
+export function lineBadge(snapshot: NetworkSnapshot, lineId: string) {
+  const identity = identitiesOf(snapshot).get(lineId)
+  return identity
+    ? { number: identity.slot + 1, color: lineColor(identity.color) }
+    : null
 }

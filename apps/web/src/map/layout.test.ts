@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
-import type { Line, TrainState } from "@terminus/protocol"
+import { lineIdentities, type Line, type TrainState } from "@terminus/protocol"
 import {
   TRACK_WIDTH,
   layoutNetwork,
+  lineColor,
   routeShapes,
   isMoving,
-  shapeForLine,
   trainDistance,
   type TrainMotion,
 } from "./layout"
@@ -29,9 +29,9 @@ const line = (id: string, count = 3): Line => ({
 describe("network map projection", () => {
   it("assigns all six shapes from Line identity and preserves them through reloads and additions", () => {
     const lines = Array.from({ length: 100 }, (_, i) => line(`line-${i}`))
-    expect(new Set(lines.map((l) => shapeForLine(l.id)))).toEqual(
-      new Set(routeShapes)
-    )
+    expect(
+      new Set(lines.map((l) => layoutNetwork([l]).routes[0]!.shape))
+    ).toEqual(new Set(routeShapes))
     const before = layoutNetwork(lines.slice(0, 6)).routes.map((r) => r.shape)
     expect(new Set(before).size).toBe(6)
     expect(
@@ -44,6 +44,41 @@ describe("network map projection", () => {
         .routes.slice(0, 6)
         .map((r) => r.shape)
     ).toEqual(before)
+  })
+  it("gives a finished Line's row, number and colour to the next Line laid", () => {
+    const [a, b, c] = [line("a"), line("b"), line("c")]
+    const view = (
+      lineId: string,
+      status: TrainState["status"],
+      at: string
+    ) => ({
+      train: { lineId, state: { status } },
+      stateEnteredAt: at,
+    })
+    const identities = lineIdentities({
+      network: { createdAt: at(0) },
+      lines: [a, b, c],
+      lineCreatedAt: { a: at(1), b: at(1), c: at(10) },
+      trains: [
+        view("a", "unloaded", at(5)),
+        view("b", "in_transit", at(1)),
+        view("c", "ready", at(10)),
+      ],
+    })
+    const before = layoutNetwork([a, b]).routes
+    const after = layoutNetwork([b, c], identities).routes
+    const routeOf = (routes: typeof before, id: string) =>
+      routes.find((r) => r.line.id === id)!
+    expect(routeOf(after, "c")).toMatchObject({
+      number: 1,
+      side: routeOf(before, "a").side,
+      color: routeOf(before, "a").color,
+    })
+    expect(routeOf(after, "b")).toMatchObject({
+      number: 2,
+      side: routeOf(before, "b").side,
+      color: lineColor(identities.get("b")!.color),
+    })
   })
   it("keeps stations in travel order, geometry in bounds and bends on the transit grid", () => {
     for (const count of [1, 2, 6, 12, 24]) {
@@ -76,10 +111,8 @@ describe("network map projection", () => {
     const byShape = new Map()
     for (let i = 0; i < 100; i++) {
       const l = line(`line-${i}`)
-      byShape.set(
-        shapeForLine(l.id),
-        layoutNetwork([l]).routes[0]!.stationTrack
-      )
+      const route = layoutNetwork([l]).routes[0]!
+      byShape.set(route.shape, route.stationTrack)
     }
     expect(
       new Set([...byShape.values()].map((p) => JSON.stringify(p))).size
@@ -186,7 +219,7 @@ describe("network map projection", () => {
     )
     expect(isMoving(stoppedMoving)).toBe(false)
   })
-  it("removes terminal Trains from track and parks returning ones past the last Station", () => {
+  it("runs unloaded Trains into Terminus, removes sided ones and parks returning ones past the last Station", () => {
     const { routes } = layoutNetwork([line("a")])
     const route = routes[0]!
     expect(
@@ -195,7 +228,7 @@ describe("network map projection", () => {
         route,
         T0
       )
-    ).toBeNull()
+    ).toBe(route.track.length)
     expect(
       trainDistance(
         motion({ status: "siding", reason: "Abandoned" }),
@@ -211,34 +244,23 @@ describe("network map projection", () => {
       )
     ).toBeGreaterThan(route.stationDistances.at(-1)!)
   })
-  it("projects approval holds into the review yard while other holds remain on track", () => {
+  it("holds Trains awaiting approval on track, where they wait to return", () => {
     const route = layoutNetwork([line("a")]).routes[0]!
     const resume = {
       status: "returning" as const,
       phase: "awaiting_clearance" as const,
     }
+    const returning = trainDistance(motion(resume), route, T0)!
+    const held = (
+      reasons: Extract<TrainState, { status: "held" }>["reasons"]
+    ) => trainDistance(motion({ status: "held", resume, reasons }), route, T0)
+
     expect(
-      trainDistance(
-        motion({
-          status: "held",
-          resume,
-          reasons: [{ kind: "awaiting_user_approval", trainCommit: "head" }],
-        }),
-        route,
-        T0
-      )
-    ).toBeNull()
-    expect(
-      trainDistance(
-        motion({
-          status: "held",
-          resume,
-          reasons: [{ kind: "user_hold", holdId: "h" }],
-        }),
-        route,
-        T0
-      )
-    ).toBeGreaterThan(route.stationDistances.at(-1)!)
+      held([{ kind: "awaiting_user_approval", trainCommit: "head" }])
+    ).toBe(returning)
+    expect(held([{ kind: "user_hold", holdId: "h" }])).toBe(returning)
+    expect(returning).toBeGreaterThan(route.stationDistances.at(-1)!)
+    expect(returning).toBeLessThan(route.track.length)
   })
   it("joins every change of direction with a curve, never a hard corner", () => {
     for (const count of [1, 3, 6, 8, 13, 24]) {

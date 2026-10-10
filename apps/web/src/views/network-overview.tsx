@@ -36,6 +36,7 @@ import {
   FileView,
   ReaderPath,
 } from "./repository-reader"
+import { statusWords } from "./describe"
 import { TerminusPreviewButton } from "./terminus-preview-button"
 import { NetworkActionsMenu } from "./network-actions-menu"
 
@@ -471,13 +472,13 @@ function NetworkCard({
       {activity.activeLines.length > 0 && (
         <ul className="rail-lines" aria-label="Lines with a Train running">
           {activity.activeLines.map((line) => (
-            <li key={line.index}>
+            <li key={line.number}>
               <i
-                style={{ background: lineColor(line, line.index) }}
+                style={{ background: lineColor(line.color) }}
                 aria-hidden="true"
               />
               <span>{line.name}</span>
-              <small>{line.status.replaceAll("_", " ")}</small>
+              <small>{statusWords(line.status)}</small>
             </li>
           ))}
         </ul>

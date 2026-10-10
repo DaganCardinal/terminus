@@ -10,7 +10,15 @@ import { Minus, Plus, Scan } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
 import logomark from "@/assets/terminus-logomark.svg"
 import logomarkWhite from "@/assets/terminus-logomark-white.svg"
-import { BULLET_OFFSET, HUB_RADIUS, TRACK_WIDTH, layoutNetwork } from "./layout"
+import { statusWords } from "@/views/describe"
+import {
+  BULLET_OFFSET,
+  HUB_RADIUS,
+  TRACK_WIDTH,
+  awaitingApproval,
+  identitiesOf,
+  layoutNetwork,
+} from "./layout"
 import { useTrainMotion } from "./use-train-motion"
 
 export type MapSelection = {
@@ -58,7 +66,6 @@ function zoomAround(view: View, factor: number, cx: number, cy: number): View {
   return { k, x: cx - (cx - view.x) * f, y: cy - (cy - view.y) * f }
 }
 
-const words = (text: string) => text.replaceAll("_", " ")
 function keyboard(event: KeyboardEvent<SVGGElement>, action: () => void) {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault()
@@ -115,8 +122,72 @@ export function NetworkMap({
   const gesture = useRef({ startX: 0, startY: 0, moved: false })
   const suppressClick = useRef(false)
 
+  /** Trains seen running this session. Only these run into Terminus when
+   * they unload, so a reload never replays an old arrival. */
+  const [seenOnTrack, setSeenOnTrack] = useState(() => new Set<string>())
+  const running = snapshot.trains
+    .filter(({ train }) => !["unloaded", "siding"].includes(train.state.status))
+    .map(({ train }) => train.id)
+  if (running.some((id) => !seenOnTrack.has(id)))
+    setSeenOnTrack(new Set([...seenOnTrack, ...running]))
+  /** Unloaded Trains whose run into Terminus has finished. */
+  const [arrived, setArrived] = useState(() => new Set<string>())
+
+  // Finished Lines leave the live map and give their slot, colour and shape
+  // to the next Line laid. One still watching its Train run into Terminus
+  // stays, fading out, until the Train arrives.
+  const identities = identitiesOf(snapshot)
+  const isLive = (lineId: string) => identities.get(lineId)?.live ?? true
+  const retiring = (lineId: string) =>
+    !isLive(lineId) &&
+    snapshot.trains.some(
+      ({ train }) =>
+        train.lineId === lineId &&
+        train.state.status === "unloaded" &&
+        seenOnTrack.has(train.id) &&
+        !arrived.has(train.id)
+    )
+  const liveLines = snapshot.lines.filter(
+    (line) => isLive(line.id) || retiring(line.id)
+  )
+  const finishedLines = snapshot.lines
+    .filter((line) => !isLive(line.id))
+    .sort((a, b) =>
+      identities
+        .get(b.id)!
+        .finishedAt!.localeCompare(identities.get(a.id)!.finishedAt!)
+    )
+  const [mode, setMode] = useState<"live" | "finished">("live")
+  const shown = finishedLines.length > 0 ? mode : "live"
+  // Selecting a Line from elsewhere (the siding, a drawer, an alert) shows
+  // the view that draws it.
+  const [followed, setFollowed] = useState(selection?.lineId)
+  if (selection?.lineId !== followed) {
+    setFollowed(selection?.lineId)
+    if (selection && identities.has(selection.lineId))
+      setMode(
+        liveLines.some((line) => line.id === selection.lineId)
+          ? "live"
+          : "finished"
+      )
+  }
   const { width, height, hub, hubHalfHeight, routes, junctions, interchanges } =
-    layoutNetwork(snapshot.lines)
+    shown === "live"
+      ? layoutNetwork(liveLines, identities)
+      : layoutNetwork(finishedLines, identities, "order")
+  /** The selected Line dims the others only while it is drawn. */
+  const focus =
+    selection && routes.some((route) => route.line.id === selection.lineId)
+      ? selection.lineId
+      : null
+  const routeClass = (lineId: string) =>
+    [
+      "route",
+      focus !== null && focus !== lineId && "route-dimmed",
+      shown === "live" && !isLive(lineId) && "route-retiring",
+    ]
+      .filter(Boolean)
+      .join(" ")
   /** Labels rise above receivers' lanes that pass over their Station. */
   const labelLift = new Map(
     interchanges.map((c) => [
@@ -134,10 +205,8 @@ export function NetworkMap({
   const sided = snapshot.trains.filter(
     ({ train }) => train.state.status === "siding"
   )
-  const awaitingReview = snapshot.trains.filter(
-    ({ train }) =>
-      train.state.status === "held" &&
-      train.state.reasons.some((r) => r.kind === "awaiting_user_approval")
+  const awaitingReview = snapshot.trains.filter(({ train }) =>
+    awaitingApproval(train.state)
   )
   const capsule = hubHalfHeight > HUB_RADIUS
   const trainRef = useTrainMotion(
@@ -185,6 +254,10 @@ export function NetworkMap({
   const fit = () => {
     setSmooth(true)
     setManual(null)
+  }
+  const show = (next: "live" | "finished") => {
+    setMode(next)
+    fit()
   }
 
   const onWheel = useEffectEvent((event: WheelEvent) => {
@@ -348,14 +421,7 @@ export function NetworkMap({
             />
             {/* Paint every track before shared Station markers. */}
             {routes.map(({ line, track, color }) => (
-              <g
-                key={`track-${line.id}`}
-                className={
-                  selection !== null && selection.lineId !== line.id
-                    ? "route route-dimmed"
-                    : "route"
-                }
-              >
+              <g key={`track-${line.id}`} className={routeClass(line.id)}>
                 <path
                   d={track.d}
                   className="track-casing"
@@ -488,7 +554,7 @@ export function NetworkMap({
                   >
                     {j.state.status === "ready"
                       ? "Awaiting release"
-                      : words(j.state.status)}{" "}
+                      : statusWords(j.state.status)}{" "}
                     · {j.inputs.length}/{j.incomingTrainIds.length}
                   </text>
                 </g>
@@ -499,7 +565,6 @@ export function NetworkMap({
               const views = snapshot.trains.filter(
                 ({ train }) => train.lineId === line.id
               )
-              const dimmed = selection !== null && selection.lineId !== line.id
               const outward = side === "left" ? -1 : 1
               const bullet = route.bullet ?? {
                 x: depot.x + outward * BULLET_OFFSET,
@@ -507,10 +572,7 @@ export function NetworkMap({
               }
               const name = wrap(line.name, 13, 2)
               return (
-                <g
-                  key={line.id}
-                  className={dimmed ? "route route-dimmed" : "route"}
-                >
+                <g key={line.id} className={routeClass(line.id)}>
                   <g
                     role="button"
                     tabIndex={0}
@@ -594,7 +656,7 @@ export function NetworkMap({
                       .filter((c) => c.sourceStationId === id)
                       .map(
                         (c) =>
-                          `, pickup by ${snapshot.lines.find((l) => l.id === c.lineId)?.name ?? "Line"} ${words(c.state.status)}`
+                          `, pickup by ${snapshot.lines.find((l) => l.id === c.lineId)?.name ?? "Line"} ${statusWords(c.state.status)}`
                       )
                       .join("")
                     const lift = labelLift.get(id) ?? 0
@@ -606,7 +668,7 @@ export function NetworkMap({
                         role="button"
                         tabIndex={0}
                         className="map-target station"
-                        aria-label={`${station.name}, ${words(status)}${pickups}`}
+                        aria-label={`${station.name}, ${statusWords(status)}${pickups}`}
                         aria-pressed={chosen}
                         onClick={() =>
                           onSelect({ lineId: line.id, stationId: id })
@@ -696,24 +758,22 @@ export function NetworkMap({
                             textAnchor="middle"
                             className="station-state state-blocked"
                           >
-                            {words(status)}
+                            {statusWords(status)}
                           </text>
                         )}
                       </g>
                     )
                   })}
                   {views.map((view) => {
+                    const { id } = view.train
                     const status = view.train.state.status
-                    if (
-                      status === "unloaded" ||
-                      status === "siding" ||
-                      (view.train.state.status === "held" &&
-                        view.train.state.reasons.some(
-                          (reason) => reason.kind === "awaiting_user_approval"
-                        ))
-                    )
-                      return null
-                    const label = words(status)
+                    if (status === "siding") return null
+                    if (status === "unloaded") {
+                      if (!seenOnTrack.has(id) || arrived.has(id)) return null
+                    }
+                    const label = awaitingApproval(view.train.state)
+                      ? "awaiting approval"
+                      : statusWords(status)
                     // The Train is a dot on the track, tinted by its status,
                     // with its label hung below. Both are drawn around the
                     // Train's track position, which useTrainMotion sets as
@@ -721,8 +781,8 @@ export function NetworkMap({
                     const half = 13 + label.length * 3.4
                     return (
                       <g
-                        key={view.train.id}
-                        ref={trainRef(view.train.id)}
+                        key={id}
+                        ref={trainRef(id)}
                         className={`map-target train-marker train-${status}`}
                         role="button"
                         tabIndex={0}
@@ -731,6 +791,10 @@ export function NetworkMap({
                         onKeyDown={(e) =>
                           keyboard(e, () => onSelect({ lineId: line.id }))
                         }
+                        onAnimationEnd={(e) => {
+                          if (e.animationName === "train-arrive")
+                            setArrived((done) => new Set(done).add(id))
+                        }}
                       >
                         <rect
                           className="train-hitbox"
@@ -847,6 +911,27 @@ export function NetworkMap({
         </svg>
       </div>
       <div className="map-overlay map-overlay-bottom-left">
+        {finishedLines.length > 0 && (
+          <div
+            className="map-lines-switch glass"
+            role="group"
+            aria-label="Lines shown on the map"
+          >
+            <button
+              aria-pressed={shown === "live"}
+              onClick={() => show("live")}
+            >
+              Live{" "}
+              <span>{snapshot.lines.filter((l) => isLive(l.id)).length}</span>
+            </button>
+            <button
+              aria-pressed={shown === "finished"}
+              onClick={() => show("finished")}
+            >
+              Finished <span>{finishedLines.length}</span>
+            </button>
+          </div>
+        )}
         {awaitingReview.length > 0 && (
           <div className="siding review-yard" aria-label="Review yard">
             <span className="eyebrow">Review yard</span>

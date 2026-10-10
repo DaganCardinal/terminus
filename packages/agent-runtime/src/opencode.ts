@@ -326,7 +326,58 @@ export function finalMessageJson(text: string): unknown {
   const start = trimmed.indexOf("{")
   const end = trimmed.lastIndexOf("}")
   if (start < 0 || end < start) throw new SyntaxError("No JSON object")
-  return JSON.parse(trimmed.slice(start, end + 1)) as unknown
+  const json = trimmed.slice(start, end + 1)
+  try {
+    return JSON.parse(json) as unknown
+  } catch (error) {
+    const repaired = closeSkippedBrackets(json)
+    if (repaired === null) throw error
+    try {
+      return JSON.parse(repaired) as unknown
+    } catch {
+      throw error
+    }
+  }
+}
+
+/** Tells a role where its final message stopped being JSON, so a retry is not a guess. */
+export function jsonParseHint(parseError: string): string {
+  return [
+    `Your final message is not valid JSON. The parser reported: ${parseError}`,
+    "Positions count from the first `{`. Check that every object and array is closed in the order it was opened, that items are separated by commas, and that quotes and backslashes inside strings are escaped.",
+  ].join("\n")
+}
+
+/**
+ * Models lose count in long, deeply nested answers and write `}]}` where
+ * `}}]}` was meant. Inserts the closers skipped before a later closer, and
+ * returns null when there are none or the brackets are wrong in any other way.
+ * The result still goes through schema validation.
+ */
+export function closeSkippedBrackets(json: string): string | null {
+  const closers: string[] = []
+  let output = ""
+  let inserted = false
+  let inString = false
+  let escaped = false
+  for (const char of json) {
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === "\\") escaped = true
+      else if (char === '"') inString = false
+    } else if (char === '"') inString = true
+    else if (char === "{") closers.push("}")
+    else if (char === "[") closers.push("]")
+    else if (char === "}" || char === "]") {
+      const at = closers.lastIndexOf(char)
+      if (at < 0) return null
+      const skipped = closers.splice(at).slice(1).reverse()
+      if (skipped.length) inserted = true
+      output += skipped.join("")
+    }
+    output += char
+  }
+  return inserted && !inString && !closers.length ? output : null
 }
 
 const sessionEventSchema = z.object({ sessionID: z.string().min(1) })

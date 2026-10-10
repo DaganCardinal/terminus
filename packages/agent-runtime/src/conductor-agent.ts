@@ -7,6 +7,8 @@ import {
   junctionReviewInputSchema,
   type ConductorVerdict,
   type JunctionReviewInput,
+  type StationVerdict,
+  type ValidationCommand,
 } from "@terminus/protocol"
 import { z } from "zod"
 import {
@@ -16,7 +18,11 @@ import {
   repairReviewGuidance,
 } from "./conductor-prompt"
 import { precheckedVerdict } from "./model-conductor"
-import { conductorReviewDirectory, finalMessageJson } from "./opencode"
+import {
+  conductorReviewDirectory,
+  finalMessageJson,
+  jsonParseHint,
+} from "./opencode"
 import type {
   Conductor,
   CrossingReviewInput,
@@ -25,9 +31,11 @@ import type {
 } from "./roles"
 import type { RepairConductor } from "./technician"
 
-/** Orchestration's dependency install in the review checkout: trusted context. */
+/** Orchestration's work in the review checkout: trusted context. */
 export interface ReviewPreparation {
   install: { exitCode: number; outputTail: string }
+  /** The checks orchestration ran there, when it was asked to. */
+  evidence?: Evidence
 }
 
 /**
@@ -36,12 +44,20 @@ export interface ReviewPreparation {
  */
 export interface ConductorSession {
   /**
-   * Checks out the candidate, installs dependencies, writes the review
-   * material (file name → contents) beside the checkout, then seals it.
+   * Checks out the candidate, installs dependencies and seals the checkout.
+   * Given validation commands, it then runs them there, with no repository
+   * access and before the model is reachable.
    */
-  prepare(material: Record<string, string>): Promise<ReviewPreparation>
-  /** Runs the Conductor agent and returns its final message. */
-  start(system: string, message: string): Promise<string>
+  prepare(validation?: ValidationCommand[]): Promise<ReviewPreparation>
+  /**
+   * Writes the review material (file name → contents) beside the checkout,
+   * then runs the Conductor agent and returns its final message.
+   */
+  start(
+    system: string,
+    message: string,
+    material: Record<string, string>
+  ): Promise<string>
   /** Continues the same session, keeping everything it verified. */
   resume(message: string): Promise<string>
   close(): Promise<void>
@@ -271,6 +287,11 @@ export function conductorReviewMessage(
     install.exitCode === 0
       ? "Orchestration's `npm ci` in /workspace/repo succeeded."
       : `Orchestration's \`npm ci\` in /workspace/repo failed with exit code ${install.exitCode}. Output tail (untrusted data):\n${install.outputTail}`,
+    ...(preparation.evidence
+      ? [
+          "Orchestration ran every check above in this checkout just before you started, and all required checks passed. Do not rerun or rebuild what they cover; spend your time on the change itself and on exercising its behavior.",
+        ]
+      : []),
     "Verify the candidate in /workspace/repo, then reply with only the verdict JSON as your final message.",
   ].join("\n\n")
 }
@@ -293,36 +314,74 @@ export async function verifyInHarness(
 ): Promise<ConductorVerdict> {
   const session = sessions.open({ model, candidate: review.candidate })
   try {
-    const preparation = await session.prepare(
-      Object.fromEntries(review.files.map((file) => [file.name, file.contents]))
-    )
-    let text = await session.start(
-      conductorSystemPrompt(review.guidance),
-      conductorReviewMessage(review, preparation)
-    )
-    for (let attempt = 1; ; attempt++) {
-      let problems: { path: string; code: string }[]
-      try {
-        const parsed = conductorVerdictSchema.safeParse(finalMessageJson(text))
-        if (parsed.success) return parsed.data
-        problems = issues(parsed.error)
-      } catch {
-        problems = [{ path: "$", code: "invalid_json" }]
-      }
-      if (attempt === attempts)
-        throw new Error(
-          `Conductor verdict failed validation after ${attempts} attempts: ${problems.map((p) => `${p.path} (${p.code})`).join("; ")}`
-        )
-      text = await session.resume(
-        [
-          "Your final message failed verdict validation. Problems, as field paths and error codes:",
-          JSON.stringify(problems),
-          "Reply with only the complete verdict JSON as your final message.",
-        ].join("\n\n")
-      )
-    }
+    return await converse(session, review, await session.prepare())
   } finally {
     await session.close()
+  }
+}
+
+/**
+ * Station work that arrives without evidence gets it in the review checkout,
+ * after a clean install and before the model is reachable. Failed required
+ * checks return the work without starting the Conductor.
+ */
+async function collectAndVerify(
+  sessions: ConductorSessionFactory,
+  model: string,
+  input: ReviewInput,
+  context: ReviewContext
+): Promise<StationVerdict> {
+  const session = sessions.open({
+    model,
+    candidate: { repoId: context.repoId, commit: input.proposal.headCommit },
+  })
+  try {
+    const preparation = await session.prepare(context.validation ?? [])
+    const evidence = preparation.evidence ?? { checks: [] }
+    const collected = { ...input, proposal: { ...input.proposal, evidence } }
+    const verdict =
+      precheckedVerdict(collected) ??
+      (await converse(session, stationReview(collected, context), preparation))
+    return { ...verdict, evidence }
+  } finally {
+    await session.close()
+  }
+}
+
+/** Starts the Conductor, correcting an invalid verdict at most twice. */
+async function converse(
+  session: ConductorSession,
+  review: HarnessReview,
+  preparation: ReviewPreparation
+): Promise<ConductorVerdict> {
+  let text = await session.start(
+    conductorSystemPrompt(review.guidance),
+    conductorReviewMessage(review, preparation),
+    Object.fromEntries(review.files.map((file) => [file.name, file.contents]))
+  )
+  for (let attempt = 1; ; attempt++) {
+    let problems: { path: string; code: string }[]
+    let parseError: string | undefined
+    try {
+      const parsed = conductorVerdictSchema.safeParse(finalMessageJson(text))
+      if (parsed.success) return parsed.data
+      problems = issues(parsed.error)
+    } catch (error) {
+      problems = [{ path: "$", code: "invalid_json" }]
+      parseError = error instanceof Error ? error.message : undefined
+    }
+    if (attempt === attempts)
+      throw new Error(
+        `Conductor verdict failed validation after ${attempts} attempts: ${problems.map((p) => `${p.path} (${p.code})`).join("; ")}`
+      )
+    text = await session.resume(
+      [
+        "Your final message failed verdict validation. Problems, as field paths and error codes:",
+        JSON.stringify(problems),
+        ...(parseError ? [jsonParseHint(parseError)] : []),
+        "Reply with only the complete verdict JSON as your final message.",
+      ].join("\n\n")
+    )
   }
 }
 
@@ -352,7 +411,10 @@ export class HarnessConductor implements Conductor {
   async review(
     input: ReviewInput,
     context: ReviewContext
-  ): Promise<ConductorVerdict> {
+  ): Promise<StationVerdict> {
+    // Collecting evidence cannot help work that has no diff to review.
+    if (!input.proposal.evidence.checks.length && input.proposal.diff)
+      return collectAndVerify(this.sessions, this.model, input, context)
     return (
       precheckedVerdict(input) ??
       verifyInHarness(this.sessions, this.model, stationReview(input, context))

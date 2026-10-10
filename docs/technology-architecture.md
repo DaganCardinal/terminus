@@ -645,7 +645,7 @@ That still belongs to the domain.
 | Workflow | Instances | Responsibility |
 | --- | --- | --- |
 | **Train** | One per Train | Runs the Train's entire lifecycle, from the depot to `unloaded` or `siding`. It evaluates Engineer gates, signals Stations, waits for Station work, runs Conductor review, and attaches Cars. It is the **only writer** of that Train's state. |
-| **Station** | One per Station run | Forks the workspace, runs the coding agent in a Sandbox, collects evidence, pushes the result, and marks the Station `ready_for_pickup`. |
+| **Station** | One per Station run | Forks the workspace, runs the coding agent in a Sandbox, pushes the result, and marks the Station `ready_for_pickup`. Evidence is collected during Conductor review. |
 | **Terminus integration** | One per integration attempt | Merges a returning Train into Terminus and runs project-wide validation. |
 
 Other actors never write a Train's state directly. The Dispatcher, the user, and Station Workflows send events to that Train's Workflow instance, and the Train Workflow waits for them. This is how "each Train owns its own state" works without custom Durable Objects.
@@ -719,13 +719,14 @@ Station Workflow
   ↓ install dependencies, then prepare the harness (config, preflight, root guidance)
   ↓ invoke the frozen harness adapter with the Station capability profile
   ↓ wait for the process to exit (exit code + JSON event log)
-  ↓ orchestration code runs the required validation and collects evidence
   ↓ push to the Station repo, read the resulting commit
   ↓ Station → ready_for_pickup
+  ↓ (Train review step) a fresh Conductor Sandbox installs the candidate and
+    orchestration runs the required validation there, before any model starts
 ```
 
 - **Completion is detected when the harness process exits and the adapter validates its final outcome.** Do not rely on Artifacts push notifications for this. Push notifications require a separate subscription for every repository and are delivered to a Queue, which does not suit Station repositories created on the fly.
-- **Evidence comes from our own validation run**, not from the agent's own summary.
+- **Evidence comes from our own validation run**, not from the agent's own summary. It runs in the Conductor's clean checkout, never in the Sandbox where the Station Agent had a shell.
 - **Repository content is untrusted for every harness role.** One shared preparation step (`prepareHarness`) gives each role its trusted system prompt and capability profile through the configured adapter. It disables repository OpenCode configuration and instruction files, and removes user-level configuration that repository code could have written. It then attaches the root `AGENTS.md` (or `CLAUDE.md`) to the first message as delimited data. Every role, including the sandboxed Conductor, uses this step, and the Dispatcher and Conductor share one session runner (`HarnessSession`).
 - The curated catalog resolves the provider-native model ID, compatible harnesses, pinned version and explicit cost order. OpenCode supports Workers AI, Anthropic Messages and OpenAI Responses; Claude Code supports Anthropic Messages; Codex supports OpenAI Responses. Native provider requests pass through AI Gateway with Worker-injected authentication. Provider keys stay in Cloudflare’s dashboard. No runtime model or billing fallback is implemented.
 

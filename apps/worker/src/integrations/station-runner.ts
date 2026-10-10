@@ -15,7 +15,7 @@ import {
   type ArtifactsRepositoryHost,
   type GitWorkspace,
 } from "@terminus/artifacts"
-import type { AgentConfig, CheckResult } from "@terminus/domain"
+import type { AgentConfig } from "@terminus/domain"
 import {
   commandResultSchema,
   validationCommandsSchema,
@@ -23,6 +23,7 @@ import {
 import type { NetworkStore } from "./network-store"
 import { gatewayConfig } from "./execution-config"
 import { prepareHarness, runPreparedHarness } from "./harness"
+import { runInstalledChecks } from "./project-checks"
 
 const repoDirectory = stationDirectory
 
@@ -34,6 +35,8 @@ export interface StationSandbox {
     env?: Record<string, string>,
     timeoutMs?: number
   ): Promise<unknown>
+  /** Installs dependencies in `cwd` with the shared npm cache. */
+  installDependencies(cwd: string): Promise<unknown>
   write(path: string, contents: string): Promise<void>
   close(): Promise<void>
 }
@@ -44,16 +47,24 @@ export class SandboxStationRunner implements StationRunner {
   readonly #repositories: Pick<ArtifactsRepositoryHost, "access" | "revoke">
   readonly #store: NetworkStore
   readonly #sandbox: (runId: string) => StationSandbox
+  readonly #validate: boolean
 
   private readonly execution: RoleExecution
+  /**
+   * `validate` collects evidence in the Station Sandbox. Leave it off when the
+   * Conductor collects evidence in its own clean checkout: a check run where
+   * the Station Agent had a shell is not independent of that agent.
+   */
   constructor(
     env: Env,
     model: string,
     repositories: Pick<ArtifactsRepositoryHost, "access" | "revoke">,
     store: NetworkStore,
     sandbox?: (runId: string) => StationSandbox,
-    execution: RoleExecution = executionConfig(model)
+    execution: RoleExecution = executionConfig(model),
+    validate = false
   ) {
+    this.#validate = validate
     this.execution = execution
     this.#env = env
     this.#repositories = repositories
@@ -167,10 +178,7 @@ export class SandboxStationRunner implements StationRunner {
       )
       phase = "dependencies"
       const installed = commandResultSchema.parse(
-        await workspace.run(
-          ["npm", "ci", "--no-audit", "--no-fund"],
-          repoDirectory
-        )
+        await sandbox.installDependencies(repoDirectory)
       )
       if (installed.exitCode !== 0)
         throw new Error("Project dependency installation failed")
@@ -200,26 +208,17 @@ export class SandboxStationRunner implements StationRunner {
       const headCommit = await repository.candidate(
         `Station ${input.stationId}: ${input.manifest.goal}`
       )
-      const checks: CheckResult[] = []
-      for (const check of validation) {
-        phase = `validation:${check.name}`
-        const result = commandResultSchema.parse(
-          await workspace.run(check.command, repoDirectory)
-        )
-        checks.push({
-          name: check.name,
-          command: check.command,
-          required: true,
-          status: result.exitCode === 0 ? "passed" : "failed",
-          exitCode: result.exitCode,
-          stdout: result.stdout.slice(-8000),
-          stderr: result.stderr.slice(-8000),
-          outputTruncated:
-            !!result.outputTruncated ||
-            result.stdout.length > 8000 ||
-            result.stderr.length > 8000,
-        })
-      }
+      // Without validation here, the evidence stays empty until review.
+      const checks = this.#validate
+        ? await runInstalledChecks(
+            (name) => {
+              phase = `validation:${name}`
+              return workspace
+            },
+            validation,
+            repoDirectory
+          )
+        : []
       phase = "evidence"
       const { changedPaths, diff } = await repository.snapshot(headCommit)
       const result: StationRunResult = {

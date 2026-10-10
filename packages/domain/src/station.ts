@@ -122,6 +122,31 @@ export function startStation(station: Station): Transition<Station> {
   )
 }
 
+/**
+ * Evidence a Conductor collected in its own clean checkout joins the work it
+ * describes, as the review's verdict is applied.
+ */
+export function recordStationEvidence(
+  station: Station,
+  evidence: Evidence
+): Transition<Station> {
+  const { state } = station
+  if (state.status !== "in_review")
+    return reject("invalid_state", `Station ${station.id} is not in review`)
+  if (state.proposal.evidence.checks.length)
+    return reject(
+      "invalid_state",
+      `Station ${station.id} already has independent evidence`
+    )
+  return accept(
+    {
+      ...station,
+      state: { ...state, proposal: { ...state.proposal, evidence } },
+    },
+    []
+  )
+}
+
 export function blockStation(
   station: Station,
   issues: Issue[],

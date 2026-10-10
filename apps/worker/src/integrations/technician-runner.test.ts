@@ -32,6 +32,10 @@ function fixture(exitCode = 0) {
     state: { status: "running", workspaceRepoId: "repair-repo" },
   }
   const sandbox: StationSandbox = {
+    // The real Sandbox restores a cache first; the install itself is the same.
+    installDependencies: vi.fn(async (cwd: string) =>
+      sandbox.run(["npm", "ci", "--no-audit", "--no-fund"], cwd)
+    ),
     configure: vi.fn(async () => {}),
     write: vi.fn(async () => {}),
     close: vi.fn(async () => {}),

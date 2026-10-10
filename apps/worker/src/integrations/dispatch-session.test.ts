@@ -12,6 +12,10 @@ function fixture(options: { testExit?: number; harnessExit?: number } = {}) {
   const order: string[] = []
   let harnessRuns = 0
   const sandbox: StationSandbox = {
+    // The real Sandbox restores a cache first; the install itself is the same.
+    installDependencies: vi.fn(async (cwd: string) =>
+      sandbox.run(["npm", "ci", "--no-audit", "--no-fund"], cwd)
+    ),
     configure: vi.fn(async (network) => {
       order.push(`configure:${network.allowModel ? "model" : "git"}`)
     }),

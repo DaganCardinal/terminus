@@ -1,4 +1,9 @@
-import { catalogModel, type RoleExecution } from "@terminus/protocol"
+import {
+  catalogModel,
+  commandResultSchema,
+  type RoleExecution,
+  type ValidationCommand,
+} from "@terminus/protocol"
 import {
   conductorHarnessAgent,
   conductorReviewDirectory,
@@ -16,6 +21,7 @@ import {
 } from "@terminus/artifacts"
 import { gatewayConfig } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
+import { runInstalledChecks } from "./project-checks"
 import type { StationSandbox } from "./station-runner"
 
 type Repositories = Pick<ArtifactsRepositoryHost, "access" | "revoke">
@@ -51,10 +57,11 @@ export class SandboxConductorSessions implements ConductorSessionFactory {
 
 /**
  * A disposable review Sandbox for one candidate commit. Dependencies install
- * with read access to the Station repository and no model access. Before the
- * Conductor starts, secrets and history are removed and repository access is
- * dropped, leaving only the configured model reachable. The Conductor may run
- * the app, but no Sandbox it uses can write to any repository.
+ * with read access to the Station repository and no model access. Secrets and
+ * history are then removed and repository access is dropped; requested
+ * validation runs next, with neither. Only then is the configured model made
+ * reachable. The Conductor may run the app, but no Sandbox it uses can write
+ * to any repository.
  */
 class SandboxConductorSession implements ConductorSession {
   readonly #env: Env
@@ -87,7 +94,7 @@ class SandboxConductorSession implements ConductorSession {
     return loggedWorkspace(this.#sandbox, "Conductor", phase)
   }
 
-  async prepare(material: Record<string, string>): Promise<ReviewPreparation> {
+  async prepare(validation?: ValidationCommand[]): Promise<ReviewPreparation> {
     const { candidate, model } = this.#input
     gatewayConfig(this.#env, model)
     this.#access = await this.#repositories.access(candidate.repoId, "read")
@@ -106,10 +113,35 @@ class SandboxConductorSession implements ConductorSession {
       this.#access,
       candidate.commit
     )
-    const installed = await this.#workspace("dependencies").run(
-      ["npm", "ci", "--no-audit", "--no-fund"],
+    const installed = commandResultSchema.parse(
+      await this.#sandbox.installDependencies(sealedDirectory)
+    )
+    // Install scripts are repository code, so the checkout is fingerprinted after them.
+    await sealWorkspace(this.#workspace("seal"), { fingerprint: true })
+    await this.#sandbox.configure({ repositories: [], allowModel: false })
+    const access = this.#access
+    this.#access = undefined
+    await this.#repositories.revoke(access)
+    const install = {
+      exitCode: installed.exitCode,
+      outputTail: `${installed.stdout}${installed.stderr}`.slice(-2000),
+    }
+    if (!validation) return { install }
+    const checks = await runInstalledChecks(
+      (name) => this.#workspace(`validation:${name}`),
+      validation,
       sealedDirectory
     )
+    await this.#assertUnchanged("Project validation")
+    return { install, evidence: { checks } }
+  }
+
+  async start(
+    system: string,
+    message: string,
+    material: Record<string, string>
+  ): Promise<string> {
+    const { model } = this.#input
     const created = await this.#workspace("material").run([
       "mkdir",
       "-p",
@@ -119,8 +151,6 @@ class SandboxConductorSession implements ConductorSession {
       throw new Error("Could not create the Conductor review directory")
     for (const [name, contents] of Object.entries(material))
       await this.#sandbox.write(`${conductorReviewDirectory}/${name}`, contents)
-    // Install scripts are repository code, so the checkout is fingerprinted after them.
-    await sealWorkspace(this.#workspace("seal"), { fingerprint: true })
     await this.#sandbox.configure({
       repositories: [],
       allowModel: true,
@@ -129,38 +159,26 @@ class SandboxConductorSession implements ConductorSession {
         ? {}
         : { provider: catalogModel(model).provider }),
     })
-    const access = this.#access
-    this.#access = undefined
-    await this.#repositories.revoke(access)
-    return {
-      install: {
-        exitCode: installed.exitCode,
-        outputTail: `${installed.stdout}${installed.stderr}`.slice(-2000),
-      },
-    }
-  }
-
-  async start(system: string, message: string): Promise<string> {
     const text = await this.#harness.start(
       conductorHarnessAgent(system),
       message
     )
-    await this.#assertUnchanged()
+    await this.#assertUnchanged("The Conductor")
     return text
   }
 
   async resume(message: string): Promise<string> {
     const text = await this.#harness.resume(message)
-    await this.#assertUnchanged()
+    await this.#assertUnchanged("The Conductor")
     return text
   }
 
   /** A verdict counts only if it describes the candidate commit as checked out. */
-  async #assertUnchanged(): Promise<void> {
+  async #assertUnchanged(actor: string): Promise<void> {
     const changed = await changedSinceSeal(this.#workspace("verify"))
     if (changed.count)
       throw new Error(
-        `The Conductor changed ${changed.count} tracked file(s) in the candidate checkout (${changed.paths.join(", ")}), so its review no longer describes the candidate`
+        `${actor} changed ${changed.count} tracked file(s) in the candidate checkout (${changed.paths.join(", ")}), so the review no longer describes the candidate`
       )
   }
 

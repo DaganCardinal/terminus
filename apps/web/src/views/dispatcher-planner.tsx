@@ -9,13 +9,14 @@ import {
   RefreshCw,
   TrainFront,
 } from "lucide-react"
-import type {
-  DispatchPlan,
-  NetworkSnapshot,
-  UnloadMode,
+import {
+  lineIdentities,
+  type DispatchPlan,
+  type NetworkSnapshot,
+  type UnloadMode,
 } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
-import { lineColor } from "@/map/layout"
+import { lineBadge, lineColor } from "@/map/layout"
 import { crossingScope } from "./crossing-scope"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { api } from "@/state/api"
@@ -209,19 +210,20 @@ function Proposal({
   const launchedLines = lineIds
     .map((id) => snapshot.lines.find((line) => line.id === id))
     .filter((line) => line !== undefined)
-  // Planned Lines are appended to the network, so they take the next colours.
-  const color = (index: number) => {
+  // Planned Lines are laid after every existing Line, so they take the
+  // slots and colours that are free now, including those finished Lines left.
+  const predicted = lineIdentities(
+    snapshot,
+    lines.map((line, index) => ({ id: `planned-${index}`, name: line.name }))
+  )
+  const badge = (index: number) => {
     const line = launchedLines[index]
-    return line
-      ? lineColor(line, snapshot.lines.indexOf(line))
-      : lineColor(lines[index]!, snapshot.lines.length + index)
+    if (line) return lineBadge(snapshot, line.id)!
+    const identity = predicted.get(`planned-${index}`)!
+    return { number: identity.slot + 1, color: lineColor(identity.color) }
   }
-  const number = (index: number) => {
-    const line = launchedLines[index]
-    return (
-      (line ? snapshot.lines.indexOf(line) : snapshot.lines.length + index) + 1
-    )
-  }
+  const color = (index: number) => badge(index).color
+  const number = (index: number) => badge(index).number
   const stale =
     state.status === "ready" &&
     plan.terminusCommit !== snapshot.network.terminusCommit

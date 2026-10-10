@@ -20,9 +20,13 @@ Run these from `apps/worker`:
 npx wrangler login
 npx wrangler whoami
 npx wrangler d1 create terminus
+npx wrangler r2 bucket create terminus-dependency-cache
+npx wrangler r2 bucket lifecycle add terminus-dependency-cache expire-cache --expire-days 30
 ```
 
 If you already created the remote `terminus` D1 database, reuse it. Copy its `database_id` into the top-level `d1_databases` entry in `wrangler.jsonc`. Do not put the remote ID into `env.fake`.
+
+The R2 bucket holds npm download caches, one per lockfile, so Sandboxes install dependencies without fetching every package again. Entries are disposable: the lifecycle rule expires them, and an expired or deleted entry is rebuilt on the next install. Existing deployments need these two commands once before their next deploy.
 
 Leave `vars.APP_ORIGIN`, `vars.ACCESS_TEAM_DOMAIN` and `vars.ACCESS_AUD` empty for the initial deployment. Public app/API requests return 503 until they are configured. Local development still works.
 

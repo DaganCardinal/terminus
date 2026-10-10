@@ -244,7 +244,7 @@ Before you decide, verify the candidate the way a careful reviewer with a termin
 
 1. Read the patch (\`/workspace/review/candidate.diff\`), then read each changed file in full, not only its hunks.
 2. Trace what the change touches: callers, consumers, routes, components, configuration, and tests. When read-only \`explore\` subagents are available, send independent questions to them in parallel; otherwise inspect the relevant files directly.
-3. Build the project and run the checks that exercise the change. The orchestration check results in your assignment already cover the trusted validation commands; rerun one only when you need its detail.
+3. Run any further checks the change needs, such as a focused test. The orchestration check results in your assignment already cover the trusted validation commands, including any build among them; do not rebuild or rerun what they cover unless you need detail their output lacks.
 4. Run the app end to end when the change affects runtime behavior. Start it in the background with its output redirected to a log, for example \`npm run dev -- --port 4173 > /tmp/app.log 2>&1 &\`, wait until it responds, then exercise the changed behavior with \`curl\` or a short \`node\` script: the pages, routes, or commands the manifest names, plus the obvious neighbours they could break. Check the log for runtime errors and warnings. Stop the processes you started before you answer.
 5. Compare what you observed with what this review must establish: the manifest's acceptance criteria, contracts, and invariants, or the requirements described under "This Review".
 

@@ -105,9 +105,14 @@ export interface NetworkActivity {
   lines: number
   /** Trains per status. Statuses with no Trains are omitted. */
   trains: Partial<Record<TrainState["status"], number>>
-  /** Lines whose Train has not yet unloaded or been sided, in creation order.
-   * `index` is the Line's position among all of the network's Lines. */
-  activeLines: { name: string; index: number; status: TrainState["status"] }[]
+  /** Lines whose Train has not yet unloaded or been sided, in creation order,
+   * with the number and palette colour the map draws them with. */
+  activeLines: {
+    name: string
+    number: number
+    color: number
+    status: TrainState["status"]
+  }[]
   stations: { total: number; complete: number }
   cars: number
   openConflicts: number
@@ -139,7 +144,10 @@ export interface TrainView {
 export interface NetworkSnapshot {
   junctionApprovals?: { junctionId: string; commit: string }[]
   network: NetworkSummary
+  /** In creation order. */
   lines: Line[]
+  /** When each Line was laid (ISO 8601), by Line id. */
+  lineCreatedAt?: Record<string, string>
   stations: Station[]
   trains: TrainView[]
   cars: Car[]

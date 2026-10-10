@@ -24,6 +24,8 @@ export class SandboxWorkspaces implements GitWorkspaceFactory {
     return {
       run: async (command, cwd, env) =>
         commandResultSchema.parse(await sandbox.run(command, cwd, env)),
+      install: async (cwd) =>
+        commandResultSchema.parse(await sandbox.installDependencies(cwd)),
       close: () => sandbox.close(),
     }
   }

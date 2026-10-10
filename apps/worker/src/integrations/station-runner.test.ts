@@ -11,6 +11,7 @@ const candidate = "b".repeat(40)
 
 afterEach(() => vi.restoreAllMocks())
 
+/** `failedTests` also makes the runner validate, as with a fake Conductor. */
 async function fixture(failedTests = false, inheritedMethods = false) {
   const ports = testPorts()
   const network = await seedNetwork(ports)
@@ -24,6 +25,10 @@ async function fixture(failedTests = false, inheritedMethods = false) {
     scope: "write",
   }
   const sandbox: StationSandbox = {
+    // The real Sandbox restores a cache first; the install itself is the same.
+    installDependencies: vi.fn(async (cwd: string) =>
+      sandbox.run(["npm", "ci", "--no-audit", "--no-fund"], cwd)
+    ),
     configure: vi.fn(async () => {}),
     write: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
@@ -77,7 +82,9 @@ async function fixture(failedTests = false, inheritedMethods = false) {
     repositories,
     ports.store,
     () =>
-      inheritedMethods ? (Object.create(sandbox) as StationSandbox) : sandbox
+      inheritedMethods ? (Object.create(sandbox) as StationSandbox) : sandbox,
+    undefined,
+    failedTests
   )
   return { runner, input, sandbox, repositories, store: ports.store }
 }
@@ -171,7 +178,18 @@ describe("Station execution boundary", () => {
     expect(f.sandbox.close).not.toHaveBeenCalled()
     expect(f.repositories.revoke).toHaveBeenCalledTimes(1)
   })
-  it("collects independent validation, persists evidence before stopping, and reuses a durable result", async () => {
+  it("leaves validation to the Conductor's clean checkout by default", async () => {
+    const f = await fixture()
+    const result = await f.runner.run(f.input)
+    if (!result.ok) throw new Error("Expected a proposal")
+    expect(result.proposal.evidence).toEqual({ checks: [] })
+    expect(
+      vi
+        .mocked(f.sandbox.run)
+        .mock.calls.some(([command]) => command.join(" ") === "npm test")
+    ).toBe(false)
+  })
+  it("collects validation when asked, persists evidence before stopping, and reuses a durable result", async () => {
     const f = await fixture(true)
     const result = await f.runner.run(f.input)
     expect(result.ok).toBe(true)

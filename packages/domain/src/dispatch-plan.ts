@@ -93,6 +93,10 @@ export interface PlanningContext {
   junctions?: import("./junction").Junction[]
   crossings?: import("./crossing").Crossing[]
   activeLines: { name: string; manifests: WorkManifest[] }[]
+  /** Lines whose work has reached Terminus or was abandoned, most recently
+   * finished first. Plan checks still use every Line and Station; the
+   * Dispatcher prompt summarizes these instead of sending them in full. */
+  finishedLines?: { lineId: string; outcome: "integrated" | "abandoned" }[]
 }
 
 interface ReviewedPlan {

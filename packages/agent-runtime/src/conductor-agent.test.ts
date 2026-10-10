@@ -164,7 +164,9 @@ describe("harness Conductor", () => {
       model: "configured",
       candidate: { repoId: "n/station-a", commit: review.proposal.headCommit },
     })
-    const material = session.prepare.mock.calls[0]![0]
+    // Evidence arrived with the work, so the review collects none.
+    expect(session.prepare).toHaveBeenCalledWith()
+    const material = session.start.mock.calls[0]![2]
     expect(material["candidate.diff"]).toBe(review.proposal.diff)
     expect(JSON.parse(material["evidence.json"]!)).toEqual(
       review.proposal.evidence
@@ -183,6 +185,7 @@ describe("harness Conductor", () => {
     expect(message).toContain("`npm ci` in /workspace/repo succeeded")
     // Check output stays in the review files, out of the command line.
     expect(message).not.toContain("1 test passed")
+    expect(message).not.toContain("Do not rerun")
     expect(session.resume).not.toHaveBeenCalled()
     expect(session.close).toHaveBeenCalledOnce()
   })
@@ -199,12 +202,12 @@ describe("harness Conductor", () => {
 
   it("returns failed required checks and escalates a missing diff without a session", async () => {
     const { sessions, conductor } = scripted([])
+    const failed = {
+      checks: [{ name: "test", required: true, status: "failed" as const }],
+    }
     expect(
       await conductor.review(
-        {
-          ...review,
-          proposal: { ...review.proposal, evidence: { checks: [] } },
-        },
+        { ...review, proposal: { ...review.proposal, evidence: failed } },
         context
       )
     ).toMatchObject({ verdict: "return" })
@@ -214,7 +217,76 @@ describe("harness Conductor", () => {
         context
       )
     ).toMatchObject({ verdict: "escalate" })
+    // Without a diff, collecting evidence could not help.
+    expect(
+      await conductor.review(
+        {
+          ...review,
+          proposal: {
+            ...review.proposal,
+            diff: undefined,
+            evidence: { checks: [] },
+          },
+        },
+        context
+      )
+    ).toMatchObject({ verdict: "return" })
     expect(sessions.open).not.toHaveBeenCalled()
+  })
+
+  const unvalidated = {
+    ...review,
+    proposal: { ...review.proposal, evidence: { checks: [] } },
+  }
+
+  it("collects evidence in the review checkout for work that arrives without it", async () => {
+    const { session, sessions, conductor } = scripted([accept], {
+      install: { exitCode: 0, outputTail: "" },
+      evidence: review.proposal.evidence,
+    })
+    expect(await conductor.review(unvalidated, context)).toEqual({
+      ...accept,
+      evidence: review.proposal.evidence,
+    })
+    expect(sessions.open).toHaveBeenCalledWith({
+      model: "configured",
+      candidate: { repoId: "n/station-a", commit: review.proposal.headCommit },
+    })
+    expect(session.prepare).toHaveBeenCalledWith(context.validation)
+    const [, message, material] = session.start.mock.calls[0]!
+    expect(JSON.parse(material["evidence.json"]!)).toEqual(
+      review.proposal.evidence
+    )
+    expect(JSON.parse(material["review.json"]!)).toEqual(review)
+    expect(message).toContain('"status":"passed"')
+    expect(message).toContain("Do not rerun or rebuild")
+    expect(session.close).toHaveBeenCalledOnce()
+  })
+
+  it("returns work whose collected checks fail without starting the Conductor", async () => {
+    const failed = {
+      checks: [
+        {
+          name: "test",
+          required: true,
+          status: "failed" as const,
+          exitCode: 1,
+          stderr: "Expected footer",
+        },
+      ],
+    }
+    const { session, conductor } = scripted([], {
+      install: { exitCode: 0, outputTail: "" },
+      evidence: failed,
+    })
+    expect(await conductor.review(unvalidated, context)).toEqual({
+      verdict: "return",
+      summary: "Required validation is missing or failed",
+      findings: ["test: failed"],
+      evidence: failed,
+    })
+    expect(session.start).not.toHaveBeenCalled()
+    expect(session.close).toHaveBeenCalledOnce()
   })
 
   it("corrects an invalid verdict in the same session", async () => {
@@ -226,6 +298,7 @@ describe("harness Conductor", () => {
     expect(await conductor.review(review, context)).toEqual(accept)
     expect(session.resume).toHaveBeenCalledTimes(2)
     expect(session.resume.mock.calls[0]![0]).toContain("invalid_json")
+    expect(session.resume.mock.calls[0]![0]).toContain("The parser reported:")
     expect(session.resume.mock.calls[1]![0]).toContain('"path":"verdict"')
   })
 
@@ -284,7 +357,7 @@ describe("harness Conductor", () => {
     )
     expect(repairStart![0]).toContain("Review a Technician reconciliation")
     expect(repairStart![1]).toContain("repair.diff")
-    const repairFiles = f.session.prepare.mock.calls[2]![0]
+    const repairFiles = f.session.start.mock.calls[2]![2]
     expect(repairFiles["repair.diff"]).toBe("+resolved header")
     expect(repairFiles["candidate.diff"]).toBe(review.proposal.diff)
     expect(f.session.close).toHaveBeenCalledTimes(3)

@@ -430,7 +430,9 @@ function stationRunner(
       artifactsRepositories(env),
       new NetworkStore(env.DB),
       undefined,
-      execution
+      execution,
+      // A fake Conductor collects no evidence, so the Station run must.
+      env.CONDUCTOR_MODEL === FAKE
     )
   }
   const delayMs = Number(env.FAKE_AGENT_DELAY_MS)

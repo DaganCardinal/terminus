@@ -52,3 +52,13 @@ export const conductorVerdictSchema = z.object({
 })
 
 export type ConductorVerdict = z.infer<typeof conductorVerdictSchema>
+
+/**
+ * A verdict on Station work. A Station run that left its evidence to review
+ * gets it here, collected by orchestration in the Conductor's clean checkout.
+ */
+export const stationVerdictSchema = conductorVerdictSchema.extend({
+  evidence: evidenceSchema.optional(),
+})
+
+export type StationVerdict = z.infer<typeof stationVerdictSchema>

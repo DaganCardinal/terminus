@@ -31,6 +31,15 @@
       "database_id": "9f3f0c50-943c-4181-aea4-1f0bfb1e245f",
     },
   ],
+  // npm download caches keyed by lockfile hash, shared by every Sandbox
+  // install. Contents are public registry tarballs that npm verifies against
+  // the lockfile's integrity hashes; entries are disposable.
+  "r2_buckets": [
+    {
+      "binding": "DEPENDENCY_CACHE",
+      "bucket_name": "terminus-dependency-cache",
+    },
+  ],
   "workflows": [
     {
       "name": "terminus-junction",
@@ -135,6 +144,12 @@
           "binding": "DB",
           "database_name": "terminus",
           "migrations_dir": "migrations",
+        },
+      ],
+      "r2_buckets": [
+        {
+          "binding": "DEPENDENCY_CACHE",
+          "bucket_name": "terminus-dependency-cache",
         },
       ],
       "workflows": [

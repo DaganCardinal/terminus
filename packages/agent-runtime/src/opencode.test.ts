@@ -12,8 +12,10 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  closeSkippedBrackets,
   conductorHarnessAgent,
   dispatcherHarnessAgent,
+  finalMessageJson,
   harnessMessage,
   harnessOutcome,
   harnessPreflightCommand,
@@ -256,5 +258,30 @@ describe("Harness outcomes", () => {
       error: null,
     })
     expect(harnessSessionId({ exitCode: 1, stdout: "", stderr: "" })).toBeNull()
+  })
+})
+
+describe("Final message JSON", () => {
+  it("restores closers skipped before a later closer", () => {
+    expect(
+      finalMessageJson('{"lines":[{"stations":[{"manifest":{"goal":"a"}]}]}')
+    ).toEqual({ lines: [{ stations: [{ manifest: { goal: "a" } }] }] })
+    expect(finalMessageJson('Plan:\n{"a":"}]","b":[{"c":"\\\\\\""]}')).toEqual({
+      a: "}]",
+      b: [{ c: '\\"' }],
+    })
+  })
+
+  it("leaves every other defect to the parser", () => {
+    for (const text of [
+      '{"a":{"b":1}',
+      '{"a":1}}',
+      '{"a":[1,]}',
+      '{"a":"b}',
+      '{"a":1}',
+    ])
+      expect(closeSkippedBrackets(text)).toBeNull()
+    expect(() => finalMessageJson('{"a":{"b":1}')).toThrow(SyntaxError)
+    expect(() => finalMessageJson('{"a":[1,]}')).toThrow(SyntaxError)
   })
 })

@@ -28,6 +28,10 @@ describe("shared Sandbox harness session", () => {
       const calls: string[][] = []
       let runs = 0
       const sandbox: StationSandbox = {
+        // The real Sandbox restores a cache first; the install itself is the same.
+        installDependencies: vi.fn(async (cwd: string) =>
+          sandbox.run(["npm", "ci", "--no-audit", "--no-fund"], cwd)
+        ),
         write: vi.fn(async () => {}),
         configure: vi.fn(async () => {}),
         close: vi.fn(async () => {}),

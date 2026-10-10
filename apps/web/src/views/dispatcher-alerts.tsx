@@ -1,7 +1,7 @@
 import type { NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { ArrowUpRight, RotateCcw } from "lucide-react"
-import { lineColor } from "@/map/layout"
+import { lineBadge } from "@/map/layout"
 import { api } from "@/state/api"
 import { describeIssues, namesFor } from "./describe"
 import { CheckRow } from "./detail-parts"
@@ -37,10 +37,9 @@ export function AttentionMessages({
   const name = namesFor(snapshot)
   const { blocked, awaiting } = attentionTrains(snapshot)
   const badge = (lineId: string) => {
-    const index = snapshot.lines.findIndex((line) => line.id === lineId)
-    const line = snapshot.lines[index]
-    return line ? (
-      <LineBadge color={lineColor(line, index)} number={index + 1} />
+    const badge = lineBadge(snapshot, lineId)
+    return badge ? (
+      <LineBadge color={badge.color} number={badge.number} />
     ) : null
   }
   const open = (

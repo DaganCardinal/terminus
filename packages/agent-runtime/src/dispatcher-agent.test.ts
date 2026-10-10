@@ -196,6 +196,39 @@ describe("harness Dispatcher", () => {
     )
   })
 
+  it("restores a Station closer the model skipped without spending a correction", async () => {
+    const proposal = await valid()
+    const [line, ...rest] = proposal.lines
+    // The live failure: `}]` where `}}]` closes the last Station's manifest and the Station.
+    const stations = JSON.stringify(line!.stations).replace(/}\]$/, "]")
+    const text = JSON.stringify({
+      ...proposal,
+      lines: [{ ...line, stations: "STATIONS" }, ...rest],
+    }).replace('"STATIONS"', stations)
+    const { session, sessions } = scripted([text])
+    expect(
+      (await new HarnessDispatcher("configured", sessions).plan(input)).proposal
+    ).toEqual(proposal)
+    expect(session.resume).not.toHaveBeenCalled()
+  })
+
+  it("tells the model where its JSON fails but keeps the parser out of the error", async () => {
+    const broken = '{"summary":"x",}'
+    const { session, sessions } = scripted([broken, broken, broken])
+    const error = await new HarnessDispatcher("configured", sessions)
+      .plan(input)
+      .catch((error: unknown) => error)
+    const feedback = session.resume.mock.calls[0]![0]
+    expect(feedback).toContain('{"path":"$","code":"invalid_json"}')
+    expect(feedback).toContain("The parser reported:")
+    expect(feedback).toContain("position 15")
+    expect(error).toBeInstanceOf(DispatchProposalError)
+    if (!(error instanceof Error)) throw new Error("Expected an error")
+    expect(error.message).toBe(
+      "Dispatcher proposal failed validation after three attempts: $ (invalid_json)"
+    )
+  })
+
   it("supplies a trusted baseline report and keeps a baseline fix only when checks failed", async () => {
     const proposal = (
       await new FakeDispatchPlanner().plan({ ...input, checkBaseline: true })

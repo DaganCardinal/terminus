@@ -11,6 +11,7 @@ import type {
 import type {
   CrossingReviewInput,
   ConductorVerdict,
+  StationVerdict,
   ValidationCommand,
 } from "@terminus/protocol"
 
@@ -29,8 +30,9 @@ export type StationRunResult =
   { ok: true; proposal: Proposal } | { ok: false; issues: Issue[] }
 
 /**
- * Runs a Station Agent on one manifest and returns the committed work, with
- * evidence from orchestration's own validation run.
+ * Runs a Station Agent on one manifest and returns the committed work. Its
+ * evidence comes from orchestration's own validation run, or is empty when the
+ * Conductor collects it during review.
  */
 export interface StationRunner {
   readonly config: AgentConfig
@@ -62,7 +64,8 @@ export interface ReviewContext {
 export interface Conductor {
   readonly config?: AgentConfig
   readonly model: string
-  review(input: ReviewInput, context: ReviewContext): Promise<ConductorVerdict>
+  /** Work arriving without evidence may get it collected here. */
+  review(input: ReviewInput, context: ReviewContext): Promise<StationVerdict>
   reviewJunction?(
     input: import("@terminus/protocol").JunctionReviewInput,
     context: ReviewContext

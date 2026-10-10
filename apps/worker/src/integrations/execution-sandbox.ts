@@ -11,13 +11,17 @@ import {
   type SandboxPreviewResult,
 } from "@terminus/protocol"
 import { DurableObject } from "cloudflare:workers"
+import { installDependencies, npmCacheDirectory } from "./dependency-cache"
 
 const trustEnv = {
   NODE_EXTRA_CA_CERTS: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
   GIT_SSL_CAINFO: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
   SSL_CERT_FILE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
   GIT_TERMINAL_PROMPT: "0",
+  npm_config_cache: npmCacheDirectory,
 }
+
+const commandTimeoutMs = 20 * 60_000
 
 /** The required Sandbox container adapter. No Train or Station lifecycle lives here. */
 export class ExecutionSandbox extends DurableObject<Env> {
@@ -95,14 +99,13 @@ export class ExecutionSandbox extends DurableObject<Env> {
         allowModel: false,
       })
       await checkoutPreview(this, input.remote, input.commit)
-      for (const command of [
-        ["npm", "ci"],
+      if ((await this.installDependencies("/workspace/preview")).exitCode !== 0)
+        throw new Error("Preview ci failed")
+      const built = await this.run(
         ["npm", "run", "build"],
-      ]) {
-        const result = await this.run(command, "/workspace/preview")
-        if (result.exitCode !== 0)
-          throw new Error(`Preview ${command[1]} failed`)
-      }
+        "/workspace/preview"
+      )
+      if (built.exitCode !== 0) throw new Error("Preview run failed")
       // Remove Git access before serving the app. No model access is granted.
       await this.configure({ repositories: [], allowModel: false })
       await this.container().setInactivityTimeout(5 * 60_000)
@@ -216,7 +219,7 @@ export class ExecutionSandbox extends DurableObject<Env> {
     command: string[],
     cwd = "/workspace",
     env: Record<string, string> = {},
-    timeoutMs = 20 * 60_000
+    timeoutMs = commandTimeoutMs
   ): Promise<CommandResult> {
     await this.ready()
     const process = await this.container().exec(command, {
@@ -236,6 +239,33 @@ export class ExecutionSandbox extends DurableObject<Env> {
       stderr: stderr.text,
       outputTruncated: stdout.truncated || stderr.truncated,
     })
+  }
+
+  /** Installs dependencies in `cwd` with the shared, lockfile-keyed npm cache. */
+  async installDependencies(cwd: string): Promise<CommandResult> {
+    await this.ready()
+    return installDependencies(
+      {
+        run: (command, dir) => this.run(command, dir),
+        stream: async (command, stdin) => {
+          const process = await this.container().exec(command, {
+            env: trustEnv,
+            signal: AbortSignal.timeout(commandTimeoutMs),
+            ...(stdin
+              ? { stdin, stdout: "ignore" }
+              : {
+                  stdin: new ReadableStream({
+                    start: (controller) => controller.close(),
+                  }),
+                }),
+            stderr: "ignore",
+          })
+          return { stdout: process.stdout, exitCode: process.exitCode }
+        },
+      },
+      this.env.DEPENDENCY_CACHE,
+      cwd
+    )
   }
 
   async write(path: string, contents: string): Promise<void> {

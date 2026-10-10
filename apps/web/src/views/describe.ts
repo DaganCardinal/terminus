@@ -6,6 +6,11 @@ import type {
   TrainState,
 } from "@terminus/protocol"
 
+/** A status as words. A returning Train reads as approaching its destination,
+ * which is how it looks on the map. */
+export const statusWords = (status: string) =>
+  status === "returning" ? "approaching" : status.replaceAll("_", " ")
+
 /** Display names for the ids in a snapshot. */
 export function namesFor(snapshot: NetworkSnapshot): (id: string) => string {
   const names = new Map<string, string>()
@@ -139,7 +144,7 @@ export function describeEvent(
     case "train.cleared":
       return `${name(event.trainId)} cleared to continue`
     case "train.returning":
-      return `${name(event.trainId)} returning to Terminus`
+      return `${name(event.trainId)} approaching Terminus`
     case "train.unloaded":
       return `${name(event.trainId)} unloaded`
     case "train.sided":

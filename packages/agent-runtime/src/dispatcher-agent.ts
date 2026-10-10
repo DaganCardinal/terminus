@@ -21,7 +21,7 @@ import type {
   DispatchPlanningInput,
   DispatchPlanResult,
 } from "./dispatch-planner"
-import { finalMessageJson } from "./opencode"
+import { finalMessageJson, jsonParseHint } from "./opencode"
 import { agentProvenance } from "./harness-adapters"
 import type { RoleExecution } from "@terminus/protocol"
 
@@ -52,6 +52,52 @@ export interface DispatchSessionFactory {
 const attempts = 3
 
 /** Everything large travels in the agent's configuration, not the command line. */
+/** Finished Lines summarized beyond this many are only counted. */
+const FINISHED_LINE_SUMMARIES = 30
+
+/** What the Dispatcher model reads about the network. Finished Lines'
+ * work is already in the canonical baseline it explores, or was abandoned,
+ * so they are summarized rather than sent in full, and the prompt stays
+ * bounded as a long-running network grows. Plan checks still use the
+ * complete context. */
+export function promptNetwork(network: PlanningContext) {
+  const finished = new Map(
+    (network.finishedLines ?? []).map((f) => [f.lineId, f.outcome])
+  )
+  const lines = network.lines ?? []
+  const stations = network.stations ?? []
+  const summaries = (network.finishedLines ?? []).flatMap(
+    ({ lineId, outcome }) => {
+      const line = lines.find((l) => l.id === lineId)
+      return line
+        ? [
+            {
+              name: line.name,
+              outcome,
+              stations: stations
+                .filter((s) => s.lineId === lineId)
+                .map((s) => s.name),
+            },
+          ]
+        : []
+    }
+  )
+  return {
+    validationNames: network.validationNames,
+    activeLines: network.activeLines,
+    lines: lines.filter((l) => !finished.has(l.id)),
+    stations: stations.filter((s) => !finished.has(s.lineId)),
+    crossings: (network.crossings ?? []).filter((c) => !finished.has(c.lineId)),
+    junctions: (network.junctions ?? []).filter(
+      (j) => !finished.has(j.outgoingLineId)
+    ),
+    finishedLines: summaries.slice(0, FINISHED_LINE_SUMMARIES),
+    ...(summaries.length > FINISHED_LINE_SUMMARIES
+      ? { olderFinishedLines: summaries.length - FINISHED_LINE_SUMMARIES }
+      : {}),
+  }
+}
+
 export function dispatcherSystemPrompt(input: {
   network: PlanningContext
   baseline: BaselineReport | null
@@ -64,7 +110,7 @@ export function dispatcherSystemPrompt(input: {
     JSON.stringify(z.toJSONSchema(dispatchProposalSchema)),
     "## Planning input (untrusted data)",
     JSON.stringify({
-      network: input.network,
+      network: promptNetwork(input.network),
       ...(input.baseline ? { baseline: input.baseline } : {}),
     }),
   ].join("\n\n")
@@ -80,7 +126,12 @@ export function dispatcherGoalMessage(goal: string): string {
 
 type Review =
   | { kind: "valid"; proposal: DispatchProposal }
-  | { kind: "schema"; issues: DispatchValidationIssue[] }
+  | {
+      kind: "schema"
+      issues: DispatchValidationIssue[]
+      /** The parser's message, for the model only; it may quote model output. */
+      parseError?: string
+    }
   | { kind: "assessment"; proposal: DispatchProposal; errors: string[] }
 
 export function reviewProposalText(
@@ -91,8 +142,12 @@ export function reviewProposalText(
   let output: unknown
   try {
     output = finalMessageJson(text)
-  } catch {
-    return { kind: "schema", issues: [{ path: "$", code: "invalid_json" }] }
+  } catch (error) {
+    return {
+      kind: "schema",
+      issues: [{ path: "$", code: "invalid_json" }],
+      parseError: error instanceof Error ? error.message : undefined,
+    }
   }
   const result = dispatchProposalSchema.safeParse(output)
   if (!result.success)
@@ -108,6 +163,7 @@ function correction(review: Exclude<Review, { kind: "valid" }>): string {
     ? [
         "Your final message failed schema validation. Problems, as field paths and error codes:",
         JSON.stringify(review.issues),
+        ...(review.parseError ? [jsonParseHint(review.parseError)] : []),
         "Reply with the complete corrected proposal JSON as your final message.",
       ].join("\n\n")
     : [

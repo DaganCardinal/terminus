@@ -256,8 +256,8 @@ function BoardRow({
           <p className="board-calling">
             <span className="board-calling-label">Lines</span>
             {calling.map((line) => (
-              <span key={line.index} className="line-chip">
-                <i style={{ background: lineColor(line, line.index) }} />
+              <span key={line.number} className="line-chip">
+                <i style={{ background: lineColor(line.color) }} />
                 {line.name}
               </span>
             ))}

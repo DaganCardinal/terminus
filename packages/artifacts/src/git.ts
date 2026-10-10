@@ -10,6 +10,8 @@ export interface GitWorkspace {
     stderr: string
     outputTruncated?: boolean
   }>
+  /** Installs project dependencies in `cwd`, when the workspace can do it faster than `npm ci`. */
+  install?(cwd: string): ReturnType<GitWorkspace["run"]>
   close(): Promise<void>
 }
 

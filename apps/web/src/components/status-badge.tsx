@@ -1,4 +1,5 @@
 import { cn } from "@terminus/ui/lib/utils"
+import { statusWords } from "@/views/describe"
 
 const tones: Record<string, string> = {
   moving: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
@@ -45,7 +46,7 @@ const toneFor = (status: string) => toneByStatus[status] ?? "idle"
 
 /** `ready_for_pickup` → "Ready for pickup". */
 const label = (status: string) => {
-  const words = status.replaceAll("_", " ")
+  const words = statusWords(status)
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 

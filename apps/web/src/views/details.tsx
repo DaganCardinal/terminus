@@ -14,7 +14,7 @@ import {
 } from "lucide-react"
 import { Button } from "@terminus/ui/components/button"
 import { StatusBadge } from "@/components/status-badge"
-import { lineColor } from "@/map/layout"
+import { lineBadge } from "@/map/layout"
 import type { MapSelection } from "@/map/network-map"
 import { api } from "@/state/api"
 import {
@@ -44,12 +44,12 @@ export function LineHeading({
   line: Line
   title: string
 }) {
-  const index = snapshot.lines.indexOf(line)
+  const badge = lineBadge(snapshot, line.id)
   return (
     <>
       <span className="drawer-eyebrow">
-        <i style={{ background: lineColor(line, index) }}>
-          {(index + 1).toString().padStart(2, "0")}
+        <i style={{ background: badge?.color }}>
+          {badge?.number.toString().padStart(2, "0")}
         </i>
         {line.name}
       </span>
@@ -419,7 +419,7 @@ export function TrainDetails({
   )
   const views = snapshot.trains.filter((v) => v.train.lineId === line.id)
   const name = namesFor(snapshot)
-  const color = lineColor(line, snapshot.lines.indexOf(line))
+  const color = lineBadge(snapshot, line.id)!.color
   const stations = line.stationIds.flatMap(
     (id) => snapshot.stations.find((s) => s.id === id) ?? []
   )
