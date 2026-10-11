@@ -37,6 +37,8 @@ import {
   repositoryFileQuerySchema,
   modelSettingsSchema,
   setNetworkModelSettingsRequestSchema,
+  sandboxLimitsSchema,
+  setNetworkSandboxLimitsRequestSchema,
   type ApiError,
   type EventsResponse,
 } from "@terminus/protocol"
@@ -453,6 +455,45 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
         ...(await store.setNetworkModelSettings(networkId!, override, now())),
         alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
       })
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/settings/sandboxes" }),
+    async (_, env) =>
+      json(await dispatcherPorts(env).store.generalSandboxLimits()),
+  ],
+  [
+    "PUT",
+    new URLPattern({ pathname: "/api/settings/sandboxes" }),
+    async (request, env) => {
+      const limits = await parse(request, sandboxLimitsSchema)
+      const { store, now } = dispatcherPorts(env)
+      return json(await store.setGeneralSandboxLimits(limits, now()))
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/settings/sandboxes" }),
+    async (_, env, { networkId }) => {
+      const { store } = dispatcherPorts(env)
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      return json(await store.networkSandboxLimits(networkId!))
+    },
+  ],
+  [
+    "PUT",
+    new URLPattern({ pathname: "/api/networks/:networkId/settings/sandboxes" }),
+    async (request, env, { networkId }) => {
+      const { override } = await parse(
+        request,
+        setNetworkSandboxLimitsRequestSchema
+      )
+      const { store, now } = dispatcherPorts(env)
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      return json(
+        await store.setNetworkSandboxLimits(networkId!, override, now())
+      )
     },
   ],
   [

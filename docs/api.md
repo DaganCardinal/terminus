@@ -4,6 +4,8 @@ Vite proxies `/api` to the Worker at port 8787. Feature-specific endpoints are d
 
 Use **Emergency Brake** in Network Overview or the Terminus tab to stop all Station work in that network and discard unfinished Sandbox contents. Its endpoint is `POST /api/networks/:networkId/emergency-brake` with JSON `{ "discardUnfinishedWork": true }`; see [Emergency Brake](station-execution.md#emergency-brake) for scope, partial failures and recovery. For targeted cleanup, `DELETE /api/stations/:stationId/sandbox` takes JSON `{ "runId": "STATION_ID-s1-r0" }`; see [Station Sandbox cleanup](station-execution.md#stopping-one-leftover-station-sandbox) for Workflow gates and unpublished-candidate protection.
 
+Sandbox limits: `GET`/`PUT /api/settings/sandboxes` reads or saves the General limits as `{ "agent": 10, "agentless": 10 }` (whole numbers from 1 to 100). `GET`/`PUT /api/networks/:networkId/settings/sandboxes` reads `{ override, general, updatedAt }` and saves `{ "override": { "agent": 20, "agentless": 5 } }`; `{ "override": null }` follows General again. See [Sandboxes and limits](live-setup.md#sandboxes-and-limits).
+
 ## Permanently deleting a network
 
 Network Overview's **Network actions** kebab menu contains **Emergency Brake** and **Delete Network**. Delete requires confirmation and calls `DELETE /api/networks/:networkId` with JSON `{ "confirm": true }`.

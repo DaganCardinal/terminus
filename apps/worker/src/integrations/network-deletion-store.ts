@@ -1,4 +1,5 @@
 import { parseRepoId } from "@terminus/artifacts"
+import type { SandboxBinding } from "./execution-sandbox"
 import { NetworkStore } from "./network-store"
 import { stationRunHistory } from "./station-run-history"
 
@@ -54,9 +55,11 @@ export class NetworkDeletionStore {
       ]),
     ]
     const { results: sandboxes } = await this.db
-      .prepare("SELECT object_id FROM network_sandboxes WHERE namespace = ?")
+      .prepare(
+        "SELECT object_id, binding FROM network_sandboxes WHERE namespace = ?"
+      )
       .bind(namespace)
-      .all<{ object_id: string }>()
+      .all<{ object_id: string; binding: SandboxBinding }>()
     return {
       workflows: {
         TRAIN_WORKFLOW: rows[0]!,
@@ -66,7 +69,10 @@ export class NetworkDeletionStore {
         INTEGRATION_WORKFLOW: rows[5]!,
         STATION_WORKFLOW: runIds,
       },
-      sandboxIds: sandboxes.map((row) => row.object_id),
+      sandboxes: sandboxes.map((row) => ({
+        id: row.object_id,
+        binding: row.binding,
+      })),
       runIds,
       events,
       trains: (await store.trains(networkId)).map((row) => row.value),
@@ -94,6 +100,7 @@ export class NetworkDeletionStore {
       ...[
         "execution_configs",
         "model_settings",
+        "sandbox_limits",
         "junction_repairs",
         "technician_repairs",
         "integration_attempts",
@@ -118,6 +125,9 @@ export class NetworkDeletionStore {
       ),
       this.db
         .prepare("DELETE FROM network_sandboxes WHERE namespace = ?")
+        .bind(namespace),
+      this.db
+        .prepare("DELETE FROM sandbox_leases WHERE namespace = ?")
         .bind(namespace),
       this.db
         .prepare("DELETE FROM repository_provisions WHERE namespace = ?")

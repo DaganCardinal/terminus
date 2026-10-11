@@ -4,6 +4,8 @@ import type {
   ArtifactsRepositoryInfo,
   ArtifactsService,
 } from "./artifacts-repository-host"
+import { requireCommit } from "./git"
+import type { CommittedTreeEntry } from "./repository-browse"
 
 /** Numeric Artifacts error codes, as the REST envelope reports them. */
 const errorCodes: Record<number, string> = {
@@ -187,6 +189,37 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
         )
         return { token: created.token }
       },
+      // Commits, trees and blobs are immutable, so reads by hash never race a push.
+      objects: (name) => ({
+        treeOf: async (commit) =>
+          (
+            await this.request<{ treeHash: string }>(
+              "GET",
+              `${repo(name)}/commit/${requireCommit(commit)}`
+            )
+          ).treeHash,
+        tree: async (hash) =>
+          this.request<CommittedTreeEntry[]>(
+            "GET",
+            `${repo(name)}/tree/${objectHash(hash)}`
+          ),
+        blobSize: async (hash) => {
+          const length = (
+            await this.raw("HEAD", `${repo(name)}/blob/${objectHash(hash)}`)
+          ).headers.get("content-length")
+          if (!length || !/^\d+$/.test(length))
+            throw new Error("Artifacts did not report the blob size")
+          return Number(length)
+        },
+        blob: async (hash) => {
+          const response = await this.raw(
+            "GET",
+            `${repo(name)}/blob/${objectHash(hash)}`
+          )
+          if (!response.body) throw new Error("Artifacts returned no blob")
+          return response.body
+        },
+      }),
     }
   }
 
@@ -239,16 +272,44 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
       .catch(() => null)) as Envelope<T> | null
     if (response.ok && envelope?.success && envelope.result !== null)
       return envelope
-    const first = envelope?.errors?.[0]
-    const code =
-      (first && errorCodes[first.code]) ??
-      (response.status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR")
-    throw new ArtifactsApiError(
-      response.status,
-      code,
-      first?.message ?? `Artifacts request failed (${response.status})`
-    )
+    throw failure(response.status, envelope)
   }
+
+  /** A successful response whose body is raw bytes rather than an envelope. */
+  private async raw(method: "GET" | "HEAD", path: string): Promise<Response> {
+    const response = await this.fetch(`${this.base}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${this.apiToken}` },
+    })
+    if (response.ok) return response
+    // Errors still arrive as envelopes, except to HEAD, which has no body.
+    const envelope = (await response
+      .json()
+      .catch(() => null)) as Envelope<unknown> | null
+    throw failure(response.status, envelope)
+  }
+}
+
+function failure(
+  status: number,
+  envelope: Envelope<unknown> | null
+): ArtifactsApiError {
+  const first = envelope?.errors?.[0]
+  const code =
+    (first && errorCodes[first.code]) ??
+    (status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR")
+  return new ArtifactsApiError(
+    status,
+    code,
+    first?.message ?? `Artifacts request failed (${status})`
+  )
+}
+
+/** Tree and blob hashes come from Artifacts responses, but still form URL paths. */
+function objectHash(value: string): string {
+  if (!/^[a-f0-9]{40}$/.test(value))
+    throw new Error("Expected a full Git object hash")
+  return value
 }
 
 function info(repo: unknown): ArtifactsRepositoryInfo {

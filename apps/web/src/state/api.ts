@@ -23,7 +23,10 @@ import {
   repositoryOverviewSchema,
   generalModelSettingsSchema,
   networkModelSettingsSchema,
+  generalSandboxLimitsSchema,
+  networkSandboxLimitsSchema,
   type ModelSettings,
+  type SandboxLimits,
   type PlaceHoldRequest,
 } from "@terminus/protocol"
 
@@ -131,6 +134,27 @@ export const api = {
   networkModelSettings: async (networkId: string) =>
     networkModelSettingsSchema.parse(
       await request(`/networks/${networkId}/settings/models`)
+    ),
+  sandboxLimits: async () =>
+    generalSandboxLimitsSchema.parse(await request("/settings/sandboxes")),
+  saveSandboxLimits: async (limits: SandboxLimits) =>
+    generalSandboxLimitsSchema.parse(
+      await request("/settings/sandboxes", { method: "PUT", body: limits })
+    ),
+  networkSandboxLimits: async (networkId: string) =>
+    networkSandboxLimitsSchema.parse(
+      await request(`/networks/${networkId}/settings/sandboxes`)
+    ),
+  /** Null removes the network's override so it follows General again. */
+  saveNetworkSandboxLimits: async (
+    networkId: string,
+    override: SandboxLimits | null
+  ) =>
+    networkSandboxLimitsSchema.parse(
+      await request(`/networks/${networkId}/settings/sandboxes`, {
+        method: "PUT",
+        body: { override },
+      })
     ),
   /** Null removes the network's override so it follows General again. */
   saveNetworkModelSettings: async (

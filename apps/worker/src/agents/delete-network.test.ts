@@ -129,37 +129,59 @@ describe("permanent Network deletion", () => {
   it("purges registered random containers and previews before removing repositories and metadata", async () => {
     const f = await fixture()
     await env.DB.prepare(
-      "INSERT INTO network_sandboxes VALUES ('random-conductor', ?)"
+      "INSERT INTO network_sandboxes (object_id, namespace) VALUES ('random-conductor', ?)"
+    )
+      .bind(f.namespace)
+      .run()
+    await env.DB.prepare(
+      "INSERT INTO network_sandboxes (object_id, namespace, binding) VALUES ('random-git', ?, 'WORKSPACE_SANDBOX')"
     )
       .bind(f.namespace)
       .run()
     const infra = workflows()
     const purged: string[] = []
-    const stub = (id: string) => ({
-      id: { toString: () => id },
+    const stub = (binding: string, id: string) => ({
+      id: { toString: () => `${binding}:${id}` },
       purge: vi.fn(async () => {
-        purged.push(id)
+        purged.push(`${binding}:${id}`)
       }),
     })
-    const random = stub("random-conductor")
+    const random = stub("SANDBOX", "random-conductor")
     random.purge.mockRejectedValueOnce(new Error("Container unavailable"))
+    // An object id only resolves in the namespace it was registered under.
+    const namespace = (
+      binding: string,
+      registered: string,
+      saved = stub(binding, registered)
+    ) => ({
+      idFromString: (id: string) => {
+        if (id !== registered) throw new Error(`${id} is not a ${binding} id`)
+        return id
+      },
+      get: () => saved,
+      getByName: (name: string) => stub(binding, name),
+    })
     const testEnv = {
       ...infra.env,
       REPOSITORY_MODE: "artifacts",
       ARTIFACTS_ACCOUNT_ID: "test-account",
       ARTIFACTS_API_TOKEN: "test-token",
-      SANDBOX: {
-        idFromString: (id: string) => id,
-        get: () => random,
-        getByName: (name: string) => stub(name),
-      },
+      SANDBOX: namespace("SANDBOX", "random-conductor", random),
+      WORKSPACE_SANDBOX: namespace("WORKSPACE_SANDBOX", "random-git"),
     } as unknown as Env
     const removeRepositories = vi
       .spyOn(ArtifactsRestClient.prototype, "deleteRepositories")
       .mockImplementation(async (namespace) => {
         expect(namespace).toBe(f.namespace)
-        expect(purged).toContain("random-conductor")
-        expect(purged.some((id) => id.startsWith("preview-"))).toBe(true)
+        expect(purged).toContain("SANDBOX:random-conductor")
+        expect(purged).toContain("WORKSPACE_SANDBOX:random-git")
+        // Previews run in agentless Sandboxes, Stations in agent ones.
+        expect(
+          purged.some((id) => id.startsWith("WORKSPACE_SANDBOX:preview-"))
+        ).toBe(true)
+        expect(purged.some((id) => id.startsWith("SANDBOX:preview-"))).toBe(
+          false
+        )
         expect(await f.ports.store.network(f.network.id)).not.toBeNull()
       })
     await expect(deleteNetwork(testEnv, f.network.id)).rejects.toMatchObject({

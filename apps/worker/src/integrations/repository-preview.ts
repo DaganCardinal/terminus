@@ -5,6 +5,7 @@ import {
   type SandboxPreviewRequest,
 } from "@terminus/protocol"
 import { artifactsRepositories } from "./artifacts-repositories"
+import { SANDBOX_CAPACITY_MESSAGE } from "./sandbox-capacity"
 
 export class PreviewError extends Error {
   readonly status: number
@@ -117,7 +118,7 @@ export async function launchRepositoryPreview(
   snapshot: RepositoryPreviewSnapshot,
   label: "Train" | "Terminus"
 ) {
-  if (env.REPOSITORY_MODE !== "artifacts" || !env.SANDBOX)
+  if (env.REPOSITORY_MODE !== "artifacts" || !env.WORKSPACE_SANDBOX)
     throw new PreviewError(
       503,
       `${label} previews require real Artifacts repositories and Cloudflare Sandboxes; fake mode has no app to run`
@@ -129,9 +130,14 @@ export async function launchRepositoryPreview(
       snapshot,
       base,
       repositories,
-      (name) => env.SANDBOX.getByName(name)
+      (name) => env.WORKSPACE_SANDBOX.getByName(name)
     )
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith(SANDBOX_CAPACITY_MESSAGE)
+    )
+      throw new PreviewError(503, error.message)
     throw new PreviewError(
       502,
       `Could not start the ${label} preview. Check the demo app installs and builds, then try again.`
@@ -152,10 +158,12 @@ export async function haltRepositoryPreview(
   snapshot: RepositoryPreviewSnapshot,
   label: "Train" | "Terminus"
 ): Promise<void> {
-  if (env.REPOSITORY_MODE !== "artifacts" || !env.SANDBOX)
+  if (env.REPOSITORY_MODE !== "artifacts" || !env.WORKSPACE_SANDBOX)
     throw new PreviewError(
       503,
       `${label} previews require real Artifacts repositories and Cloudflare Sandboxes; fake mode has no app to run`
     )
-  await stopRepositoryPreview(snapshot, (name) => env.SANDBOX.getByName(name))
+  await stopRepositoryPreview(snapshot, (name) =>
+    env.WORKSPACE_SANDBOX.getByName(name)
+  )
 }

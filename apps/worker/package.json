@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler d1 migrations apply terminus --local && wrangler dev",
+    "dev": "wrangler d1 migrations apply terminus --local && wrangler dev --local-upstream localhost:8787",
     "dev:fake": "wrangler d1 migrations apply terminus --local --env fake && wrangler dev --env fake",
     "deploy": "wrangler d1 migrations apply terminus --remote --env \"\" && wrangler deploy --env \"\"",
     "cf-typegen": "wrangler types --strict-vars=false",

@@ -1,3 +1,5 @@
+# The agent ExecutionSandbox image: every harness plus the tools they use.
+# Agentless work runs in Dockerfile.workspace instead.
 FROM node:24-trixie-slim
 
 RUN apt-get update \

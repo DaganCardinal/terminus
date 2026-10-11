@@ -1489,7 +1489,8 @@
   opacity: 0.5;
 }
 .settings-option input:focus-visible,
-.settings-roles select:focus-visible {
+.settings-roles select:focus-visible,
+.settings-roles input:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
@@ -1585,7 +1586,8 @@
   font-weight: 400;
   color: var(--muted-foreground);
 }
-.settings-roles select {
+.settings-roles select,
+.settings-roles input {
   width: 100%;
   height: 36px;
   padding: 0 8px;
@@ -1594,6 +1596,16 @@
   background: var(--background);
   font-size: 13px;
   color: var(--foreground);
+}
+.settings-roles input {
+  max-width: 96px;
+  font-variant-numeric: tabular-nums;
+}
+.settings-roles input:invalid {
+  border-color: var(--danger-ink);
+}
+.settings-limits th:first-child {
+  width: 58%;
 }
 
 .settings-footer {
@@ -1648,8 +1660,13 @@
     flex-wrap: wrap;
     gap: 4px 8px;
   }
-  /* Scope switching stays one tap away; coming-soon items wait for room. */
-  .settings-nav .eyebrow,
+  /* Scope switching stays one tap away, under each section's name; the
+     external Providers link waits for room. */
+  .settings-nav .eyebrow {
+    flex-basis: 100%;
+    margin: 4px 0 0;
+  }
+  .settings-nav .eyebrow:last-of-type,
   .settings-nav ul:last-child {
     display: none;
   }

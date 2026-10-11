@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, mkdir, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -15,6 +15,7 @@ import {
   type GitWorkspaceFactory,
   type RepositoryAccess,
 } from "./git"
+import type { CommittedObjects } from "./repository-browse"
 import { StationGit } from "./station-git"
 
 const execute = promisify(execFile)
@@ -27,7 +28,44 @@ afterEach(async () => {
   )
 })
 
-async function fixture(options: { readHeadDirectly?: boolean } = {}) {
+// Stands in for the Artifacts REST object endpoints: real objects, no workspace.
+function gitObjects(gitDir: string): CommittedObjects {
+  const read = async (args: string[]) =>
+    (
+      await execute("git", ["--git-dir", gitDir, ...args], {
+        encoding: "buffer",
+        maxBuffer: 10_000_000,
+      })
+    ).stdout
+  return {
+    treeOf: async (commit) =>
+      (await read(["rev-parse", "--verify", `${commit}^{tree}`]))
+        .toString()
+        .trim(),
+    tree: async (hash) =>
+      (await read(["ls-tree", "-z", hash]))
+        .toString()
+        .split("\0")
+        .filter(Boolean)
+        .map((line) => {
+          const [meta, name] = line.split("\t") as [string, string]
+          const [mode, type, object] = meta.split(" ") as [
+            string,
+            "blob" | "tree" | "commit",
+            string,
+          ]
+          return { name, mode, type, hash: object }
+        }),
+    blobSize: async (hash) =>
+      Number((await read(["cat-file", "-s", hash])).toString()),
+    blob: async (hash) =>
+      new Response(await read(["cat-file", "blob", hash])).body!,
+  }
+}
+
+async function fixture(
+  options: { readHeadDirectly?: boolean; readObjectsDirectly?: boolean } = {}
+) {
   const directory = await mkdtemp(join(tmpdir(), "terminus-git-test-"))
   temporary.push(directory)
   const repos = new Map<string, ArtifactsRepository>()
@@ -97,6 +135,10 @@ async function fixture(options: { readHeadDirectly?: boolean } = {}) {
           "Imported",
           input.source.url
         ),
+      ...(options.readObjectsDirectly && {
+        objects: (name: string) =>
+          gitObjects(join(directory, `${namespace}--${name}.git`)),
+      }),
     }),
   }
   const workspaces: GitWorkspaceFactory = {
@@ -390,6 +432,95 @@ describe("Artifacts repository transport with real Git", () => {
       })
     ).rejects.toBeInstanceOf(RepositoryMovedError)
     expect(f.repos.has("p/late")).toBe(false)
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("reads files from objects by the same rules as a workspace, without opening one", async () => {
+    const f = await fixture({ readObjectsDirectly: true })
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const work = await mkdtemp(join(tmpdir(), "terminus-files-test-"))
+    temporary.push(work)
+    const remote = (await f.repos.get("p/terminus")!.info()).remote
+    const g = (...args: string[]) =>
+      execute("git", [
+        "-C",
+        work,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@localhost",
+        ...args,
+      ])
+    await execute("git", ["clone", "--", remote, work])
+    await mkdir(join(work, "src/lib"), { recursive: true })
+    await writeFile(join(work, "README.md"), "# Demo\n")
+    await writeFile(join(work, "src/lib/util.ts"), "export const x = 1\n")
+    await writeFile(join(work, "run.sh"), "#!/bin/sh\n", { mode: 0o755 })
+    await writeFile(join(work, ".env"), "SECRET=1\n")
+    await symlink(".env", join(work, "notes.txt"))
+    await writeFile(join(work, "logo.png"), Buffer.from([0x89, 0x50, 0, 1]))
+    await writeFile(join(work, "big.txt"), "é".repeat(400_001))
+    await g("add", "-A")
+    await g(
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${terminus.headCommit},vendor/lib`
+    )
+    await g("commit", "-m", "Files")
+    await g("push", "origin", "HEAD:main")
+    const commit = (await g("rev-parse", "HEAD")).stdout.trim()
+    const viaWorkspace = new ArtifactsRepositoryHost(
+      {
+        ensure: f.artifacts.ensure,
+        namespace: (namespace) => ({
+          ...f.artifacts.namespace(namespace),
+          objects: undefined,
+        }),
+      },
+      f.workspaces,
+      async () => {}
+    )
+
+    const paths = [
+      "README.md",
+      "src/lib/util.ts",
+      "run.sh",
+      "logo.png",
+      "big.txt",
+      ".env",
+      "notes.txt",
+      "vendor/lib",
+      "src",
+      "src/lib",
+      "README.md/x",
+      "missing.md",
+    ]
+    const expected = await Promise.all(
+      paths.map((path) => viaWorkspace.readFile("p/terminus", commit, path))
+    )
+    expect(expected[0]?.content).toBe("# Demo\n")
+    const opened = f.grants.length
+    for (const [index, path] of paths.entries())
+      expect(await f.host.readFile("p/terminus", commit, path), path).toEqual(
+        expected[index]
+      )
+    const big = await f.host.readFile("p/terminus", commit, "big.txt")
+    expect(big).toMatchObject({ size: 800_002, truncated: true })
+    expect(big?.content).toHaveLength(400_000)
+    expect(
+      await f.host.readFile("p/terminus", commit, "logo.png")
+    ).toMatchObject({ size: 4, content: null })
+    expect(await f.host.readFile("p/terminus", commit, "notes.txt")).toBeNull()
+    for (const path of ["/README.md", "src//lib/util.ts", "src/lib/"])
+      expect(await f.host.readFile("p/terminus", commit, path)).toBeNull()
+    await expect(
+      f.host.readFile("p/terminus", "0".repeat(40), "README.md")
+    ).rejects.toThrow()
+    await expect(
+      f.host.readFile("p/terminus", "main", "README.md")
+    ).rejects.toThrow("Expected a full Git commit identity")
+    expect(f.grants).toHaveLength(opened)
     expect(f.tokens.size).toBe(0)
   })
 

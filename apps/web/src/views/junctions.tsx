@@ -111,7 +111,9 @@ export function JunctionDetails({
                 ·{" "}
                 {j.inputs.some((input) => input.lineId === id)
                   ? "Accepted into Junction"
-                  : (train ? statusWords(train.state.status) : "Waiting")}
+                  : train
+                    ? statusWords(train.state.status)
+                    : "Waiting"}
               </li>
             )
           })}

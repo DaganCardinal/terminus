@@ -1,4 +1,5 @@
 import { ArtifactsRestClient } from "@terminus/artifacts"
+import type { SandboxBinding } from "../integrations/execution-sandbox"
 import { NetworkDeletionStore } from "../integrations/network-deletion-store"
 import { previewSandboxName } from "../integrations/repository-preview"
 import { DispatchError } from "./dispatcher"
@@ -57,7 +58,10 @@ export async function deleteNetwork(
   if (env.REPOSITORY_MODE !== "fake") {
     // Named Station containers and historical previews may predate ownership
     // tracking. Collect them as well as every registered random session.
-    const names = new Set(inventory.runIds.map((id) => `station-${id}`))
+    // Stations run in agent Sandboxes; previews in agentless ones.
+    const names = new Map<string, SandboxBinding>(
+      inventory.runIds.map((id) => [`station-${id}`, "SANDBOX"])
+    )
     const commits = new Set([
       network.terminusCommit,
       ...inventory.trains.map((train) => train.headCommit),
@@ -68,30 +72,32 @@ export async function deleteNetwork(
           commits.add(value)
     }
     for (const commit of commits) {
-      names.add(
+      names.set(
         await previewSandboxName({
           identity: `terminus:${networkId}`,
           repoId: network.terminusRepoId,
           commit,
-        })
+        }),
+        "WORKSPACE_SANDBOX"
       )
       for (const train of inventory.trains)
-        names.add(
+        names.set(
           await previewSandboxName({
             identity: train.id,
             repoId: train.repoId,
             commit,
-          })
+          }),
+          "WORKSPACE_SANDBOX"
         )
     }
     const stubs = new Map(
-      inventory.sandboxIds.map((id) => [
+      inventory.sandboxes.map(({ id, binding }) => [
         id,
-        env.SANDBOX.get(env.SANDBOX.idFromString(id)),
+        env[binding].get(env[binding].idFromString(id)),
       ])
     )
-    for (const name of names) {
-      const stub = env.SANDBOX.getByName(name)
+    for (const [name, binding] of names) {
+      const stub = env[binding].getByName(name)
       stubs.set(stub.id.toString(), stub)
     }
     for (const [id, stub] of stubs) {

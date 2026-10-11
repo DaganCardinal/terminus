@@ -224,3 +224,90 @@ describe("Artifacts REST client", () => {
     ).toThrow("ARTIFACTS_ACCOUNT_ID")
   })
 })
+
+describe("Artifacts REST object reads", () => {
+  const commit = "1".repeat(40)
+  const tree = "2".repeat(40)
+  const blob = "3".repeat(40)
+  const envelope = (result: unknown) =>
+    Response.json({ result, success: true, errors: [], messages: [] })
+  const notFound = () =>
+    Response.json(
+      {
+        result: null,
+        success: false,
+        errors: [{ code: 10200, message: "Not found" }],
+        messages: [],
+      },
+      { status: 404 }
+    )
+  // Response shapes follow live probes of the Artifacts API (2026-10-11).
+  function objects(respond: (method: string, path: string) => Response) {
+    const calls: string[] = []
+    const rest = new ArtifactsRestClient({
+      accountId: "acct",
+      apiToken: "api-secret",
+      fetch: async (input, init) => {
+        const method = init?.method ?? "GET"
+        const path = String(input).slice(base.length)
+        expect(new Headers(init?.headers).get("Authorization")).toBe(
+          "Bearer api-secret"
+        )
+        calls.push(`${method} ${path}`)
+        return respond(method, path)
+      },
+    })
+    return { read: rest.namespace("tn-1").objects!("terminus"), calls }
+  }
+
+  it("reads commits, trees, and blobs by hash", async () => {
+    const entry = { name: "src", mode: "40000", hash: tree, type: "tree" }
+    const { read, calls } = objects((method, path) => {
+      if (path.endsWith(`/commit/${commit}`))
+        return envelope({ hash: commit, treeHash: tree, parents: [] })
+      if (path.endsWith(`/tree/${tree}`)) return envelope([entry])
+      if (method === "HEAD")
+        return new Response(null, { headers: { "content-length": "5" } })
+      return new Response("hello", {
+        headers: { "content-type": "application/octet-stream" },
+      })
+    })
+    expect(await read.treeOf(commit)).toBe(tree)
+    expect(await read.tree(tree)).toEqual([entry])
+    expect(await read.blobSize(blob)).toBe(5)
+    expect(await new Response(await read.blob(blob)).text()).toBe("hello")
+    expect(calls).toEqual([
+      `GET /tn-1/repos/terminus/commit/${commit}`,
+      `GET /tn-1/repos/terminus/tree/${tree}`,
+      `HEAD /tn-1/repos/terminus/blob/${blob}`,
+      `GET /tn-1/repos/terminus/blob/${blob}`,
+    ])
+  })
+
+  it("maps missing objects to NOT_FOUND, including a HEAD without a body", async () => {
+    const { read } = objects((method) =>
+      method === "HEAD" ? new Response(null, { status: 404 }) : notFound()
+    )
+    await expect(read.treeOf(commit)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    })
+    await expect(read.blob(blob)).rejects.toMatchObject({ code: "NOT_FOUND" })
+    await expect(read.blobSize(blob)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      status: 404,
+    })
+  })
+
+  it("never puts anything but a full hash in an object path", async () => {
+    const { read, calls } = objects(() => envelope(null))
+    await expect(read.treeOf("main")).rejects.toThrow("full Git commit")
+    await expect(read.tree("../tokens")).rejects.toThrow("full Git object")
+    await expect(read.blob(`${blob}/x`)).rejects.toThrow("full Git object")
+    expect(calls).toEqual([])
+  })
+
+  it("refuses a blob size Artifacts does not report", async () => {
+    const { read } = objects(() => new Response(null))
+    await expect(read.blobSize(blob)).rejects.toThrow("blob size")
+  })
+})

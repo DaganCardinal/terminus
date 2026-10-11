@@ -54,6 +54,11 @@ import {
   type GeneralModelSettings,
   type ModelSettings,
   type NetworkModelSettings,
+  sandboxLimitsSchema,
+  DEFAULT_SANDBOX_LIMITS,
+  type GeneralSandboxLimits,
+  type NetworkSandboxLimits,
+  type SandboxLimits,
   type RoleModels,
   type IntegrationAttempt,
   type IntegrationInput,
@@ -1009,6 +1014,84 @@ export class NetworkStore {
             .bind(scope)
     ).run()
     return this.networkModelSettings(networkId)
+  }
+
+  /** The General Sandbox limits, or the defaults until someone saves them. */
+  async generalSandboxLimits(): Promise<GeneralSandboxLimits> {
+    const general = (await this.#sandboxLimitRows(GENERAL_SCOPE)).get(
+      GENERAL_SCOPE
+    )
+    return {
+      limits: general?.limits ?? DEFAULT_SANDBOX_LIMITS,
+      updatedAt: general?.updatedAt ?? null,
+    }
+  }
+
+  async setGeneralSandboxLimits(
+    limits: SandboxLimits,
+    now: string
+  ): Promise<GeneralSandboxLimits> {
+    await this.#db
+      .prepare(
+        "INSERT INTO sandbox_limits (scope, network_id, limits, updated_at) VALUES (?, NULL, ?, ?) ON CONFLICT(scope) DO UPDATE SET limits = excluded.limits, updated_at = excluded.updated_at"
+      )
+      .bind(GENERAL_SCOPE, JSON.stringify(limits), now)
+      .run()
+    return this.generalSandboxLimits()
+  }
+
+  async networkSandboxLimits(
+    networkId: NetworkId
+  ): Promise<NetworkSandboxLimits> {
+    const scope = networkScope(networkId)
+    const rows = await this.#sandboxLimitRows(GENERAL_SCOPE, scope)
+    const override = rows.get(scope)
+    return {
+      override: override?.limits ?? null,
+      general: rows.get(GENERAL_SCOPE)?.limits ?? DEFAULT_SANDBOX_LIMITS,
+      updatedAt: override?.updatedAt ?? null,
+    }
+  }
+
+  /** Null removes the override so the network follows General again. */
+  async setNetworkSandboxLimits(
+    networkId: NetworkId,
+    override: SandboxLimits | null,
+    now: string
+  ): Promise<NetworkSandboxLimits> {
+    const scope = networkScope(networkId)
+    await (
+      override
+        ? this.#db
+            .prepare(
+              "INSERT INTO sandbox_limits (scope, network_id, limits, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope) DO UPDATE SET limits = excluded.limits, updated_at = excluded.updated_at"
+            )
+            .bind(scope, networkId, JSON.stringify(override), now)
+        : this.#db
+            .prepare("DELETE FROM sandbox_limits WHERE scope = ?")
+            .bind(scope)
+    ).run()
+    return this.networkSandboxLimits(networkId)
+  }
+
+  async #sandboxLimitRows(
+    ...scopes: string[]
+  ): Promise<Map<string, { limits: SandboxLimits; updatedAt: string }>> {
+    const { results } = await this.#db
+      .prepare(
+        `SELECT scope, limits, updated_at FROM sandbox_limits WHERE scope IN (${scopes.map(() => "?").join(", ")})`
+      )
+      .bind(...scopes)
+      .all<{ scope: string; limits: string; updated_at: string }>()
+    return new Map(
+      results.map((row) => [
+        row.scope,
+        {
+          limits: sandboxLimitsSchema.parse(JSON.parse(row.limits)),
+          updatedAt: row.updated_at,
+        },
+      ])
+    )
   }
 
   /** Immutable work configuration, separate from lifecycle state. */

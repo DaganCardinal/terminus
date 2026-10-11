@@ -13,14 +13,25 @@ import {
   type ModelRole,
   type ModelSettings,
   type RoleModels,
+  MAX_SANDBOX_INSTANCES,
+  sandboxLimitsSchema,
+  type NetworkSandboxLimits,
+  type SandboxKind,
+  type SandboxLimits,
 } from "@terminus/protocol"
 import { Button, buttonVariants } from "@terminus/ui/components/button"
 import { cn } from "@terminus/ui/lib/utils"
-import { useEffect, useState, type FormEvent, type ReactNode } from "react"
+import {
+  Fragment,
+  useEffect,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react"
 import { RotateCw } from "lucide-react"
 import { AppNav } from "@/components/app-nav"
 import { api } from "@/state/api"
-import { routes } from "@/state/route"
+import { routes, type SettingsSection } from "@/state/route"
 
 /** "general" follows the General settings; only a network offers it. */
 type Choice = "general" | FixedModelPreset | "custom"
@@ -129,50 +140,82 @@ function toSaved(
   }
 }
 
+type Loaded =
+  | { section: "agents"; saved: Saved }
+  | { section: "sandboxes"; saved: SavedLimits }
+
+const loadAgents = (networkId: string | null): Promise<Loaded> =>
+  (networkId
+    ? api
+        .networkModelSettings(networkId)
+        .then((settings) =>
+          toSaved(
+            settings.override,
+            settings.general,
+            settings.updatedAt,
+            settings.alternativeHarnessesEnabled
+          )
+        )
+    : api
+        .modelSettings()
+        .then((general) =>
+          toSaved(
+            general.settings,
+            general.settings,
+            general.updatedAt,
+            general.alternativeHarnessesEnabled
+          )
+        )
+  ).then((saved) => ({ section: "agents", saved }))
+
+const loadSandboxes = (networkId: string | null): Promise<Loaded> =>
+  (networkId
+    ? api.networkSandboxLimits(networkId)
+    : api.sandboxLimits().then((general) => ({
+        override: general.limits,
+        general: general.limits,
+        updatedAt: general.updatedAt,
+      }))
+  ).then((saved) => ({ section: "sandboxes", saved }))
+
+const sections: { id: SettingsSection; name: string }[] = [
+  { id: "agents", name: "Agents" },
+  { id: "sandboxes", name: "Sandboxes" },
+]
+
 /**
- * Which models the agents run. General settings apply to every network; a
- * network's own settings override them.
+ * Which models the agents run, and how many Sandboxes a network may run at
+ * once. General settings apply to every network; a network's own settings
+ * override them.
  */
-export function SettingsPage({ networkId }: { networkId: string | null }) {
-  const [saved, setSaved] = useState<Saved | null>(null)
+export function SettingsPage({
+  networkId,
+  section,
+}: {
+  networkId: string | null
+  section: SettingsSection
+}) {
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [networkName, setNetworkName] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
-    const load = networkId
-      ? Promise.all([
-          api.networkModelSettings(networkId),
-          api.networkSummary(networkId),
-        ]).then(([settings, summary]) => {
-          if (cancelled) return
-          setNetworkName(summary.name)
-          setSaved(
-            toSaved(
-              settings.override,
-              settings.general,
-              settings.updatedAt,
-              settings.alternativeHarnessesEnabled
-            )
-          )
-        })
-      : api.modelSettings().then((general) => {
-          if (!cancelled)
-            setSaved(
-              toSaved(
-                general.settings,
-                general.settings,
-                general.updatedAt,
-                general.alternativeHarnessesEnabled
-              )
-            )
-        })
-    load.catch((caught) => !cancelled && setLoadError(String(caught)))
+    Promise.all([
+      section === "agents" ? loadAgents(networkId) : loadSandboxes(networkId),
+      networkId ? api.networkSummary(networkId) : null,
+    ])
+      .then(([settings, summary]) => {
+        if (cancelled) return
+        setNetworkName(summary?.name ?? null)
+        setLoaded(settings)
+      })
+      .catch((caught) => !cancelled && setLoadError(String(caught)))
     return () => {
       cancelled = true
     }
-  }, [networkId, attempt])
+  }, [networkId, section, attempt])
 
   const trail = networkId
     ? [
@@ -181,33 +224,45 @@ export function SettingsPage({ networkId }: { networkId: string | null }) {
         { label: "Settings" },
       ]
     : [{ label: "Networks", href: routes.networks() }, { label: "Settings" }]
-  const here = networkId ? routes.networkSettings(networkId) : routes.settings()
+  const here = networkId
+    ? routes.networkSettings(networkId, section)
+    : routes.settings(section)
+  const scopeName = networkName ?? "this network"
 
   return (
     <>
       <AppNav trail={trail} settingsHref={here} />
       <div className="settings-page">
         <nav className="settings-nav" aria-label="Settings">
-          <p className="eyebrow">Agents</p>
-          <ul>
-            <li>
-              <a
-                href={routes.settings()}
-                aria-current={networkId ? undefined : "page"}
-              >
-                General
-                <small>All networks</small>
-              </a>
-            </li>
-            {networkId && (
-              <li>
-                <a href={here} aria-current="page">
-                  {networkName ?? "This network"}
-                  <small>This network</small>
-                </a>
-              </li>
-            )}
-          </ul>
+          {sections.map((item) => (
+            <Fragment key={item.id}>
+              <p className="eyebrow">{item.name}</p>
+              <ul>
+                <li>
+                  <a
+                    href={routes.settings(item.id)}
+                    aria-current={
+                      !networkId && section === item.id ? "page" : undefined
+                    }
+                  >
+                    General
+                    <small>All networks</small>
+                  </a>
+                </li>
+                {networkId && (
+                  <li>
+                    <a
+                      href={routes.networkSettings(networkId, item.id)}
+                      aria-current={section === item.id ? "page" : undefined}
+                    >
+                      {networkName ?? "This network"}
+                      <small>This network</small>
+                    </a>
+                  </li>
+                )}
+              </ul>
+            </Fragment>
+          ))}
           <p className="eyebrow">Providers</p>
           <ul>
             <li>
@@ -223,27 +278,43 @@ export function SettingsPage({ networkId }: { networkId: string | null }) {
         </nav>
 
         <main className="settings-main">
-          <header className="settings-header">
-            <h1>
-              {networkId
-                ? `Agents for ${networkName ?? "this network"}`
-                : "Agents"}
-            </h1>
-            <p>
-              {networkId
-                ? "Follow the General settings, or choose harnesses and models for this network only."
-                : "The default for every network. A network can override these in its own settings."}{" "}
-              Changes apply to new Trains, plans and repairs; work already
-              running keeps its harnesses and models.
-            </p>
-          </header>
+          {section === "agents" ? (
+            <header className="settings-header">
+              <h1>{networkId ? `Agents for ${scopeName}` : "Agents"}</h1>
+              <p>
+                {networkId
+                  ? "Follow the General settings, or choose harnesses and models for this network only."
+                  : "The default for every network. A network can override these in its own settings."}{" "}
+                Changes apply to new Trains, plans and repairs; work already
+                running keeps its harnesses and models.
+              </p>
+            </header>
+          ) : (
+            <header className="settings-header">
+              <h1>{networkId ? `Sandboxes for ${scopeName}` : "Sandboxes"}</h1>
+              <p>
+                {networkId
+                  ? "Follow the General limits, or set how many Sandboxes this network may run at once."
+                  : "How many Sandboxes each network may run at once. A network can override these in its own settings."}{" "}
+                At its limit, a network’s work waits for a running Sandbox to
+                finish; a preview reports the limit instead of waiting.
+              </p>
+            </header>
+          )}
 
-          {saved ? (
+          {loaded?.section === "agents" ? (
             <ModelSettingsForm
-              key={JSON.stringify(saved)}
+              key={JSON.stringify(loaded.saved)}
               networkId={networkId}
-              saved={saved}
-              onSaved={setSaved}
+              saved={loaded.saved}
+              onSaved={(saved) => setLoaded({ section: "agents", saved })}
+            />
+          ) : loaded?.section === "sandboxes" ? (
+            <SandboxLimitsForm
+              key={JSON.stringify(loaded.saved)}
+              networkId={networkId}
+              saved={loaded.saved}
+              onSaved={(saved) => setLoaded({ section: "sandboxes", saved })}
             />
           ) : loadError ? (
             <div className="reader-state" role="alert">
@@ -605,6 +676,253 @@ function PresetOption({
           checked={checked}
           disabled={disabled}
           onChange={() => id !== "heavy" && onChange(id)}
+        />
+        <span>
+          <strong>{name}</strong>
+          <small>{detail}</small>
+        </span>
+      </label>
+      {aside}
+    </div>
+  )
+}
+
+/** The limits a scope shows. For General, its own limits are also `general`. */
+type SavedLimits = Pick<
+  NetworkSandboxLimits,
+  "override" | "general" | "updatedAt"
+>
+
+const sandboxKinds: {
+  id: SandboxKind
+  name: string
+  detail: string
+  size: string
+}[] = [
+  {
+    id: "agent",
+    name: "Agent Sandboxes",
+    detail:
+      "Run harnesses: Station work, Conductor reviews, Dispatcher planning and Technician repairs",
+    size: "standard-2",
+  },
+  {
+    id: "agentless",
+    name: "Agentless Sandboxes",
+    detail: "Run Git operations, integration validation and previews",
+    size: "standard-1",
+  },
+]
+
+type LimitInputs = Record<SandboxKind, string>
+const inputsFor = (limits: SandboxLimits): LimitInputs => ({
+  agent: String(limits.agent),
+  agentless: String(limits.agentless),
+})
+
+function SandboxLimitsForm({
+  networkId,
+  saved,
+  onSaved,
+}: {
+  networkId: string | null
+  saved: SavedLimits
+  onSaved: (saved: SavedLimits) => void
+}) {
+  const [follow, setFollow] = useState(!!networkId && !saved.override)
+  const [inputs, setInputs] = useState<LimitInputs>(
+    inputsFor(saved.override ?? saved.general)
+  )
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const parsed = sandboxLimitsSchema.safeParse({
+    agent: Number(inputs.agent),
+    agentless: Number(inputs.agentless),
+  })
+  const target: SandboxLimits | null = follow
+    ? null
+    : parsed.success
+      ? parsed.data
+      : null
+  const invalid = !follow && !parsed.success
+  const dirty = follow
+    ? !!saved.override
+    : JSON.stringify(inputs) !==
+        JSON.stringify(inputsFor(saved.override ?? saved.general)) ||
+      !saved.override
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (invalid) return
+    setSaving(true)
+    setError(null)
+    try {
+      if (networkId)
+        onSaved(await api.saveNetworkSandboxLimits(networkId, target))
+      else {
+        const next = await api.saveSandboxLimits(target!)
+        onSaved({
+          override: next.limits,
+          general: next.limits,
+          updatedAt: next.updatedAt,
+        })
+      }
+    } catch (caught) {
+      setError(String(caught))
+      setSaving(false)
+    }
+  }
+
+  const shown = follow ? inputsFor(saved.general) : inputs
+  return (
+    <form className="settings-form" onSubmit={submit}>
+      {networkId && (
+        <section aria-labelledby="settings-limits-scope">
+          <h2 id="settings-limits-scope">Limits</h2>
+          <div
+            className="settings-options panel"
+            role="radiogroup"
+            aria-labelledby="settings-limits-scope"
+          >
+            <ScopeOption
+              name="Use General limits"
+              detail={`Currently ${saved.general.agent} agent and ${saved.general.agentless} agentless. Follows any change to General.`}
+              checked={follow}
+              onChange={() => {
+                setFollow(true)
+                setError(null)
+              }}
+              aside={
+                <a
+                  className="settings-option-link"
+                  href={routes.settings("sandboxes")}
+                >
+                  Edit General
+                </a>
+              }
+            />
+            <ScopeOption
+              name="Custom limits"
+              detail="Set this network’s own limits."
+              checked={!follow}
+              onChange={() => {
+                setFollow(false)
+                setError(null)
+              }}
+            />
+          </div>
+        </section>
+      )}
+
+      <section aria-labelledby="settings-limits">
+        <div className="settings-section-heading">
+          <h2 id="settings-limits">Concurrent Sandboxes</h2>
+          <p>
+            Each kind counts separately, from 1 to {MAX_SANDBOX_INSTANCES}.
+            Lowering a limit never stops running Sandboxes; it applies as they
+            finish.
+          </p>
+        </div>
+        <table className="settings-roles settings-limits panel">
+          <thead>
+            <tr>
+              <th scope="col">Kind</th>
+              <th scope="col">Instance</th>
+              <th scope="col">Limit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sandboxKinds.map((kind) => (
+              <tr key={kind.id}>
+                <th scope="row">
+                  <span>{kind.name}</span>
+                  <small>{kind.detail}</small>
+                </th>
+                <td data-label="Instance">
+                  <span className="settings-model">{kind.size}</span>
+                </td>
+                <td data-label="Limit">
+                  {follow ? (
+                    <span className="settings-model">{shown[kind.id]}</span>
+                  ) : (
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MAX_SANDBOX_INSTANCES}
+                      step={1}
+                      required
+                      aria-label={`${kind.name} limit`}
+                      value={inputs[kind.id]}
+                      onChange={(event) => {
+                        setInputs({ ...inputs, [kind.id]: event.target.value })
+                        setError(null)
+                      }}
+                    />
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <footer className={cn("settings-footer", dirty && "is-dirty")}>
+        <p role="status" className={cn((error || invalid) && "is-error")}>
+          {error
+            ? `Couldn't save: ${error}`
+            : invalid
+              ? `Limits must be whole numbers from 1 to ${MAX_SANDBOX_INSTANCES}.`
+              : dirty
+                ? "Unsaved changes"
+                : saved.updatedAt
+                  ? `Saved ${new Date(saved.updatedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+                  : networkId
+                    ? null
+                    : "Using the default limits"}
+        </p>
+        <button
+          type="button"
+          className={buttonVariants({ variant: "ghost" })}
+          disabled={!dirty || saving}
+          onClick={() => {
+            setFollow(!!networkId && !saved.override)
+            setInputs(inputsFor(saved.override ?? saved.general))
+            setError(null)
+          }}
+        >
+          Discard
+        </button>
+        <Button type="submit" disabled={!dirty || invalid || saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </Button>
+      </footer>
+    </form>
+  )
+}
+
+function ScopeOption({
+  name,
+  detail,
+  checked,
+  onChange,
+  aside,
+}: {
+  name: string
+  detail: string
+  checked: boolean
+  onChange: () => void
+  aside?: ReactNode
+}) {
+  return (
+    <div className={cn("settings-option", checked && "is-checked")}>
+      <label>
+        <input
+          type="radio"
+          name="limits-scope"
+          checked={checked}
+          onChange={onChange}
         />
         <span>
           <strong>{name}</strong>

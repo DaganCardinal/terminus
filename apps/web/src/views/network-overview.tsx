@@ -15,6 +15,7 @@ import { RepositoryIcon } from "@/components/repository-icon"
 import { useNow } from "@/components/use-now"
 import { lineColor } from "@/map/layout"
 import { api } from "@/state/api"
+import { pollWhileVisible } from "@/state/poll-while-visible"
 import { routes } from "@/state/route"
 import {
   networkRemark,
@@ -49,7 +50,6 @@ function useNetworkSummary(networkId: string) {
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
-    let timer: number | undefined
     const load = async () => {
       try {
         const next = await api.networkSummary(networkId)
@@ -59,12 +59,11 @@ function useNetworkSummary(networkId: string) {
       } catch (caught) {
         if (!cancelled) setError(String(caught))
       }
-      if (!cancelled) timer = window.setTimeout(load, POLL_MS)
     }
-    void load()
+    const stop = pollWhileVisible(load, POLL_MS)
     return () => {
       cancelled = true
-      window.clearTimeout(timer)
+      stop()
     }
   }, [networkId])
   return { summary, error }

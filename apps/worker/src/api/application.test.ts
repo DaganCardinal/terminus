@@ -72,7 +72,9 @@ describe("application HTTP boundary", () => {
   it("keeps every preview path ahead of the app and API, including matching assets", async () => {
     const fetchTrainPreview = vi.fn(async () => new Response("preview app"))
     const getByName = vi.fn(() => ({ fetchTrainPreview }))
-    const f = fixture({ SANDBOX: { getByName } as unknown as Env["SANDBOX"] })
+    const f = fixture({
+      WORKSPACE_SANDBOX: { getByName } as unknown as Env["WORKSPACE_SANDBOX"],
+    })
     const hostname = `preview-${"a".repeat(24)}-${"b".repeat(24)}.preview.example.test`
     for (const path of ["/", "/assets/main.js", "/api/networks"]) {
       const response = await handleApplication(

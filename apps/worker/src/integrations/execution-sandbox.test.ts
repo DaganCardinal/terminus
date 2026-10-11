@@ -9,8 +9,23 @@ function fakeContainer() {
       async (request) =>
         new Response(typeof request === "string" ? "ready" : "demo app")
     )
+  let exit = () => {}
   const container = {
     running: true,
+    start: vi.fn(() => {
+      container.running = true
+    }),
+    // Resolves when the container stops on its own.
+    monitor: vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          exit = () => {
+            container.running = false
+            resolve()
+          }
+        })
+    ),
+    exit: () => exit(),
     setInactivityTimeout: vi.fn(async () => {}),
     interceptAllOutboundHttp: vi.fn(async () => {}),
     interceptOutboundHttps: vi.fn(async () => {}),
@@ -26,16 +41,18 @@ const saved = {
   remote: "https://account.artifacts.cloudflare.net/git/default/train.git",
 }
 
+// Previews run in the agentless WorkspaceSandbox, so tests default to it.
 async function withSandbox(
   run: (
     sandbox: ExecutionSandbox,
     f: ReturnType<typeof fakeContainer>
-  ) => Promise<void>
+  ) => Promise<void>,
+  binding: "SANDBOX" | "WORKSPACE_SANDBOX" = "WORKSPACE_SANDBOX"
 ) {
   await env.DB.prepare(
     "INSERT OR IGNORE INTO repository_provisions VALUES ('default')"
   ).run()
-  const stub = env.SANDBOX.getByName(`preview-test-${crypto.randomUUID()}`)
+  const stub = env[binding].getByName(`preview-test-${crypto.randomUUID()}`)
   await runInDurableObject(stub, async (instance, state) => {
     // The test environment adds TEST_MIGRATIONS to Env; the bound production
     // class uses the generated Env without that test-only field.
@@ -53,6 +70,121 @@ async function withSandbox(
     }
   })
 }
+
+describe("Sandbox capacity", () => {
+  const network = {
+    repositories: [
+      { remote: saved.remote, token: "t", scope: "read" as const },
+    ],
+    allowModel: false,
+  }
+  const leased = (objectId: string) =>
+    env.DB.prepare("SELECT COUNT(*) FROM sandbox_leases WHERE object_id = ?")
+      .bind(objectId)
+      .first<number>("COUNT(*)")
+  // The protected entry the preview path uses, which never waits for capacity.
+  const start = (sandbox: ExecutionSandbox) =>
+    (
+      sandbox as unknown as {
+        applyNetwork(network: unknown, waitMs: number): Promise<void>
+      }
+    ).applyNetwork(network, 0)
+
+  it("refuses to start a container beyond the network's limit, then starts once a slot frees", async () => {
+    await env.DB.prepare(
+      "INSERT INTO sandbox_limits VALUES ('general', NULL, ?, ?)"
+    )
+      .bind(
+        JSON.stringify({ agent: 10, agentless: 1 }),
+        new Date().toISOString()
+      )
+      .run()
+    await env.DB.prepare(
+      "INSERT INTO sandbox_leases VALUES ('busy', 'default', 'WORKSPACE_SANDBOX', ?)"
+    )
+      .bind(Date.now() + 60_000)
+      .run()
+    try {
+      await withSandbox(async (sandbox, f) => {
+        f.container.running = false
+        await expect(start(sandbox)).rejects.toThrow(
+          "Sandbox capacity reached: this network already runs 1 agentless Sandbox."
+        )
+        expect(f.container.start).not.toHaveBeenCalled()
+
+        await env.DB.prepare(
+          "DELETE FROM sandbox_leases WHERE object_id = 'busy'"
+        ).run()
+        await start(sandbox)
+        expect(f.container.start).toHaveBeenCalledOnce()
+        const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+        expect(await leased(id.toString())).toBe(1)
+        await sandbox.close()
+        expect(await leased(id.toString())).toBe(0)
+      })
+    } finally {
+      await env.DB.prepare("DELETE FROM sandbox_limits").run()
+      await env.DB.prepare(
+        "DELETE FROM sandbox_leases WHERE object_id = 'busy'"
+      ).run()
+    }
+  })
+
+  it("frees the slot when its container stops on its own", async () => {
+    await withSandbox(async (sandbox, f) => {
+      f.container.running = false
+      await start(sandbox)
+      const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+      expect(await leased(id.toString())).toBe(1)
+      f.container.exit()
+      await vi.waitFor(async () => expect(await leased(id.toString())).toBe(0))
+    })
+  })
+
+  it("counts a container that was already running without asking for a slot", async () => {
+    await withSandbox(async (sandbox) => {
+      await sandbox.configure(network)
+      const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+      expect(await leased(id.toString())).toBe(1)
+      await sandbox.close()
+    })
+  })
+})
+
+describe("Sandbox namespaces", () => {
+  const registered = (binding: string) =>
+    env.DB.prepare(
+      "SELECT COUNT(*) FROM network_sandboxes WHERE namespace='default' AND binding=?"
+    )
+      .bind(binding)
+      .first<number>("COUNT(*)")
+
+  it("registers each Sandbox under the binding its object id resolves in", async () => {
+    for (const binding of ["SANDBOX", "WORKSPACE_SANDBOX"] as const) {
+      const before = (await registered(binding)) ?? 0
+      await withSandbox(async (sandbox) => {
+        await sandbox.configure({
+          repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
+          allowModel: false,
+        })
+      }, binding)
+      expect(await registered(binding)).toBe(before + 1)
+    }
+  })
+
+  it("never grants a WorkspaceSandbox model access", async () => {
+    await withSandbox(async (sandbox, f) => {
+      await expect(
+        sandbox.configure({ repositories: [], allowModel: true })
+      ).rejects.toThrow("never granted model access")
+      expect(f.container.interceptAllOutboundHttp).not.toHaveBeenCalled()
+    })
+    await withSandbox(async (sandbox, f) => {
+      await sandbox.configure({ repositories: [], allowModel: true })
+      expect(f.container.interceptAllOutboundHttp).toHaveBeenCalledOnce()
+    }, "SANDBOX")
+  })
+})
 
 describe("Sandbox preview routing", () => {
   it("registers reused previews and permanently purges the container and stored data", async () => {

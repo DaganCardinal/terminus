@@ -87,6 +87,10 @@ export async function routeTrainPreview(
   const match = /^(preview-[a-f0-9]{24})-([a-f0-9]{24})$/.exec(
     url.hostname.slice(0, -suffix.length)
   )
-  if (!match || !env.SANDBOX) return new Response("Not found", { status: 404 })
-  return env.SANDBOX.getByName(match[1]!).fetchTrainPreview(request, match[2]!)
+  if (!match || !env.WORKSPACE_SANDBOX)
+    return new Response("Not found", { status: 404 })
+  return env.WORKSPACE_SANDBOX.getByName(match[1]!).fetchTrainPreview(
+    request,
+    match[2]!
+  )
 }

@@ -1,0 +1,13 @@
+# The agentless WorkspaceSandbox image: Git, npm installs, validation and
+# previews. No harness is installed, so nothing here can drive a model.
+FROM node:24-trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=docker.io/cloudflare/sandbox:1.0.0 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
+WORKDIR /workspace
+# Wrangler's local container runner uses this port for Train previews.
+EXPOSE 8080
+CMD ["sleep", "infinity"]

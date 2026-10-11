@@ -7,6 +7,7 @@ import { RepositoryIcon } from "@/components/repository-icon"
 import { useNow } from "@/components/use-now"
 import { lineColor } from "@/map/layout"
 import { api, ApiRequestError } from "@/state/api"
+import { pollWhileVisible } from "@/state/poll-while-visible"
 import { routes } from "@/state/route"
 import {
   boardTime,
@@ -52,7 +53,6 @@ export function NetworkList() {
 
   useEffect(() => {
     let cancelled = false
-    let timer: number | undefined
     const load = async () => {
       try {
         const next = await api.networks()
@@ -62,12 +62,11 @@ export function NetworkList() {
       } catch (caught) {
         if (!cancelled) setError(String(caught))
       }
-      if (!cancelled) timer = window.setTimeout(load, POLL_MS)
     }
-    void load()
+    const stop = pollWhileVisible(load, POLL_MS)
     return () => {
       cancelled = true
-      window.clearTimeout(timer)
+      stop()
     }
   }, [])
 

@@ -572,6 +572,60 @@ describe("model settings", () => {
   })
 })
 
+describe("sandbox limits", () => {
+  const put = (path: string, body: unknown) =>
+    api(path, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+  it("saves General limits and lets a network override or follow them", async () => {
+    const network = await createNetwork()
+    expect(await (await api("/settings/sandboxes")).json()).toEqual({
+      limits: { agent: 10, agentless: 10 },
+      updatedAt: null,
+    })
+    const general = { agent: 4, agentless: 12 }
+    expect((await put("/settings/sandboxes", general)).status).toBe(200)
+
+    const path = `/networks/${network.id}/settings/sandboxes`
+    expect(await (await api(path)).json()).toEqual({
+      override: null,
+      general,
+      updatedAt: null,
+    })
+    const override = { agent: 20, agentless: 2 }
+    const saved = await put(path, { override })
+    expect(saved.status).toBe(200)
+    expect(await saved.json()).toMatchObject({ override, general })
+
+    expect(await (await put(path, { override: null })).json()).toMatchObject({
+      override: null,
+      general,
+    })
+    await put("/settings/sandboxes", { agent: 10, agentless: 10 })
+  })
+
+  it("refuses limits outside 1 to 100, partial limits, and unknown networks", async () => {
+    for (const limits of [
+      { agent: 0, agentless: 10 },
+      { agent: 10, agentless: 101 },
+      { agent: 2.5, agentless: 10 },
+      { agent: 10 },
+    ])
+      expect((await put("/settings/sandboxes", limits)).status).toBe(400)
+    expect((await api("/networks/missing/settings/sandboxes")).status).toBe(404)
+    expect(
+      (
+        await put("/networks/missing/settings/sandboxes", {
+          override: { agent: 1, agentless: 1 },
+        })
+      ).status
+    ).toBe(404)
+  })
+})
+
 describe("browsing networks", () => {
   it("lists networks with their upstream source and activity", async () => {
     const response = await post("/networks", {

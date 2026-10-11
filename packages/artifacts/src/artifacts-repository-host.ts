@@ -10,7 +10,12 @@ import {
 } from "./repository-host"
 import { TechnicianGit, type RepairGitInput } from "./technician-git"
 import { prepareMerge } from "./integration-git"
-import { readRepositoryFile, readRepositoryOverview } from "./repository-browse"
+import {
+  readCommittedFile,
+  readRepositoryFile,
+  readRepositoryOverview,
+  type CommittedObjects,
+} from "./repository-browse"
 import type { HeadReader } from "./smart-http"
 import {
   git,
@@ -53,6 +58,8 @@ export interface ArtifactsService {
     source: { url: string }
     target: { name: string }
   }): Promise<{ token: string }>
+  /** Reads committed objects by hash; without it, reading a file opens a workspace. */
+  objects?(name: string): CommittedObjects
 }
 
 /** Artifacts across namespaces: one per Project. */
@@ -117,6 +124,9 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async readFile(repoId: string, commit: string, path: string) {
+    const { namespace, name } = parseRepoId(repoId)
+    const objects = this.artifacts.namespace(namespace).objects?.(name)
+    if (objects) return readCommittedFile(objects, commit, path)
     return this.withWorkspace(
       [{ repoId, scope: "read" }],
       async (workspace, [access]) => {

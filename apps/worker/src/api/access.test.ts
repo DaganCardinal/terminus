@@ -189,9 +189,9 @@ describe("application Access boundary", () => {
       ACCESS_AUD: "",
       ASSETS: assets(),
       PREVIEW_BASE_URL: "",
-      SANDBOX: {
+      WORKSPACE_SANDBOX: {
         getByName: () => ({ fetchTrainPreview }),
-      } as unknown as Env["SANDBOX"],
+      } as unknown as Env["WORKSPACE_SANDBOX"],
     })
     for (const url of [
       "http://localhost:8787/",

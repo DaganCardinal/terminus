@@ -115,7 +115,7 @@ describe("Train preview", () => {
     const bindings = {
       ...env,
       PREVIEW_BASE_URL: "",
-      SANDBOX: { getByName },
+      WORKSPACE_SANDBOX: { getByName },
     } as unknown as Env
     const response = await routeTrainPreview(request, bindings)
     expect(await response!.text()).toBe("app response")

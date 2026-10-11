@@ -39,6 +39,10 @@
       "binding": "DEPENDENCY_CACHE",
       "bucket_name": "terminus-dependency-cache",
     },
+    {
+      "bucket_name": "terminus-dependency-cache",
+      "binding": "terminus_dependency_cache",
+    },
   ],
   "workflows": [
     {
@@ -72,19 +76,35 @@
       "class_name": "IntegrationWorkflow",
     },
   ],
+  // Agent roles run harnesses in ExecutionSandbox. Git, validation and
+  // previews run in the agentless WorkspaceSandbox, which has its own image,
+  // size and instance budget, and can never be granted model access.
+  // max_instances is only the platform ceiling, and must equal
+  // MAX_SANDBOX_INSTANCES in packages/protocol/src/sandbox.ts. Each network's
+  // real limit is a setting (Settings → Sandboxes), enforced by Sandbox leases.
   "containers": [
     {
       "class_name": "ExecutionSandbox",
       "image": "./Dockerfile",
-      "max_instances": 6,
+      "max_instances": 100,
+      "instance_type": "standard-2",
+    },
+    {
+      "class_name": "WorkspaceSandbox",
+      "image": "./Dockerfile.workspace",
+      "max_instances": 100,
       "instance_type": "standard-1",
     },
   ],
   "durable_objects": {
-    "bindings": [{ "name": "SANDBOX", "class_name": "ExecutionSandbox" }],
+    "bindings": [
+      { "name": "SANDBOX", "class_name": "ExecutionSandbox" },
+      { "name": "WORKSPACE_SANDBOX", "class_name": "WorkspaceSandbox" },
+    ],
   },
   "exports": {
     "ExecutionSandbox": { "type": "durable-object", "storage": "sqlite" },
+    "WorkspaceSandbox": { "type": "durable-object", "storage": "sqlite" },
   },
   // ARTIFACTS_API_TOKEN is a Cloudflare API token with Artifacts edit access.
   // Each Project gets its own Artifacts namespace, which the Workers binding
@@ -134,10 +154,17 @@
   },
   "env": {
     "fake": {
+      // Don't inherit the preview route: `wrangler dev` would present every
+      // request as that zone's hostname instead of localhost, losing the local
+      // APP_ORIGIN exemption and *.localhost preview hostnames.
+      "routes": [],
       "secrets": { "required": [] },
       "containers": [],
       "durable_objects": {
-        "bindings": [{ "name": "SANDBOX", "class_name": "ExecutionSandbox" }],
+        "bindings": [
+          { "name": "SANDBOX", "class_name": "ExecutionSandbox" },
+          { "name": "WORKSPACE_SANDBOX", "class_name": "WorkspaceSandbox" },
+        ],
       },
       "d1_databases": [
         {

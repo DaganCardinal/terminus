@@ -1,6 +1,7 @@
 import type { EventEnvelope, NetworkSnapshot } from "@terminus/protocol"
 import { useEffect, useState } from "react"
 import { api } from "./api"
+import { pollWhileVisible } from "./poll-while-visible"
 
 const POLL_MS = 1500
 const FEED_LIMIT = 300
@@ -15,7 +16,6 @@ export function useNetwork(networkId: string) {
 
   useEffect(() => {
     let cancelled = false
-    let timer: number | undefined
     let after = 0
     let loaded = false
 
@@ -43,13 +43,12 @@ export function useNetwork(networkId: string) {
       } catch (caught) {
         if (!cancelled) setError(String(caught))
       }
-      if (!cancelled) timer = window.setTimeout(poll, POLL_MS)
     }
 
-    void poll()
+    const stop = pollWhileVisible(poll, POLL_MS)
     return () => {
       cancelled = true
-      window.clearTimeout(timer)
+      stop()
     }
   }, [networkId])
 

@@ -15,8 +15,9 @@ export function App() {
         <NetworkStatus key={route.networkId} networkId={route.networkId} />
       ) : route.page === "settings" ? (
         <SettingsPage
-          key={route.networkId ?? "general"}
+          key={`${route.networkId ?? "general"}:${route.section}`}
           networkId={route.networkId}
+          section={route.section}
         />
       ) : route.page === "overview" ? (
         <NetworkOverview

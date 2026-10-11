@@ -12,7 +12,9 @@ export class SandboxWorkspaces implements GitWorkspaceFactory {
   }
 
   async open(access: RepositoryAccess[]): Promise<GitWorkspace> {
-    const sandbox = this.#env.SANDBOX.getByName(`git-${crypto.randomUUID()}`)
+    const sandbox = this.#env.WORKSPACE_SANDBOX.getByName(
+      `git-${crypto.randomUUID()}`
+    )
     await sandbox.configure({
       repositories: access.map(({ remote, token, scope }) => ({
         remote,

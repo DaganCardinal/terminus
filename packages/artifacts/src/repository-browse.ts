@@ -181,3 +181,77 @@ export async function readRepositoryFile(
   )
   return { commit, path, size: entry.size, content, truncated }
 }
+
+/** A Git tree entry, one level deep, as an object store reports it. */
+export interface CommittedTreeEntry {
+  name: string
+  mode: string
+  hash: string
+  type: "blob" | "tree" | "commit"
+}
+
+/** Committed Git objects read by hash, without a workspace or repo token. */
+export interface CommittedObjects {
+  /** The commit's root tree; throws when the repository has no such commit. */
+  treeOf(commit: string): Promise<string>
+  tree(hash: string): Promise<CommittedTreeEntry[]>
+  blobSize(hash: string): Promise<number>
+  blob(hash: string): Promise<ReadableStream<Uint8Array>>
+}
+
+/**
+ * The same file `readRepositoryFile` returns, resolved one tree level at a
+ * time: only regular files, never symlinks or submodules, and never secrets.
+ */
+export async function readCommittedFile(
+  objects: CommittedObjects,
+  commit: string,
+  path: string
+): Promise<RepositoryFile | null> {
+  requireCommit(commit)
+  if (isSecretPath(path)) return null
+  const segments = path.split("/")
+  if (segments.some((segment) => !segment)) return null
+  let tree = await objects.treeOf(commit)
+  for (const [index, segment] of segments.entries()) {
+    const entry = (await objects.tree(tree)).find((e) => e.name === segment)
+    if (index < segments.length - 1) {
+      if (entry?.type !== "tree") return null
+      tree = entry.hash
+      continue
+    }
+    if (entry?.type !== "blob" || !/^100(?:644|755)$/.test(entry.mode))
+      return null
+    const [size, body] = await Promise.all([
+      objects.blobSize(entry.hash),
+      objects.blob(entry.hash),
+    ])
+    const { content, truncated } = await readText(body, MAX_FILE_CHARS)
+    return { commit, path, size, content, truncated }
+  }
+  return null
+}
+
+/** Reads at most `limit` characters, stopping early at the first NUL byte, which marks a binary file. */
+async function readText(
+  body: ReadableStream<Uint8Array>,
+  limit: number
+): Promise<{ content: string | null; truncated: boolean }> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let text = ""
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value.includes(0)) return { content: null, truncated: false }
+      text += decoder.decode(value, { stream: true })
+      if (text.length > limit)
+        return { content: text.slice(0, limit), truncated: true }
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+  text += decoder.decode()
+  return { content: text.slice(0, limit), truncated: text.length > limit }
+}

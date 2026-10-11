@@ -7,8 +7,9 @@ import { SandboxWorkspaces } from "./sandbox-workspaces"
 
 /**
  * Real repositories: Artifacts over its REST API, one namespace per Project,
- * with Git running in Sandboxes. Heads are read over smart HTTP from the
- * Worker, so checking a fork or a canonical head starts no Sandbox.
+ * with Git running in Sandboxes. Heads are read over smart HTTP and single
+ * files over the REST object endpoints, both from the Worker, so checking a
+ * head or opening a file in the reader starts no Sandbox.
  */
 export function artifactsRepositories(env: Env): ArtifactsRepositoryHost {
   const repositories = new ArtifactsRepositoryHost(

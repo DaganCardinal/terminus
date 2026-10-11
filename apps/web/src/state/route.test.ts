@@ -23,11 +23,28 @@ describe("routes", () => {
     expect(parseRoute(routes.settings())).toEqual({
       page: "settings",
       networkId: null,
+      section: "agents",
     })
     expect(parseRoute(routes.networkSettings("network 1"))).toEqual({
       page: "settings",
       networkId: "network 1",
+      section: "agents",
     })
+  })
+
+  it("opens the Sandboxes section at either scope", () => {
+    expect(routes.settings("sandboxes")).toBe("#/settings/sandboxes")
+    expect(parseRoute(routes.settings("sandboxes"))).toEqual({
+      page: "settings",
+      networkId: null,
+      section: "sandboxes",
+    })
+    expect(parseRoute(routes.networkSettings("n", "sandboxes"))).toEqual({
+      page: "settings",
+      networkId: "n",
+      section: "sandboxes",
+    })
+    expect(parseRoute("#/settings/unknown")).toEqual({ page: "networks" })
   })
 
   it("round-trips document and file paths", () => {

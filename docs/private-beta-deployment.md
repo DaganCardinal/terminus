@@ -7,7 +7,7 @@ The checked-in config disables Cloudflare deployment/version preview URLs (`prev
 ## 1. Prepare Cloudflare and Docker
 
 - Use Node 24 and install dependencies with `npm ci` from the repository root.
-- Start Docker; Wrangler builds and publishes the execution image from `apps/worker/Dockerfile`.
+- Start Docker; Wrangler builds and publishes two images: the agent execution image from `apps/worker/Dockerfile`, and the agentless workspace image (Git, validation and previews) from `apps/worker/Dockerfile.workspace`.
 - Use a Cloudflare account with Workers Paid, Artifacts and Sandboxes/Containers available, and create an AI Gateway (the default configured name is `default`).
 - Enable Cloudflare Zero Trust so you can configure Access.
 - Use a public HTTPS Git URL for the committed demo project. Importing private source repositories is outside the current scope.
