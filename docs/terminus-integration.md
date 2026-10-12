@@ -12,6 +12,8 @@ Each attempt forks a candidate repository from the current recorded Terminus com
 
 Project-wide validation runs in a fresh Sandbox checkout of the saved candidate, with read access to that repository and no model access or canonical write capability. Orchestration runs `npm ci` and every configured project command, collects actual exit codes and bounded output, and checks that validation did not change the candidate. Missing, failed or truncated evidence stops promotion. Passing evidence is checkpointed in D1 before a separate Git workspace obtains write access to Terminus.
 
+While Terminus is still at the Train's baseline, the merge commit has exactly the Train head's tree, and the Conductor already ran the project checks on that tree in its own sealed checkout, before any model access, when it accepted the last Car. That Car's evidence is then checkpointed as the attempt's evidence instead of running the same commands again, provided it records every configured check passing with the same command. This applies only with a real Conductor and real Station runs; a Crossing, Junction, repaired or copied-Car attempt, or one where Terminus has moved, is always validated.
+
 Promotion pushes exactly the validated candidate using a non-forced fast-forward of the canonical ref, guarded against an unexpected remote head. The commit being pushed is a merge commit, preserving all accepted Car identities. D1 then records the new canonical head and completed attempt atomically and releases clearance. A second returning Train prepares against that new head. A lost push acknowledgement is recovered by checking the canonical Git head before attempting another write; a lost result event is recovered from D1 by the Train Workflow.
 
 ## Conflicts and recovery

@@ -31,6 +31,9 @@ import {
 } from "@terminus/artifacts"
 import {
   harnessRoles,
+  errorKind,
+  perf,
+  perfSpan,
   type RoleExecutions,
   type RoleExecution,
   type HarnessRole,
@@ -41,6 +44,7 @@ import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { artifactsRepositories } from "../integrations/artifacts-repositories"
 import { SandboxTechnicianRunner } from "../integrations/technician-runner"
 import { SandboxDispatchSessions } from "../integrations/dispatch-session"
+import { DispatchActivityStore } from "../integrations/dispatch-activity"
 import { SandboxConductorSessions } from "../integrations/conductor-session"
 import type { TechnicianPorts } from "./technician"
 import { SandboxStationRunner } from "../integrations/station-runner"
@@ -223,6 +227,10 @@ export function integrationPorts(env: Env): IntegrationPorts {
       host instanceof ArtifactsRepositoryHost
         ? new SandboxIntegrationValidator(host, new SandboxWorkspaces(env))
         : new FakeIntegrationValidator(),
+    // Fake Station runs carry their own evidence, and with a fake Conductor
+    // real Station runs collect it in the Station Agent's Sandbox.
+    independentCarEvidence:
+      env.STATION_AGENT_MODEL !== FAKE && env.CONDUCTOR_MODEL !== FAKE,
   }
 }
 
@@ -352,6 +360,7 @@ export function dispatchPlanningPorts(
 ): DispatchPlanningPorts {
   return {
     ...dispatcherPorts(env, models),
+    activity: new DispatchActivityStore(env.DB),
     startJunction: (id) => junctionDispatchPorts(env).startJunction(id),
     planner:
       env.DISPATCHER_MODEL === FAKE
@@ -388,8 +397,13 @@ export function dispatchPlanningPorts(
         await instance.restart()
       try {
         await instance.sendEvent({ type: DISPATCH_EVENTS.launch, payload: {} })
-      } catch {
+        perf("dispatch.launch_event_sent", { planId })
+      } catch (error) {
         // A periodic gate read observes the already persisted launch command.
+        perf("dispatch.launch_event_failed", {
+          planId,
+          error: errorKind(error),
+        })
       }
     },
     retryPlan: async (planId) => {
@@ -541,8 +555,10 @@ async function startStationRun(
 }
 
 async function wakeTrain(env: Env, trainId: string): Promise<void> {
-  const instance = await env.TRAIN_WORKFLOW.get(trainId)
-  await instance.sendEvent({ type: TRAIN_EVENTS.wake, payload: {} })
+  await perfSpan("train.wake_sent", { trainId }, async () => {
+    const instance = await env.TRAIN_WORKFLOW.get(trainId)
+    await instance.sendEvent({ type: TRAIN_EVENTS.wake, payload: {} })
+  })
 }
 
 function newId(prefix: string): string {

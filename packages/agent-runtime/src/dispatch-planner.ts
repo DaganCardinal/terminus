@@ -3,7 +3,7 @@ import type {
   DispatchProposal,
   PlanningContext,
 } from "@terminus/domain"
-import type { ValidationCommand } from "@terminus/protocol"
+import type { ValidationCommand, ActivityObserver } from "@terminus/protocol"
 
 export interface DispatchPlanningInput {
   goal: string
@@ -14,6 +14,7 @@ export interface DispatchPlanningInput {
   checkBaseline: boolean
   /** Trusted project configuration from D1, never supplied by a model. */
   validation: ValidationCommand[]
+  onActivity?: ActivityObserver
 }
 
 export interface DispatchPlanResult {
@@ -31,6 +32,7 @@ export interface DispatchPlanner {
 export class FakeDispatchPlanner implements DispatchPlanner {
   readonly model = "fake"
   async plan(input: DispatchPlanningInput): Promise<DispatchPlanResult> {
+    input.onActivity?.({ kind: "phase", phase: "simulation" })
     const evidence = input.network.validationNames
     const proposal: DispatchProposal = {
       summary:

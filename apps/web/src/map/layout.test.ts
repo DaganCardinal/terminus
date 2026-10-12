@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest"
-import { lineIdentities, type Line, type TrainState } from "@terminus/protocol"
 import {
+  lineIdentities,
+  type EventEnvelope,
+  type Line,
+  type TrainState,
+} from "@terminus/protocol"
+import {
+  HUB_RADIUS,
   TRACK_WIDTH,
+  clearingBlock,
   layoutNetwork,
   lineColor,
   routeShapes,
   isMoving,
   trainDistance,
+  trainStops,
   type TrainMotion,
 } from "./layout"
 import { pointOnTrack, type Point } from "./track"
@@ -219,7 +227,7 @@ describe("network map projection", () => {
     )
     expect(isMoving(stoppedMoving)).toBe(false)
   })
-  it("runs unloaded Trains into Terminus, removes sided ones and parks returning ones past the last Station", () => {
+  it("runs unloaded Trains into Terminus and removes sided ones", () => {
     const { routes } = layoutNetwork([line("a")])
     const route = routes[0]!
     expect(
@@ -236,31 +244,157 @@ describe("network map projection", () => {
         T0
       )
     ).toBeNull()
-    expect(
-      trainDistance(
-        motion({ status: "returning", phase: "awaiting_clearance" }),
-        route,
-        T0
-      )
-    ).toBeGreaterThan(route.stationDistances.at(-1)!)
   })
-  it("holds Trains awaiting approval on track, where they wait to return", () => {
+  it("runs a returning Train from its last Station toward Terminus like any other run", () => {
+    const route = layoutNetwork([line("a")]).routes[0]!
+    const last = route.stationDistances.at(-1)!
+    const returning = motion(
+      { status: "returning", phase: "awaiting_clearance" },
+      0,
+      {
+        state: { status: "reviewing", at: "a-s2", from: { kind: "depot" } },
+        enteredAt: at(-30),
+      }
+    )
+    const after = (seconds: number) =>
+      trainDistance(returning, route, T0 + seconds * 1000)!
+    const wait = after(1_000_000)
+
+    expect(after(0)).toBe(last)
+    expect(after(60) - last).toBeCloseTo((wait - last) / 2)
+    // It waits outside Terminus, as a Train waits short of a Station.
+    expect(wait).toBeLessThan(route.track.length - HUB_RADIUS)
+    expect(isMoving(returning)).toBe(true)
+  })
+  it("holds Trains awaiting approval on track, where they stopped on their way to Terminus", () => {
     const route = layoutNetwork([line("a")]).routes[0]!
     const resume = {
       status: "returning" as const,
       phase: "awaiting_clearance" as const,
     }
-    const returning = trainDistance(motion(resume), route, T0)!
+    const returning = motion(resume)
     const held = (
       reasons: Extract<TrainState, { status: "held" }>["reasons"]
-    ) => trainDistance(motion({ status: "held", resume, reasons }), route, T0)
+    ) =>
+      trainDistance(
+        motion({ status: "held", resume, reasons }, 60, {
+          state: resume,
+          enteredAt: at(0),
+        }),
+        route,
+        T0 + 600_000
+      )
 
     expect(
       held([{ kind: "awaiting_user_approval", trainCommit: "head" }])
-    ).toBe(returning)
-    expect(held([{ kind: "user_hold", holdId: "h" }])).toBe(returning)
-    expect(returning).toBeGreaterThan(route.stationDistances.at(-1)!)
-    expect(returning).toBeLessThan(route.track.length)
+    ).toBe(trainDistance(returning, route, T0 + 60_000))
+    expect(held([{ kind: "user_hold", holdId: "h" }])).toBeGreaterThan(
+      route.stationDistances.at(-1)!
+    )
+    // Released, it sets off again from its last Station.
+    const released = motion(resume, 600, {
+      state: { status: "held", resume, reasons: [] },
+      enteredAt: at(60),
+    })
+    expect(trainDistance(released, route, T0 + 600_000)).toBe(
+      route.stationDistances.at(-1)
+    )
+    expect(isMoving(released)).toBe(true)
+  })
+  it("leaves a cleared Train where its block stopped it until the block resolves", () => {
+    const route = layoutNetwork([line("a")]).routes[0]!
+    let seq = 0
+    const event = (
+      seconds: number,
+      event: EventEnvelope["event"]
+    ): EventEnvelope => ({
+      seq: ++seq,
+      networkId: "network",
+      occurredAt: at(seconds),
+      event,
+    })
+    const trainId = "train"
+    const departed = (seconds: number, stationId: string) =>
+      event(seconds, { type: "train.departed", trainId, stationId })
+    const blocked = (seconds: number) =>
+      event(seconds, {
+        type: "train.blocked",
+        trainId,
+        issues: [{ kind: "conflict", detail: "Conflict" }],
+      })
+    const cleared = (seconds: number) =>
+      event(seconds, { type: "train.cleared", trainId })
+    const ready: TrainState = {
+      status: "ready",
+      at: { kind: "station", stationId: "a-s0" },
+    }
+    const rerun: TrainState = {
+      status: "in_transit",
+      from: ready.at,
+      toward: "a-s1",
+    }
+    const place = (events: EventEnvelope[], state: TrainState) => {
+      const m = {
+        ...motion(state, 200),
+        stop: trainStops(events).get(trainId) ?? null,
+      }
+      return {
+        distance: trainDistance(m, route, T0 + 400_000),
+        clearing: clearingBlock(m),
+      }
+    }
+    const stoppedAt = trainDistance(
+      motion({ status: "in_transit", from: ready.at, toward: "a-s1" }),
+      route,
+      T0 + 60_000
+    )
+
+    // Blocked in transit, cleared, and running the Station again.
+    const history = [departed(0, "a-s1"), blocked(60), cleared(100)]
+    expect(place(history, ready)).toEqual({
+      distance: stoppedAt,
+      clearing: true,
+    })
+    const again = [...history, departed(150, "a-s1")]
+    expect(place(again, rerun)).toEqual({ distance: stoppedAt, clearing: true })
+    // Blocked again, it still has not moved.
+    expect(place([...again, blocked(300)], rerun).distance).toBe(stoppedAt)
+    // Once the work is ready, it runs on to the Station.
+    const ready1 = [
+      ...again,
+      event(300, { type: "train.approaching", trainId, stationId: "a-s1" }),
+    ]
+    expect(
+      place(ready1, { status: "approaching", from: ready.at, toward: "a-s1" })
+    ).toEqual({ distance: route.stationDistances[1], clearing: false })
+
+    // Blocked at a Station, it stays there while it runs that Station again.
+    const docked = [
+      departed(0, "a-s1"),
+      event(50, { type: "train.arrived", trainId, stationId: "a-s1" }),
+      blocked(60),
+      cleared(100),
+      departed(150, "a-s1"),
+    ]
+    expect(place(docked, rerun)).toEqual({
+      distance: route.stationDistances[1],
+      clearing: true,
+    })
+    // Departing for a different Station is an ordinary run.
+    const onward = [
+      departed(0, "a-s1"),
+      event(50, { type: "train.arrived", trainId, stationId: "a-s1" }),
+      blocked(60),
+      cleared(100),
+      departed(150, "a-s2"),
+    ]
+    expect(
+      place(onward, {
+        status: "in_transit",
+        from: { kind: "station", stationId: "a-s1" },
+        toward: "a-s2",
+      }).clearing
+    ).toBe(false)
   })
   it("joins every change of direction with a curve, never a hard corner", () => {
     for (const count of [1, 3, 6, 8, 13, 24]) {

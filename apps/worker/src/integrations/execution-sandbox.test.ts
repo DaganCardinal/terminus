@@ -31,6 +31,23 @@ function fakeContainer() {
     interceptOutboundHttps: vi.fn(async () => {}),
     getTcpPort: vi.fn(() => ({ fetch })),
     destroy: vi.fn(async () => {}),
+    exec: vi.fn<
+      (
+        command: string[],
+        options: { signal: AbortSignal }
+      ) => Promise<{
+        stdout: ReadableStream<Uint8Array>
+        exitCode: Promise<number>
+      }>
+    >(async () => ({
+      stdout: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("filtered activity\n"))
+          controller.close()
+        },
+      }),
+      exitCode: Promise.resolve(0),
+    })),
   }
   return { container, fetch }
 }
@@ -75,6 +92,56 @@ async function withSandbox(
     }
   })
 }
+
+describe("Sandbox streaming commands", () => {
+  it("streams stdout with the existing environment, EOF stdin and no stderr exposure", async () => {
+    await withSandbox(async (sandbox, f) => {
+      const ready = vi
+        .spyOn(sandbox as unknown as { ready(): Promise<void> }, "ready")
+        .mockResolvedValue()
+      try {
+        const output = await sandbox.runStream(
+          ["node", "trusted-filter.mjs"],
+          "/workspace/repo",
+          { OPENCODE_CONFIG: "/workspace/opencode.json" }
+        )
+        expect(await new Response(output).text()).toBe("filtered activity\n")
+        expect(f.container.exec).toHaveBeenCalledWith(
+          ["node", "trusted-filter.mjs"],
+          expect.objectContaining({
+            cwd: "/workspace/repo",
+            stderr: "ignore",
+            env: expect.objectContaining({
+              OPENCODE_CONFIG: "/workspace/opencode.json",
+              GIT_TERMINAL_PROMPT: "0",
+            }),
+          })
+        )
+      } finally {
+        ready.mockRestore()
+      }
+    })
+  })
+
+  it("aborts the command when a streaming caller cancels", async () => {
+    await withSandbox(async (sandbox, f) => {
+      const ready = vi
+        .spyOn(sandbox as unknown as { ready(): Promise<void> }, "ready")
+        .mockResolvedValue()
+      f.container.exec.mockResolvedValueOnce({
+        stdout: new ReadableStream<Uint8Array>(),
+        exitCode: Promise.resolve(0),
+      })
+      try {
+        const output = await sandbox.runStream(["node", "trusted-filter.mjs"])
+        await output.cancel()
+        expect(f.container.exec.mock.calls[0]![1].signal.aborted).toBe(true)
+      } finally {
+        ready.mockRestore()
+      }
+    })
+  })
+})
 
 describe("Sandbox capacity", () => {
   const network = {

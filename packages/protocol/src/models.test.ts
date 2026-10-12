@@ -10,6 +10,7 @@ import {
   roleExecutions,
   modelForHarness,
   roleExecutionSchema,
+  utilityModel,
 } from "./models"
 
 const custom = {
@@ -38,7 +39,7 @@ describe("model settings", () => {
 
   it("preserves compatible choices and chooses the cheapest compatible model otherwise", () => {
     expect(modelForHarness("claude-code", custom.dispatcher)).toBe(
-      "anthropic/claude-haiku-4-5-20251001"
+      "anthropic/claude-haiku-5-5"
     )
     expect(modelForHarness("codex", custom.dispatcher)).toBe(
       "openai/gpt-6-luna"
@@ -48,6 +49,23 @@ describe("model settings", () => {
     )
     expect(modelForHarness("opencode", "openai/gpt-6-sol")).toBe(
       "openai/gpt-6-sol"
+    )
+  })
+
+  it("gives each role model the lowest-cost utility model from its own provider", () => {
+    expect(utilityModel("@cf/moonshotai/kimi-k2.7-code")).toBe(
+      "@cf/zai-org/glm-5.3-flash"
+    )
+    expect(utilityModel("@cf/zai-org/glm-5.3-flash")).toBe(
+      "@cf/zai-org/glm-5.3-flash"
+    )
+    expect(utilityModel("anthropic/claude-sonnet-5-5")).toBe(
+      "anthropic/claude-haiku-5-5"
+    )
+    expect(utilityModel("openai/gpt-6-sol")).toBe("openai/gpt-6-luna")
+    // Decision models are never a harness's utility model.
+    expect(utilityModel("@cf/cloudflare/clef")).toBe(
+      "@cf/zai-org/glm-5.3-flash"
     )
   })
 

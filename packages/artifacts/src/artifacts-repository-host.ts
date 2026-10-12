@@ -17,6 +17,7 @@ import {
   type CommittedObjects,
 } from "./repository-browse"
 import type { HeadReader } from "./smart-http"
+import { ArtifactsApiError } from "./artifacts-rest"
 import {
   git,
   remoteHead,
@@ -26,6 +27,9 @@ import {
   type RepositoryAccess,
   type GitWorkspace,
 } from "./git"
+import { perf, perfSpan } from "@terminus/protocol"
+
+type ForkInput = Parameters<RepositoryHost["fork"]>[0]
 
 /** Only the Artifacts capabilities this adapter uses. No Cloudflare dependency leaks inward. */
 export interface ArtifactsRepositoryInfo {
@@ -42,6 +46,8 @@ export interface ArtifactsRepository extends Disposable {
     ttl: number
   ): Promise<{ id: string; plaintext: string }>
   revokeToken(id: string): Promise<boolean>
+  /** Deletes the repository, or succeeds if it is already gone. */
+  delete(): Promise<void>
   fork(
     name: string,
     options: { description: string; defaultBranchOnly: boolean }
@@ -149,7 +155,14 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
-  async prepareIntegration(
+  /** TEMPORARY benchmark instrumentation wrapper. */
+  prepareIntegration(input: IntegrationMergeInput): Promise<IntegrationMerge> {
+    return perfSpan("artifacts.prepare_integration", { id: input.id }, () =>
+      this.prepareIntegrationUntimed(input)
+    )
+  }
+
+  private async prepareIntegrationUntimed(
     input: IntegrationMergeInput
   ): Promise<IntegrationMerge> {
     for (const commit of [
@@ -303,61 +316,146 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
-  async fork(input: {
-    sourceRepoId: string
-    commit: string
-    name: string
-  }): Promise<RepoRef> {
+  /** TEMPORARY benchmark instrumentation wrapper. */
+  fork(input: ForkInput): Promise<RepoRef> {
+    return perfSpan("artifacts.fork", { name: input.name }, () =>
+      this.forkUntimed(input)
+    )
+  }
+
+  private async forkUntimed(input: ForkInput): Promise<RepoRef> {
     requireCommit(input.commit)
     const id = siblingRepoId(input.sourceRepoId, input.name)
-    const description = `Terminus fork: ${input.sourceRepoId}@${input.commit}`
+    const description = (source: string) =>
+      `Terminus fork: ${source}@${input.commit}`
+    const preferred =
+      input.preferredSourceRepoId !== undefined &&
+      input.preferredSourceRepoId !== input.sourceRepoId
+        ? input.preferredSourceRepoId
+        : null
+    const fork = { id, name: input.name, commit: input.commit }
     // A completed fork is reusable even if its source has since advanced.
-    let target: ArtifactsRepository | undefined
-    try {
-      try {
-        target = await this.ready(id)
-      } catch (error) {
-        if (!hasCode(error, "NOT_FOUND")) throw error
-      }
-      if (!target) {
-        using source = await this.ready(input.sourceRepoId)
-        let initialToken: string | undefined
-        try {
-          if ((await this.currentHead(input.sourceRepoId)) !== input.commit)
-            throw new RepositoryMovedError(
-              "Fork source moved from the requested commit; reload and review"
-            )
-          try {
-            initialToken = (
-              await source.fork(input.name, {
-                description,
-                defaultBranchOnly: true,
-              })
-            ).token
-          } catch (error) {
-            if (!hasCode(error, "ALREADY_EXISTS")) throw error
-          }
-        } finally {
-          if (initialToken) {
-            target = await this.ready(id)
-            await target.revokeToken(initialToken)
-          }
-        }
-        target ??= await this.ready(id)
-      }
-      if ((await target.info()).description !== description)
-        throw new Error("Repository name belongs to a different fork operation")
-      if ((await this.currentHead(id)) !== input.commit)
-        throw new RepositoryMovedError(
-          "Fork did not preserve the requested commit"
-        )
+    let existing = await this.forkDescription(id)
+    if (existing === null) {
+      const source =
+        preferred && (await this.headIfReadable(preferred)) === input.commit
+          ? preferred
+          : input.sourceRepoId
+      perf("artifacts.fork_source", {
+        name: input.name,
+        source: parseRepoId(source).name,
+      })
+      await this.createFork(source, fork, description(source), {
+        // The preferred source's head was just read.
+        checkHead: source !== preferred,
+      })
+      existing = await this.forkDescription(id)
+    }
+    if (
+      existing !== description(input.sourceRepoId) &&
+      (!preferred || existing !== description(preferred))
+    )
+      throw new Error("Repository name belongs to a different fork operation")
+    if ((await this.currentHead(id)) === input.commit)
       return { repoId: id, headCommit: input.commit }
+    if (!preferred || existing !== description(preferred))
+      throw new RepositoryMovedError(
+        "Fork did not preserve the requested commit"
+      )
+    // The preferred source moved while Artifacts forked it. That copy is this
+    // operation's own and can never be used, so fork the source instead.
+    perf("artifacts.fork_replaced", { name: input.name })
+    {
+      using copy = await this.ready(id)
+      await copy.delete()
+    }
+    await this.createFork(
+      input.sourceRepoId,
+      fork,
+      description(input.sourceRepoId),
+      { checkHead: true }
+    )
+    if ((await this.forkDescription(id)) !== description(input.sourceRepoId))
+      throw new Error("Repository name belongs to a different fork operation")
+    if ((await this.currentHead(id)) !== input.commit)
+      throw new RepositoryMovedError(
+        "Fork did not preserve the requested commit"
+      )
+    return { repoId: id, headCommit: input.commit }
+  }
+
+  /** The description of the repository at `id`, or null when there is none. */
+  private async forkDescription(id: string): Promise<string | null> {
+    let target: ArtifactsRepository
+    try {
+      target = await this.ready(id)
+    } catch (error) {
+      if (!hasCode(error, "NOT_FOUND")) throw error
+      return null
+    }
+    try {
+      return (await target.info()).description ?? ""
     } finally {
-      target?.[Symbol.dispose]()
+      target[Symbol.dispose]()
     }
   }
 
-  async fastForward(input: {
+  /** A preferred fork source is optional, so failing to read it means not using it. */
+  private async headIfReadable(repoId: string): Promise<string | null> {
+    try {
+      return await this.currentHead(repoId)
+    } catch {
+      return null
+    }
+  }
+
+  /** Starts a server-side fork of `sourceId`. The caller checks what it made. */
+  private async createFork(
+    sourceId: string,
+    fork: { id: string; name: string; commit: string },
+    description: string,
+    options: { checkHead: boolean }
+  ): Promise<void> {
+    using source = await this.ready(sourceId)
+    let initialToken: string | undefined
+    try {
+      if (
+        options.checkHead &&
+        (await this.currentHead(sourceId)) !== fork.commit
+      )
+        throw new RepositoryMovedError(
+          "Fork source moved from the requested commit; reload and review"
+        )
+      try {
+        initialToken = (
+          await source.fork(fork.name, { description, defaultBranchOnly: true })
+        ).token
+      } catch (error) {
+        if (!hasCode(error, "ALREADY_EXISTS")) throw error
+      }
+    } finally {
+      if (initialToken) {
+        using target = await this.ready(fork.id)
+        await target.revokeToken(initialToken)
+      }
+    }
+  }
+
+  /** TEMPORARY benchmark instrumentation wrapper. */
+  fastForward(input: {
+    targetRepoId: string
+    sourceRepoId: string
+    fromCommit: string
+    toCommit: string
+  }): Promise<void> {
+    return perfSpan(
+      "artifacts.fast_forward",
+      { target: parseRepoId(input.targetRepoId).name },
+      () => this.fastForwardUntimed(input)
+    )
+  }
+
+  private async fastForwardUntimed(input: {
     targetRepoId: string
     sourceRepoId: string
     fromCommit: string
@@ -448,6 +546,22 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     repoId: string,
     scope: "read" | "write"
   ): Promise<RepositoryAccess> {
+    const started = Date.now()
+    try {
+      return await this.accessUntimed(repoId, scope)
+    } finally {
+      perf("artifacts.access", {
+        repo: parseRepoId(repoId).name,
+        scope,
+        ms: Date.now() - started,
+      })
+    }
+  }
+
+  private async accessUntimed(
+    repoId: string,
+    scope: "read" | "write"
+  ): Promise<RepositoryAccess> {
     using repo = await this.ready(repoId)
     const info = await repo.info()
     const token = await repo.createToken(scope, 3600)
@@ -462,12 +576,25 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async revoke(access: RepositoryAccess): Promise<void> {
+    const started = Date.now()
     using repo = await this.ready(access.repoId)
     await repo.revokeToken(access.tokenId)
+    perf("artifacts.revoke", {
+      repo: parseRepoId(access.repoId).name,
+      ms: Date.now() - started,
+    })
   }
 
   /** The default-branch head, read without a Sandbox when the host can. */
   private async currentHead(repoId: string): Promise<string | null> {
+    return perfSpan(
+      "artifacts.head",
+      { repo: parseRepoId(repoId).name, viaSandbox: !this.readHead },
+      () => this.currentHeadUntimed(repoId)
+    )
+  }
+
+  private async currentHeadUntimed(repoId: string): Promise<string | null> {
     if (!this.readHead)
       return this.withWorkspace(
         [{ repoId, scope: "read" }],
@@ -492,11 +619,25 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     let workspace: GitWorkspace | undefined
     let result: T
     let cleanupFailed: boolean
+    // TEMPORARY benchmark instrumentation.
+    const started = Date.now()
+    let openedAt = started
+    let ranAt = started
     try {
       for (const spec of specs)
         accesses.push(await this.access(spec.repoId, spec.scope))
+      const accessedAt = Date.now()
       workspace = await this.workspaces.open(accesses)
+      openedAt = Date.now()
+      perf("artifacts.workspace_opened", {
+        repos: specs.map(
+          (spec) => `${parseRepoId(spec.repoId).name}:${spec.scope}`
+        ),
+        accessMs: accessedAt - started,
+        openMs: openedAt - accessedAt,
+      })
       result = await run(workspace, accesses)
+      ranAt = Date.now()
     } finally {
       // Cleanup all credentials even if workspace creation or shutdown fails.
       const results = await Promise.allSettled([
@@ -504,6 +645,14 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         ...accesses.map((access) => this.revoke(access)),
       ])
       cleanupFailed = results.some((result) => result.status === "rejected")
+      perf("artifacts.workspace", {
+        repos: specs.map(
+          (spec) => `${parseRepoId(spec.repoId).name}:${spec.scope}`
+        ),
+        totalMs: Date.now() - started,
+        runMs: ranAt > openedAt ? ranAt - openedAt : null,
+        cleanupMs: Date.now() - Math.max(ranAt, openedAt),
+      })
     }
     if (cleanupFailed) throw new Error("Repository workspace cleanup failed")
     return result
@@ -511,20 +660,46 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
 
   private async ready(id: string): Promise<ArtifactsRepository> {
     const { namespace, name } = parseRepoId(id)
+    let denials = 0
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.artifacts.namespace(namespace).get(name)
       } catch (error) {
+        if (isTransientDenial(error) && denials < transientDenialRetries) {
+          // Backs off 1, 2, 4, then 8 pauses at a time: about a minute in all.
+          const pauses = Math.min(2 ** denials++, 8)
+          perf("artifacts.denied_pause", { name, attempt: denials, pauses })
+          for (let pause = 0; pause < pauses; pause++) await this.pause()
+          continue
+        }
         if (
           attempt >= 29 ||
           (!hasCode(error, "IMPORT_IN_PROGRESS") &&
             !hasCode(error, "FORK_IN_PROGRESS"))
         )
           throw error
+        perf("artifacts.not_ready_pause", { name, attempt })
         await this.pause()
       }
     }
   }
+}
+
+/** Retries of a transient denial before it is treated as real. */
+const transientDenialRetries = 10
+
+/**
+ * Artifacts intermittently refuses to read a repository with HTTP 403 and
+ * API code 10004 (not an Artifacts code), whether or not the repository
+ * exists. Every observed case cleared within a minute, and a retry after the
+ * first refusal returns within milliseconds.
+ */
+function isTransientDenial(error: unknown): boolean {
+  return (
+    error instanceof ArtifactsApiError &&
+    error.status === 403 &&
+    error.apiCode === 10004
+  )
 }
 
 /** Unrelated failures must never trigger repository creation. */

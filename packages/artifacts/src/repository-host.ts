@@ -92,11 +92,19 @@ export interface RepositoryHost {
     sourceUrl?: string
   }): Promise<RepoRef>
 
-  /** Forks `sourceRepoId` at `commit` into `name` in the same namespace. */
+  /**
+   * Forks `sourceRepoId` at `commit` into `name` in the same namespace.
+   *
+   * With `preferredSourceRepoId`, forks that repository instead while its
+   * head is exactly `commit`: the same starting point from an older
+   * repository. Artifacts can refuse to fork a repository that was itself
+   * forked moments ago, for most of a minute.
+   */
   fork(input: {
     sourceRepoId: RepoId
     commit: CommitId
     name: string
+    preferredSourceRepoId?: RepoId
   }): Promise<RepoRef>
 
   /**

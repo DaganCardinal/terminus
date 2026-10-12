@@ -1,5 +1,8 @@
+import type { BaselineReport, PlanningContext } from "@terminus/domain"
 import { z } from "zod"
 import { modelProviderSchema } from "./models"
+
+const isObject = (value: unknown) => typeof value === "object" && value !== null
 
 export const stationMaxRetriesSchema = z.number().int().nonnegative()
 
@@ -35,6 +38,8 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
       data: z.object({ message: z.string().optional() }).optional(),
     }),
   }),
+  /** A proposal the Dispatcher submitted through its proposal tool. */
+  z.object({ type: z.literal("submission"), proposal: z.unknown() }),
 ])
 
 export const chatCompletionSchema = z.object({
@@ -57,7 +62,11 @@ export const sandboxNetworkSchema = z.object({
     })
   ),
   allowModel: z.boolean(),
-  /** The one model this Sandbox's harness may call, resolved by orchestration. */
+  /**
+   * The one role model this Sandbox's harness may call, resolved by
+   * orchestration. Its `utilityModel` from the same provider is also allowed,
+   * for the harness's own housekeeping calls.
+   */
   model: z.string().min(1).optional(),
   provider: modelProviderSchema.optional(),
   /**
@@ -68,6 +77,18 @@ export const sandboxNetworkSchema = z.object({
   sessionAffinity: z
     .string()
     .regex(/^[A-Za-z0-9_-]{1,128}$/)
+    .optional(),
+  /**
+   * Lets a planning harness check its proposal while it works, through the
+   * outbound handler's proposal tool. The check is advisory: the Workflow
+   * validates the final proposal again. Orchestration supplies the planning
+   * context, never the Sandbox.
+   */
+  proposalCheck: z
+    .object({
+      network: z.custom<PlanningContext>(isObject),
+      baseline: z.custom<BaselineReport>(isObject).nullable(),
+    })
     .optional(),
 })
 export type SandboxNetwork = z.infer<typeof sandboxNetworkSchema>

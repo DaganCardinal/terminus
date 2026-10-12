@@ -37,4 +37,5 @@ export const workManifestSchema = z.object({
   dependencies: z.array(z.string()),
   acceptanceCriteria: z.array(z.string()),
   expectedEvidence: z.array(z.string()),
+  projectFacts: z.array(z.string()).optional(),
 })

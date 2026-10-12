@@ -161,6 +161,7 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
     >
       <NetworkMap
         snapshot={snapshot}
+        events={events}
         selection={selection}
         terminusSelected={panel?.kind === "terminus"}
         onSelectTerminus={() => setPanel({ kind: "terminus" })}

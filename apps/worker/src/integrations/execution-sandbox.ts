@@ -10,6 +10,7 @@ import {
   type SandboxPreviewRequest,
   type SandboxPreviewResult,
   SANDBOX_SIZES,
+  perf,
   type SandboxSize,
 } from "@terminus/protocol"
 import { DurableObject } from "cloudflare:workers"
@@ -117,6 +118,15 @@ export class ExecutionSandbox extends DurableObject<Env> {
     return (await this.configured()).installDependencies(cwd)
   }
 
+  async runStream(
+    command: string[],
+    cwd?: string,
+    env?: Record<string, string>,
+    timeoutMs?: number
+  ): Promise<ReadableStream<Uint8Array>> {
+    return (await this.configured()).runStream(command, cwd, env, timeoutMs)
+  }
+
   async write(path: string, contents: string): Promise<void> {
     await (await this.configured()).write(path, contents)
   }
@@ -150,7 +160,10 @@ export class ExecutionSandbox extends DurableObject<Env> {
         if (!name) throw new Error("Sandboxes are started by name")
         await this.ctx.storage.put("name", name)
         const current = await this.current()
-        if (current && (await current.running())) return current
+        if (current && (await current.running())) {
+          perf("sandbox.choose", { sandbox: name, reused: true })
+          return current
+        }
         let namespace = await this.ctx.storage.get<string>("namespace")
         if (!namespace) {
           namespace = remotes.map(artifactsNamespace).find(Boolean) ?? ""
@@ -160,6 +173,7 @@ export class ExecutionSandbox extends DurableObject<Env> {
           sandboxKind[this.binding]
         ]
         await this.ctx.storage.put("size", size)
+        perf("sandbox.choose", { sandbox: name, binding: this.binding, size })
         return this.container(size, name)
       })
     this.#choosing = chosen
@@ -220,6 +234,8 @@ export class SandboxContainer extends DurableObject<Env> {
   #leaseRenewedAt = 0
   /** Bumped on every start and stop, so a stale exit never releases a newer lease. */
   #leaseGeneration = 0
+  /** TEMPORARY benchmark instrumentation: marks the first command after a cold start. */
+  #coldStartedAt: number | null = null
 
   /** Register ownership before a container can start. Random sessions and
    * preview snapshots must be discoverable even after their Workflow exits. */
@@ -442,18 +458,38 @@ export class SandboxContainer extends DurableObject<Env> {
     env: Record<string, string> = {},
     timeoutMs = commandTimeoutMs
   ): Promise<CommandResult> {
+    const readyStarted = Date.now()
     await this.ready()
+    const execStarted = Date.now()
+    const firstAfterStart = this.#coldStartedAt
+    this.#coldStartedAt = null
     const process = await this.container().exec(command, {
       cwd,
       stdin: new ReadableStream({ start: (controller) => controller.close() }),
       env: { ...trustEnv, ...env },
       signal: AbortSignal.timeout(timeoutMs),
     })
+    const spawnedMs = Date.now() - execStarted
     const [stdout, stderr, exitCode] = await Promise.all([
       capture(process.stdout),
       capture(process.stderr),
       process.exitCode,
     ])
+    perf("sandbox.exec", {
+      sandbox: this.ctx.id.name,
+      cmd: commandLabel(command),
+      ms: Date.now() - execStarted,
+      spawnMs: spawnedMs,
+      readyMs: execStarted - readyStarted,
+      ...(firstAfterStart
+        ? {
+            firstAfterColdStart: true,
+            sinceStartMs: Date.now() - firstAfterStart,
+          }
+        : {}),
+      exitCode,
+      outKB: Math.round((stdout.text.length + stderr.text.length) / 1024),
+    })
     return commandResultSchema.parse({
       exitCode,
       stdout: stdout.text,
@@ -462,9 +498,83 @@ export class SandboxContainer extends DurableObject<Env> {
     })
   }
 
+  /** Streams command output across the existing Sandbox RPC boundary. */
+  async runStream(
+    command: string[],
+    cwd = "/workspace",
+    env: Record<string, string> = {},
+    timeoutMs = commandTimeoutMs
+  ): Promise<ReadableStream<Uint8Array>> {
+    const readyStarted = Date.now()
+    await this.ready()
+    const execStarted = Date.now()
+    const firstAfterStart = this.#coldStartedAt
+    this.#coldStartedAt = null
+    const abort = new AbortController()
+    const process = await this.container().exec(command, {
+      cwd,
+      env: { ...trustEnv, ...env },
+      stdin: new ReadableStream({ start: (controller) => controller.close() }),
+      stderr: "ignore",
+      signal: AbortSignal.any([abort.signal, AbortSignal.timeout(timeoutMs)]),
+    })
+    const spawnedMs = Date.now() - execStarted
+    let outBytes = 0
+    const sandboxName = this.ctx.id.name
+    const reader = process.stdout?.getReader()
+    if (!reader) throw new Error("Streaming command has no output pipe")
+    // Observe rejection immediately, including before the caller starts reading.
+    const exit = process.exitCode.then(
+      (code) => {
+        perf("sandbox.exec", {
+          sandbox: sandboxName,
+          cmd: commandLabel(command),
+          ms: Date.now() - execStarted,
+          spawnMs: spawnedMs,
+          readyMs: execStarted - readyStarted,
+          ...(firstAfterStart
+            ? {
+                firstAfterColdStart: true,
+                sinceStartMs: Date.now() - firstAfterStart,
+              }
+            : {}),
+          exitCode: code,
+          outKB: Math.round(outBytes / 1024),
+          streaming: true,
+        })
+        return { code }
+      },
+      () => ({ code: -1 })
+    )
+    return new ReadableStream({
+      async pull(controller) {
+        try {
+          const next = await reader.read()
+          if (!next.done) {
+            outBytes += next.value.byteLength
+            controller.enqueue(next.value)
+          } else {
+            if ((await exit).code !== 0)
+              throw new Error("Streaming command failed")
+            controller.close()
+            reader.releaseLock()
+          }
+        } catch {
+          abort.abort()
+          controller.error(new Error("Streaming command interrupted"))
+        }
+      },
+      async cancel() {
+        abort.abort()
+        await reader.cancel().catch(() => {})
+      },
+    })
+  }
+
   /** Installs dependencies in `cwd` with the shared, lockfile-keyed npm cache. */
   async installDependencies(cwd: string): Promise<CommandResult> {
     await this.ready()
+    perf("sandbox.install.start", { sandbox: this.ctx.id.name, cwd })
     return installDependencies(
       {
         run: (command, dir) => this.run(command, dir),
@@ -491,15 +601,29 @@ export class SandboxContainer extends DurableObject<Env> {
 
   async write(path: string, contents: string): Promise<void> {
     await this.ready()
+    const started = Date.now()
     await new Files(this.container()).writeFile(path, contents)
+    perf("sandbox.write", {
+      sandbox: this.ctx.id.name,
+      path,
+      kb: Math.round(contents.length / 1024),
+      ms: Date.now() - started,
+    })
   }
 
   async close(): Promise<void> {
+    const started = Date.now()
+    const running = this.container().running
     this.#network = null
     this.#setup = null
     await this.ctx.storage.delete("trainPreview")
     if (this.container().running) await this.container().destroy()
     await this.releaseLease()
+    perf("sandbox.close", {
+      sandbox: this.ctx.id.name,
+      wasRunning: running,
+      ms: Date.now() - started,
+    })
   }
 
   /** Permanent deletion removes the container and all Durable Object storage. */
@@ -525,9 +649,14 @@ export class SandboxContainer extends DurableObject<Env> {
       const network = this.#network
       this.#setup = (async () => {
         const container = this.container()
+        const setupStarted = Date.now()
+        const cold = !container.running
+        let leaseMs = 0
         if (!container.running) {
           await this.acquireLease(waitMs)
+          leaseMs = Date.now() - setupStarted
           container.start({ enableInternet: false })
+          this.#coldStartedAt = Date.now()
         } else await this.renewLease(true)
         this.watchExit(container)
         // Install the idle limit before network setup, which may fail or hang.
@@ -542,6 +671,16 @@ export class SandboxContainer extends DurableObject<Env> {
         })
         await container.interceptAllOutboundHttp(outbound)
         await container.interceptOutboundHttps("*", outbound)
+        perf("sandbox.setup", {
+          sandbox: this.ctx.id.name,
+          binding: this.binding,
+          cold,
+          leaseMs,
+          setupMs: Date.now() - setupStarted,
+          allowModel: network.allowModel,
+          repositories: network.repositories.length,
+          affinity: `ses_${this.ctx.id.toString()}`.slice(0, 16),
+        })
       })().catch(async (error: unknown) => {
         this.#setup = null
         await this.container().destroy()
@@ -565,9 +704,12 @@ export class SandboxContainer extends DurableObject<Env> {
   private async acquireLease(waitMs: number): Promise<void> {
     const lease = this.#lease()
     const deadline = Date.now() + waitMs
+    const waitStarted = Date.now()
+    let polls = 0
     let delay = 1000
     let limit: number
     for (;;) {
+      polls++
       limit = await sandboxLimit(this.env.DB, lease)
       if (
         await acquireSandboxLease(
@@ -580,6 +722,13 @@ export class SandboxContainer extends DurableObject<Env> {
       ) {
         this.#leaseGeneration++
         this.#leaseRenewedAt = Date.now()
+        perf("sandbox.lease", {
+          sandbox: this.ctx.id.name,
+          kind: sandboxKind[lease.binding],
+          limit,
+          polls,
+          waitedMs: Date.now() - waitStarted,
+        })
         return
       }
       if (Date.now() + delay > deadline) break
@@ -673,4 +822,26 @@ async function capture(
   }
   text += decoder.decode()
   return { text, truncated }
+}
+
+/** TEMPORARY benchmark instrumentation: a command's program and subcommand, never its arguments. */
+function commandLabel(command: string[]): string {
+  const [program = "", ...rest] = command
+  if (program === "bash") {
+    const harness = rest.find((arg) =>
+      ["opencode", "claude", "codex"].includes(arg)
+    )
+    if (harness) return `harness ${harness}`
+  }
+  if (program === "git") return `git ${rest[0] ?? ""}`
+  if (program === "npm")
+    return [
+      "npm",
+      ...rest.filter((arg) => !arg.startsWith("-")).slice(0, 2),
+    ].join(" ")
+  if (program === "node")
+    return rest[0] === "-e"
+      ? "node -e"
+      : `node ${(rest[0] ?? "").split("/").pop()}`
+  return program
 }

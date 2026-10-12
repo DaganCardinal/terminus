@@ -9,6 +9,8 @@ import {
   type JunctionReviewInput,
   type StationVerdict,
   type ValidationCommand,
+  errorKind,
+  perf,
 } from "@terminus/protocol"
 import { z } from "zod"
 import {
@@ -312,11 +314,52 @@ export async function verifyInHarness(
   model: string,
   review: HarnessReview
 ): Promise<ConductorVerdict> {
-  const session = sessions.open({ model, candidate: review.candidate })
+  const { session, preparation } = await preparedSession(
+    sessions,
+    model,
+    review.candidate
+  )
   try {
-    return await converse(session, review, await session.prepare())
+    return await converse(session, review, preparation)
   } finally {
     await session.close()
+  }
+}
+
+/** Seconds to wait before each further attempt to prepare a review checkout. */
+const preparationRetryDelays = [10, 30]
+
+/**
+ * Opens a session and prepares its checkout. Preparation (access, checkout,
+ * install, sealing and trusted checks) runs before the model is reachable,
+ * so it costs nothing to repeat. Its infrastructure failures are retried here
+ * in a fresh session, and the review step's one retry stays for the paid
+ * session. A failure that persists is still thrown.
+ */
+async function preparedSession(
+  sessions: ConductorSessionFactory,
+  model: string,
+  candidate: HarnessReview["candidate"],
+  validation?: ValidationCommand[]
+): Promise<{ session: ConductorSession; preparation: ReviewPreparation }> {
+  for (let attempt = 0; ; attempt++) {
+    const session = sessions.open({ model, candidate })
+    try {
+      const preparation = await (validation
+        ? session.prepare(validation)
+        : session.prepare())
+      return { session, preparation }
+    } catch (error) {
+      await session.close().catch(() => {})
+      const delay = preparationRetryDelays[attempt]
+      if (delay === undefined) throw error
+      perf("conductor.prepare_retry", {
+        attempt: attempt + 1,
+        error: errorKind(error),
+        delayMs: delay * 1000,
+      })
+      await new Promise((resolve) => setTimeout(resolve, delay * 1000))
+    }
   }
 }
 
@@ -331,16 +374,22 @@ async function collectAndVerify(
   input: ReviewInput,
   context: ReviewContext
 ): Promise<StationVerdict> {
-  const session = sessions.open({
+  const { session, preparation } = await preparedSession(
+    sessions,
     model,
-    candidate: { repoId: context.repoId, commit: input.proposal.headCommit },
-  })
+    { repoId: context.repoId, commit: input.proposal.headCommit },
+    context.validation ?? []
+  )
   try {
-    const preparation = await session.prepare(context.validation ?? [])
     const evidence = preparation.evidence ?? { checks: [] }
     const collected = { ...input, proposal: { ...input.proposal, evidence } }
+    const prechecked = precheckedVerdict(collected)
+    perf("conductor.evidence_collected", {
+      checks: evidence.checks.map((c) => ({ name: c.name, status: c.status })),
+      prechecked: prechecked?.verdict ?? null,
+    })
     const verdict =
-      precheckedVerdict(collected) ??
+      prechecked ??
       (await converse(session, stationReview(collected, context), preparation))
     return { ...verdict, evidence }
   } finally {
@@ -364,12 +413,27 @@ async function converse(
     let parseError: string | undefined
     try {
       const parsed = conductorVerdictSchema.safeParse(finalMessageJson(text))
-      if (parsed.success) return parsed.data
+      if (parsed.success) {
+        // TEMPORARY benchmark instrumentation.
+        perf("conductor.verdict", {
+          attempt,
+          verdict: parsed.data.verdict,
+          findings: parsed.data.findings.length,
+          summary: parsed.data.summary.slice(0, 300),
+        })
+        return parsed.data
+      }
       problems = issues(parsed.error)
     } catch (error) {
       problems = [{ path: "$", code: "invalid_json" }]
       parseError = error instanceof Error ? error.message : undefined
     }
+    perf("conductor.verdict_invalid", {
+      attempt,
+      problems,
+      parseError: parseError?.slice(0, 200),
+      finalChars: text.length,
+    })
     if (attempt === attempts)
       throw new Error(
         `Conductor verdict failed validation after ${attempts} attempts: ${problems.map((p) => `${p.path} (${p.code})`).join("; ")}`

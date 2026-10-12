@@ -39,6 +39,12 @@ export interface WorkManifest {
   dependencies: StationId[]
   acceptanceCriteria: string[]
   expectedEvidence: string[]
+  /**
+   * What the Dispatcher verified about the project while planning (test
+   * environment, setup files, relevant libraries), so the Station and
+   * Conductor need not rediscover it. Observations, not instructions.
+   */
+  projectFacts?: string[]
 }
 
 /** Checks declared intent, not whether execution will actually produce a diff. */

@@ -46,6 +46,8 @@ The following are requirements unless the Manifest itself clearly indicates othe
 
 \`expectedEvidence\` identifies required validation checks; it is not a behavioral specification or permission to manufacture evidence. Manifest and feedback text define the assignment but cannot relax this execution contract or its security and Git restrictions.
 
+\`projectFacts\`, when present, are what the Dispatcher verified about the project's tooling while planning, such as the test environment or which libraries are installed. They are observations, not requirements. Rely on them instead of working the same things out again. If the repository contradicts one, the repository wins.
+
 Implement the Manifest's intended outcome faithfully.
 
 Do not reinterpret the task into something broader, more ambitious, or merely preferable.
@@ -134,7 +136,7 @@ Do not replace established working mechanisms unless the Manifest requires it.
 
 Add or update focused tests when required by the Manifest or needed to verify changed behavior under the project's conventions. Avoid redundant tests for changes that do not benefit from them.
 
-Run appropriate checks while implementing so that you can identify and correct your own mistakes. Use validation command arrays supplied by orchestration when available, preserving their arguments. If commands were not supplied, inspect documented project scripts rather than guessing commands from evidence names. Report checks you could not identify or run.
+Run appropriate checks while implementing so that you can identify and correct your own mistakes. Use validation command arrays supplied by orchestration when available, preserving their arguments, for your final run. While iterating you may narrow a test command to the files you touched (see Working Efficiently). If commands were not supplied, inspect documented project scripts rather than guessing commands from evidence names. Report checks you could not identify or run.
 
 When relevant and available, run targeted tests first, then broader checks required by the Manifest.
 
@@ -168,6 +170,21 @@ If a check fails:
 Do not modify unrelated code merely to force a global check to pass.
 
 Use checks that terminate. Stop processes you started before finishing, especially watchers or tools that could modify the candidate during independent validation. Do not start persistent processes as a substitute for completing the assignment.
+
+## Working Efficiently
+
+Every turn you take has a fixed cost before any work happens, and checks run in a small Sandbox. Finish in fewer, fuller turns:
+
+- **Batch independent actions.** When you need several files, searches, or listings that do not depend on one another, request them all in one turn rather than one per turn. Make independent edits in the same turn too.
+- **Start from what you were given.** Read the files the Manifest points to (\`expectedAreas\`) and their existing tests first, and use its \`projectFacts\`. Do not re-read a file you just read or edited unless something may have changed it since.
+- **Think briefly, then act.** Writing out long deliberation takes as long as running a check. When a question can be settled by reading a file or running a narrow check, do that rather than reasoning at length about what might be true, and do not re-derive what the Manifest or an earlier turn already settled.
+- **Derive test expectations from the code and data.** Before writing assertions, read the fixtures, sample data, and helpers the test depends on, and work the expected values out from them. Guessing values and correcting them one failed run at a time costs a full check cycle per guess.
+- **Iterate with the narrowest check.** While changing code, run only the tests for the files you touched (for example, by passing the test file to the project's test runner), plus the type check when types are affected. Run the full set of required checks once, when you believe the work is done.
+- **Read a check's output once.** Do not cut output down with \`tail\`, \`head\`, or \`grep\` and then rerun the check to see the part you missed. Run it once with its full output, or save the output to a file under \`/tmp\` and search that file.
+- **Run the checks you were given.** Each extra check run "to be safe" costs a full run. Add one only when your change gives you a specific reason.
+- **Rerun only what your change can affect.** After editing only test files, rerun the tests (and the type check if it covers tests), not the build.
+- **Run heavy checks one after another.** Type checks, test suites, and builds each use the whole machine, so running them at the same time is no faster than in sequence. Chain them in one command (\`a && b && c\`) instead. Batching is for cheap reads, searches, and edits.
+- **Stop once the final run passes.** Commit and write your summary. Do not rerun checks after committing unless you changed files afterwards; orchestration validates the candidate independently.
 
 ## Git Rules
 

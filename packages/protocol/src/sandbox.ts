@@ -46,7 +46,7 @@ export type SandboxKind = "agent" | "agentless"
 
 export const DEFAULT_SANDBOX_SIZES: Record<SandboxKind, SandboxSize> = {
   agent: "standard-2",
-  agentless: "standard-1",
+  agentless: "standard-2",
 }
 
 /**

@@ -5,6 +5,7 @@ import {
 } from "cloudflare:workers"
 import { dispatchPlanningPorts, planModels } from "../agents/ports"
 import { DISPATCH_EVENTS } from "./events"
+import { timedStep } from "@terminus/protocol"
 import {
   dispatchPlanState,
   layDispatchLines,
@@ -29,8 +30,12 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
 > {
   async run(event: WorkflowEvent<DispatchWorkflowParams>, step: WorkflowStep) {
     const { planId } = event.payload
-    const models = await step.do("resolve role models", { retries }, () =>
-      planModels(this.env, planId)
+    const models = await step.do(
+      "resolve role models",
+      { retries },
+      timedStep("dispatch", planId, "resolve role models", () =>
+        planModels(this.env, planId)
+      )
     )
     const ports = dispatchPlanningPorts(this.env, models)
     let phase: "planning" | "launching" = "planning"
@@ -40,11 +45,20 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
       await step.do(
         "prepare proposal",
         { retries: { ...retries, limit: 1 }, timeout: "30 minutes" },
-        () => prepareDispatchPlan(ports, planId)
+        timedStep("dispatch", planId, "prepare proposal", () =>
+          prepareDispatchPlan(ports, planId)
+        )
       )
       for (let gate = 0; ; gate++) {
-        const status = await step.do(`launch gate ${gate}`, () =>
-          dispatchPlanState(ports, planId)
+        const status = await step.do(
+          `launch gate ${gate}`,
+          timedStep(
+            "dispatch",
+            planId,
+            `launch gate ${gate}`,
+            () => dispatchPlanState(ports, planId),
+            (result) => ({ status: result })
+          )
         )
         if (status !== "ready") break
         try {
@@ -60,12 +74,16 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
       await step.do(
         "lay planned lines",
         { retries, timeout: "15 minutes" },
-        () => layDispatchLines(ports, planId)
+        timedStep("dispatch", planId, "lay planned lines", () =>
+          layDispatchLines(ports, planId)
+        )
       )
       await step.do(
         "start planned trains",
         { retries, timeout: "5 minutes" },
-        () => startDispatchTrains(ports, planId)
+        timedStep("dispatch", planId, "start planned trains", () =>
+          startDispatchTrains(ports, planId)
+        )
       )
       return { planId, status: await dispatchPlanState(ports, planId) }
     } catch (error) {

@@ -347,6 +347,7 @@ export function DispatcherPanel({
             snapshot={snapshot}
             latest={plan === latest}
             pending={pending}
+            visible={open}
             command={command}
             refine={refine}
             propose={propose}

@@ -12,6 +12,7 @@ import type { RepositoryHost } from "@terminus/artifacts"
 import {
   conductorVerdictSchema,
   evidenceSchema,
+  perf,
   type IntegrationAttempt,
   type IntegrationCandidate,
   type IntegrationResult,
@@ -23,6 +24,12 @@ export interface IntegrationPorts {
   store: NetworkStore
   repositories: RepositoryHost
   validator: IntegrationValidator
+  /**
+   * Car evidence was collected by the Conductor in its own sealed checkout of
+   * the accepted commit, before any model access, rather than in the Station
+   * Agent's Sandbox. Only then can it stand in for integration validation.
+   */
+  independentCarEvidence?: boolean
   conductorForTrain?(
     trainId: string,
     model?: string,
@@ -132,6 +139,7 @@ export async function validateIntegration(
   else if (attempt.status === "cleared" && candidate) {
     evidence =
       (await reusableRepairEvidence(ports, attempt, candidate)) ??
+      (await reusableCarEvidence(ports, attempt)) ??
       evidenceSchema.parse(
         await ports.validator.validate(candidate, input.validation)
       )
@@ -177,6 +185,39 @@ async function reusableRepairEvidence(
     return null
   const evidence = evidenceSchema.parse(repair.state.proposal.evidence)
   return evidenceCovers(evidence, input.validation) ? evidence : null
+}
+
+/**
+ * While Terminus is still at the Train's baseline, the merge candidate's
+ * parent is an ancestor of the Train head (`prepareMerge` verifies it), so
+ * the merge commit has exactly the Train head's tree. The Conductor already
+ * ran the project checks on that tree when it accepted the last Car, so the
+ * same commands on the same files prove nothing new.
+ */
+async function reusableCarEvidence(
+  ports: IntegrationPorts,
+  attempt: IntegrationAttempt
+): Promise<Evidence | null> {
+  const { input } = attempt
+  if (
+    !ports.independentCarEvidence ||
+    (input.purpose ?? "terminus") !== "terminus" ||
+    input.repairId ||
+    input.terminusCommit !== input.trainBaseline
+  )
+    return null
+  const car = (await ports.store.trainCars(input.trainId)).find(
+    (car) => car.acceptedCommit === input.trainCommit
+  )
+  if (!car || car.crossingId || car.copiedAt) return null
+  const evidence = evidenceSchema.parse(car.evidence)
+  if (!evidenceCovers(evidence, input.validation)) return null
+  perf("integration.validate.reused", {
+    id: input.id,
+    carId: car.id,
+    commit: input.trainCommit.slice(0, 12),
+  })
+  return evidence
 }
 
 /** Never re-merge during promotion: push exactly the independently validated commit. */

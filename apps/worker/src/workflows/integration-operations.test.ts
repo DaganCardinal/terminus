@@ -41,6 +41,27 @@ async function returning(ports: TestPorts, networkId: string) {
   return train
 }
 
+/** The real Conductor records each check's command; fake Cars do not. */
+async function withConductorEvidence(
+  ports: TestPorts,
+  trainId: string,
+  validation: { name: string; command: string[] }[]
+) {
+  const cars = (await ports.store.trainCars(trainId)).map((car) => ({
+    ...car,
+    evidence: {
+      checks: validation.map(({ name, command }) => ({
+        name,
+        command,
+        required: true,
+        status: "passed" as const,
+      })),
+    },
+  }))
+  vi.spyOn(ports.store, "trainCars").mockResolvedValue(cars)
+  return cars
+}
+
 async function clear(ports: TestPorts, trainId: string) {
   expect(await advanceTrain(ports.train, trainId)).toEqual({ kind: "moved" })
   const attempt = await ports.store.latestIntegration(trainId)
@@ -109,6 +130,55 @@ describe("Terminus integration orchestration", () => {
     // A replay after the checkpoint has nothing left to merge.
     expect(await mergeIntegration(integration, id)).toBeNull()
     expect((await ports.store.integration(id))!.candidate).toEqual(candidate)
+  })
+  it("reuses the Conductor's evidence for the Train head while Terminus is still at the baseline", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const train = await returning(ports, network.id)
+    const id = await clear(ports, train.id)
+    const integration = {
+      ...integrationPorts(ports),
+      independentCarEvidence: true,
+    }
+    const validate = vi.spyOn(integration.validator, "validate")
+    const { input } = (await ports.store.integration(id))!
+    expect(input.terminusCommit).toBe(input.trainBaseline)
+    const cars = await withConductorEvidence(ports, train.id, input.validation)
+    const car = cars.find((car) => car.acceptedCommit === input.trainCommit)!
+    await prepareIntegration(integration, id)
+    expect(validate).not.toHaveBeenCalled()
+    expect((await ports.store.integration(id))!.evidence).toEqual(car.evidence)
+    expect(await promoteIntegration(integration, id)).toMatchObject({
+      ok: true,
+    })
+  })
+  it("validates again when Car evidence may not be independent or Terminus moved", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const train = await returning(ports, network.id)
+    const id = await clear(ports, train.id)
+    const attempt = (await ports.store.integration(id))!
+    const { input } = attempt
+    await withConductorEvidence(ports, train.id, input.validation)
+    const cases: [IntegrationPorts, string][] = [
+      [integrationPorts(ports), input.trainBaseline],
+      [
+        { ...integrationPorts(ports), independentCarEvidence: true },
+        "moved-terminus",
+      ],
+    ]
+    for (const [integration, terminusCommit] of cases) {
+      vi.spyOn(ports.store, "integration").mockResolvedValueOnce({
+        ...attempt,
+        input: { ...input, terminusCommit },
+      })
+      const validate = vi.spyOn(integration.validator, "validate")
+      await validateIntegration(integration, id, {
+        repoId: id,
+        headCommit: "fake-merge",
+      })
+      expect(validate).toHaveBeenCalledOnce()
+    }
   })
   it("answers waiting Trains from the reservation alone while a promotion holds it", async () => {
     const ports = testPorts()

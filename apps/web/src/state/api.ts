@@ -7,6 +7,7 @@ import {
   technicianRepairSchema,
   eventsResponseSchema,
   dispatchPlanSchema,
+  dispatchActivityResponseSchema,
   trainPreviewSchema,
   terminusPreviewSchema,
   emergencyBrakeResultSchema,
@@ -191,6 +192,12 @@ export const api = {
       await request(`/networks/${networkId}/plans/${planId}/launch`, {
         method: "POST",
       })
+    ),
+  planActivity: async (networkId: string, planId: string, after: number) =>
+    dispatchActivityResponseSchema.parse(
+      await request(
+        `/networks/${encodeURIComponent(networkId)}/plans/${encodeURIComponent(planId)}/activity?after=${after}`
+      )
     ),
   selectPlanUnloadMode: async (
     networkId: string,

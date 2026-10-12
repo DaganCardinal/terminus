@@ -14,12 +14,15 @@ import {
   type DispatchPlan,
   type NetworkSnapshot,
   type UnloadMode,
+  type AgentActivityEntry,
 } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { lineBadge, lineColor } from "@/map/layout"
 import { crossingScope } from "./crossing-scope"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { api } from "@/state/api"
+import { useDispatchActivity } from "@/state/use-dispatch-activity"
+import { activityLabel, DispatchActivity } from "./dispatch-activity"
 import {
   ManifestView,
   Prose,
@@ -49,6 +52,7 @@ export function PlanExchange({
   snapshot,
   latest,
   pending,
+  visible,
   command,
   refine,
   propose,
@@ -58,6 +62,7 @@ export function PlanExchange({
   snapshot: NetworkSnapshot
   latest: boolean
   pending: boolean
+  visible: boolean
   command: Command
   refine: (goal: string) => void
   propose: (goal: string) => void
@@ -66,11 +71,23 @@ export function PlanExchange({
   const { state } = plan
   const networkId = snapshot.network.id
   const retry = () => command(() => api.retryPlan(networkId, plan.id))
+  const { feed, unavailable } = useDispatchActivity(
+    networkId,
+    plan.id,
+    state.status === "planning",
+    visible
+  )
   return (
     <div className="exchange" data-plan={plan.id}>
       <UserMessage text={plan.goal} at={plan.createdAt} />
       {state.status === "planning" ? (
-        <Drafting plan={plan} pending={pending} retry={retry} />
+        <Drafting
+          plan={plan}
+          pending={pending}
+          retry={retry}
+          entries={feed.entries}
+          unavailable={unavailable}
+        />
       ) : state.status === "failed" ? (
         <DispatcherMessage tone="attention" meta="Plan stopped">
           <p>I couldn&rsquo;t turn this into a plan.</p>
@@ -112,6 +129,16 @@ export function PlanExchange({
           openTrain={openTrain}
         />
       )}
+      {state.status !== "planning" &&
+        (feed.entries.length > 0 || unavailable) && (
+          <DispatcherMessage>
+            <DispatchActivity
+              entries={feed.entries}
+              running={false}
+              unavailable={unavailable}
+            />
+          </DispatcherMessage>
+        )}
     </div>
   )
 }
@@ -124,10 +151,14 @@ function Drafting({
   plan,
   pending,
   retry,
+  entries,
+  unavailable,
 }: {
   plan: DispatchPlan
   pending: boolean
   retry: () => Promise<void>
+  entries: AgentActivityEntry[]
+  unavailable: boolean
 }) {
   const now = useNow(1000)
   const seconds = Math.max(
@@ -138,21 +169,24 @@ function Drafting({
     seconds < 60
       ? `${seconds}s`
       : `${Math.floor(seconds / 60)}m ${(seconds % 60).toString().padStart(2, "0")}s`
+  const phase = entries.findLast((entry) => entry.activity.kind === "phase")
   return (
     <DispatcherMessage tone="working" meta="Drafting a plan">
       <p className="dmsg-status" role="status">
         <Typing />
         <span>
-          {plan.checkBaseline
-            ? "Checking the baseline, then exploring"
-            : "Exploring"}{" "}
-          the project at <code>{shortCommit(plan.terminusCommit)}</code> and
-          drafting Lines and Station manifests
+          {phase
+            ? activityLabel(phase.activity)
+            : "Waiting for Dispatcher planning to start"}
         </span>
       </p>
+      <DispatchActivity entries={entries} running unavailable={unavailable} />
       <p className="dmsg-hint">
         <span className="tabular">{elapsed}</span> · The proposal is saved when
         it&rsquo;s ready, so you can close this panel.
+      </p>
+      <p className="dmsg-hint">
+        Project baseline <code>{shortCommit(plan.terminusCommit)}</code>
       </p>
       {/* Recovery only restarts an errored run, so offer it once the
           planning step's own time budget has passed. */}

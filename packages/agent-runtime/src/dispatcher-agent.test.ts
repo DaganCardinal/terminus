@@ -1,16 +1,22 @@
 import { describe, expect, it, vi } from "vitest"
 import type { BaselineReport } from "@terminus/domain"
 import { dispatchProposalSchema } from "@terminus/protocol"
+import type { RoleExecution } from "@terminus/protocol"
 import {
   HarnessDispatcher,
+  proposalSubmissionReply,
   type DispatchSession,
   type DispatchSessionFactory,
 } from "./dispatcher-agent"
+import { proposalAcceptedReply, proposalToolAgentName } from "./opencode"
 import {
   FakeDispatchPlanner,
   type DispatchPlanningInput,
 } from "./dispatch-planner"
-import { DispatchProposalError } from "./dispatch-proposal"
+import {
+  DispatchProposalError,
+  ProposalSubmissionsExhausted,
+} from "./dispatch-proposal"
 import { liveDispatcherProposal } from "./dispatcher.fixture"
 
 const input: DispatchPlanningInput = {
@@ -52,6 +58,15 @@ function scripted(
   return { session, sessions }
 }
 
+/** A proposal as a model may send it, before normalization. */
+type Loose = {
+  lines: {
+    shared?: Record<string, unknown>
+    stations: { manifest: Record<string, unknown> }[]
+  }[]
+  [field: string]: unknown
+}
+
 const valid = async () => (await new FakeDispatchPlanner().plan(input)).proposal
 
 describe("harness Dispatcher", () => {
@@ -67,8 +82,15 @@ describe("harness Dispatcher", () => {
       repository: input.repository,
       checkBaseline: false,
       validation: input.validation,
+      network: input.network,
     })
     const [system, message] = session.start.mock.calls[0]!
+    // OpenCode, the default harness, offers the proposal tool.
+    expect(system).toContain("## Submitting the Proposal")
+    expect(system).toContain(proposalToolAgentName)
+    expect(message).toContain(
+      `submit the proposal with \`${proposalToolAgentName}\``
+    )
     expect(system).toContain("untrusted context")
     expect(system).toContain("SAME canonical baseline")
     expect(system).toContain("ONLY plain paths")
@@ -122,6 +144,171 @@ describe("harness Dispatcher", () => {
     expect(session.resume.mock.calls[0]![0]).toContain(
       "evidence lint is not a configured project check"
     )
+    expect(session.resume.mock.calls[0]![0]).toContain(
+      `submit the complete corrected proposal with \`${proposalToolAgentName}\``
+    )
+  })
+
+  it("asks for the proposal as the final message when the harness has no proposal tool", async () => {
+    const proposal = await valid()
+    const blocked = JSON.parse(JSON.stringify(proposal)) as typeof proposal
+    blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
+    const { session, sessions } = scripted([blocked, proposal])
+    const model = "anthropic/claude-haiku-4-5-20251001"
+    await new HarnessDispatcher(model, sessions, {
+      harness: "claude-code",
+      model,
+    } as RoleExecution).plan(input)
+    const [system, message] = session.start.mock.calls[0]!
+    expect(system).not.toContain("## Submitting the Proposal")
+    expect(message).toContain("reply with only the proposal JSON")
+    expect(session.resume.mock.calls[0]![0]).toContain(
+      "Reply with the complete corrected proposal JSON as your final message."
+    )
+  })
+
+  it("accepts omissions that cannot change the plan instead of asking for a resubmission", async () => {
+    const proposal = await valid()
+    // The live rejection: a Manifest without `dependencies` and a null `baselineFix`.
+    const loose = structuredClone(proposal) as unknown as Loose
+    delete loose.lines[0]!.stations[0]!.manifest.dependencies
+    delete loose.lines[0]!.stations[0]!.manifest.avoidAreas
+    loose.baselineFix = null
+    loose.findings = null
+    const reply = proposalSubmissionReply(
+      { proposal: loose },
+      input.network,
+      null
+    )
+    expect(reply).toMatchObject({ accepted: true })
+    expect(reply.text.startsWith(proposalAcceptedReply)).toBe(true)
+    const { session, sessions } = scripted([loose])
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(session.resume).not.toHaveBeenCalled()
+    expect(result.proposal.lines[0]!.stations[0]!.manifest).toMatchObject({
+      dependencies: [],
+      avoidAreas: [],
+    })
+    expect(result.proposal).not.toHaveProperty("baselineFix")
+
+    // Anything with meaning is still the schema's to judge.
+    const wrong = structuredClone(proposal) as unknown as Loose
+    wrong.lines[0]!.stations[0]!.manifest.dependencies = "none"
+    expect(
+      proposalSubmissionReply({ proposal: wrong }, input.network, null).accepted
+    ).toBe(false)
+  })
+
+  it("expands Line-shared Manifest values into every Station and stores none", async () => {
+    const proposal = await valid()
+    const loose = structuredClone(proposal) as unknown as Loose
+    const line = loose.lines[0]!
+    const first = line.stations[0]!
+    const second = structuredClone(first) as typeof first & { key: string }
+    second.key = "second-station"
+    second.manifest.dependencies = []
+    line.stations.push(second)
+    line.shared = {
+      invariants: ["Everything stays client-side and in memory."],
+      expectedEvidence: ["test"],
+      avoidAreas: ["server/"],
+      projectFacts: ["vite.config.ts runs Vitest in jsdom."],
+    }
+    delete first.manifest.invariants
+    first.manifest.expectedEvidence = ["test"]
+    second.manifest.invariants = ["The footer keeps its landmark role."]
+    delete second.manifest.expectedEvidence
+    delete second.manifest.projectFacts
+
+    const { session, sessions } = scripted([loose])
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(session.resume).not.toHaveBeenCalled()
+    expect(result.proposal.lines[0]).not.toHaveProperty("shared")
+    const [one, two] = result.proposal.lines[0]!.stations
+    expect(one!.manifest).toMatchObject({
+      invariants: ["Everything stays client-side and in memory."],
+      // A value both the Line and the Station state is kept once.
+      expectedEvidence: ["test"],
+      avoidAreas: [
+        "server/",
+        ...proposal.lines[0]!.stations[0]!.manifest.avoidAreas,
+      ],
+    })
+    expect(one!.manifest.projectFacts?.[0]).toBe(
+      "vite.config.ts runs Vitest in jsdom."
+    )
+    expect(two!.manifest).toMatchObject({
+      invariants: [
+        "Everything stays client-side and in memory.",
+        "The footer keeps its landmark role.",
+      ],
+      expectedEvidence: ["test"],
+      projectFacts: ["vite.config.ts runs Vitest in jsdom."],
+    })
+    expect(dispatchProposalSchema.safeParse(result.proposal).success).toBe(true)
+
+    // Every Station still needs an invariant once shared values are merged.
+    const missing = structuredClone(loose)
+    delete missing.lines[0]!.shared!.invariants
+    const reply = proposalSubmissionReply(
+      { proposal: missing },
+      input.network,
+      null
+    )
+    expect(reply.accepted).toBe(false)
+    expect(reply.text).toContain(
+      '"path":"lines.0.stations.0.manifest.invariants"'
+    )
+  })
+
+  it("answers proposal tool submissions with the checks the Workflow applies", async () => {
+    const proposal = await valid()
+    expect(
+      proposalSubmissionReply({ proposal }, input.network, null)
+    ).toMatchObject({
+      accepted: true,
+      text: expect.stringContaining("Accepted"),
+    })
+    // A model may pass the proposal as JSON text instead of an object.
+    expect(
+      proposalSubmissionReply(
+        { proposal: JSON.stringify(proposal) },
+        input.network,
+        null
+      ).accepted
+    ).toBe(true)
+
+    const blocked = JSON.parse(JSON.stringify(proposal)) as typeof proposal
+    blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
+    const assessment = proposalSubmissionReply(
+      { proposal: blocked },
+      input.network,
+      null
+    )
+    expect(assessment.accepted).toBe(false)
+    expect(assessment.text).toContain(
+      "evidence lint is not a configured project check"
+    )
+    expect(assessment.text).toContain(
+      "submit the complete corrected proposal again"
+    )
+
+    const schema = proposalSubmissionReply(
+      { proposal: { summary: "Missing lines" } },
+      input.network,
+      null
+    )
+    expect(schema.accepted).toBe(false)
+    expect(schema.text).toContain('"path":"lines"')
+
+    expect(proposalSubmissionReply({}, input.network, null)).toMatchObject({
+      accepted: false,
+      text: expect.stringContaining("`proposal` argument"),
+    })
   })
 
   it("repairs the live path-field failure with exact validation feedback", async () => {
@@ -187,6 +374,34 @@ describe("harness Dispatcher", () => {
     })
   })
 
+  it("makes the last submission final once the harness stops after repeated rejections", async () => {
+    const invalid = JSON.stringify({ ...liveDispatcherProposal, extra: 1 })
+    const { session, sessions } = scripted([])
+    session.start.mockRejectedValueOnce(
+      new ProposalSubmissionsExhausted(invalid)
+    )
+    const error = await new HarnessDispatcher("configured", sessions)
+      .plan(input)
+      .catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(DispatchProposalError)
+    expect(session.resume).not.toHaveBeenCalled()
+    expect(session.close).toHaveBeenCalledOnce()
+
+    // A still-blocked proposal is saved, as after the last correction.
+    const blocked = await valid()
+    blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
+    const later = scripted(["no JSON"])
+    later.session.resume.mockRejectedValueOnce(
+      new ProposalSubmissionsExhausted(JSON.stringify(blocked))
+    )
+    const result = await new HarnessDispatcher(
+      "configured",
+      later.sessions
+    ).plan(input)
+    expect(later.session.resume).toHaveBeenCalledOnce()
+    expect(result.proposal).toEqual(blocked)
+  })
+
   it("treats a final message without JSON as a schema problem", async () => {
     const proposal = await valid()
     const { session, sessions } = scripted(["I explored the repo.", proposal])
@@ -213,7 +428,7 @@ describe("harness Dispatcher", () => {
   })
 
   it("tells the model where its JSON fails but keeps the parser out of the error", async () => {
-    const broken = '{"summary":"x",}'
+    const broken = '{"summary":"x" oops}'
     const { session, sessions } = scripted([broken, broken, broken])
     const error = await new HarnessDispatcher("configured", sessions)
       .plan(input)

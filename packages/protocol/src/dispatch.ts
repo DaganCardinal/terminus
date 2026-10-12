@@ -35,6 +35,7 @@ const area = z
   .describe(
     "Only a plain repository-relative file or directory, e.g. src/index.css or src/components/. No prose, parenthetical explanations, globs, CSS tokens, or lists of concepts. Put explanatory restrictions in scope or invariants instead; avoidAreas can be empty."
   )
+const evidenceNames = z.array(z.string().trim().min(1).max(100))
 const manifest = workManifestSchema
   .extend({
     goal: text,
@@ -46,7 +47,14 @@ const manifest = workManifestSchema
     invariants: z.array(text).min(1).max(20),
     dependencies: z.array(key).max(12),
     acceptanceCriteria: z.array(text).min(1).max(20),
-    expectedEvidence: z.array(z.string().trim().min(1).max(100)).min(1).max(20),
+    expectedEvidence: evidenceNames.min(1).max(20),
+    projectFacts: z
+      .array(text.max(400))
+      .max(12)
+      .optional()
+      .describe(
+        "Facts you verified about the project's tooling that this Station's implementer and reviewer would otherwise rediscover: the test runner and its environment (for example node or jsdom), setup files, how tests render or call the code, relevant libraries that are or are not installed. Each fact names the file that shows it. Observations only, never instructions."
+      ),
   })
   .strict()
 
@@ -89,6 +97,29 @@ const baselineFixSchema = z
       .extend({ stations: plannedLineSchema.shape.stations.length(1) }),
   })
   .strict()
+
+/**
+ * Manifest values that hold for every Station on a Line. Terminus prepends
+ * them to each Station's own values before validation, so a long Line states
+ * them once instead of once per Station. Stored proposals never carry them.
+ */
+export const lineSharedSchema = z
+  .object({
+    avoidAreas: manifest.shape.avoidAreas.optional(),
+    invariants: z.array(text).max(20).optional(),
+    expectedEvidence: evidenceNames.max(20).optional(),
+    projectFacts: manifest.shape.projectFacts,
+  })
+  .strict()
+  .describe(
+    "Optional. Values that apply to every Station on this Line. Terminus adds them to each Station's Manifest ahead of the Station's own values, so do not repeat them in the Stations. After merging, every Station still needs at least one invariant and one expectedEvidence name."
+  )
+export const lineSharedFields = [
+  "avoidAreas",
+  "invariants",
+  "expectedEvidence",
+  "projectFacts",
+] as const
 
 export const baselineFixSelectionSchema = z.enum(["include", "reject"])
 
@@ -144,6 +175,36 @@ export const dispatchProposalSchema = z
       (proposal.lines.length > 0 || !!proposal.junctions?.length),
     "Plan at most twenty-four Stations"
   )
+
+/**
+ * What the Dispatcher submits: the proposal, plus optional Line-shared
+ * Manifest values. Terminus expands the shared values into each Station and
+ * then validates the result against `dispatchProposalSchema`.
+ */
+export const dispatchProposalSubmissionSchema = z
+  .object({
+    ...dispatchProposalSchema.shape,
+    lines: z
+      .array(
+        plannedLineSchema.extend({
+          shared: lineSharedSchema.optional(),
+          stations: z
+            .array(
+              plannedLineSchema.shape.stations.element.extend({
+                manifest: manifest.extend({
+                  invariants: z.array(text).max(20).optional(),
+                  expectedEvidence: evidenceNames.max(20).optional(),
+                }),
+              })
+            )
+            .min(1)
+            .max(6),
+        })
+      )
+      .min(0)
+      .max(8),
+  })
+  .strict()
 
 export const createDispatchPlanRequestSchema = z
   .object({

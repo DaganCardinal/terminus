@@ -1,5 +1,5 @@
 import type { StationRunResult } from "@terminus/agent-runtime"
-import type { StationOutcome } from "@terminus/protocol"
+import { timedStep, type StationOutcome } from "@terminus/protocol"
 import {
   WorkflowEntrypoint,
   type WorkflowEvent,
@@ -22,15 +22,23 @@ const stepConfig: WorkflowStepConfig = {
 export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
   async run(event: WorkflowEvent<StationRunParams>, step: WorkflowStep) {
     const params = event.payload
-    const models = await step.do("resolve role models", stepConfig, () =>
-      trainModels(this.env, params.trainId)
+    const models = await step.do(
+      "resolve role models",
+      stepConfig,
+      timedStep("station", params.runId, "resolve role models", () =>
+        trainModels(this.env, params.trainId)
+      )
     )
     const ports = stationPorts(this.env, models)
 
     let result: StationRunResult
     try {
-      await step.do("prepare workspace", stepConfig, () =>
-        prepareStation(ports, params)
+      await step.do(
+        "prepare workspace",
+        stepConfig,
+        timedStep("station", params.runId, "prepare workspace", () =>
+          prepareStation(ports, params)
+        )
       )
       result = await step.do(
         "run station agent",
@@ -38,7 +46,13 @@ export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
           retries: { limit: 1, delay: "5 seconds" },
           timeout: "30 minutes",
         },
-        () => runStationAgent(ports, params)
+        timedStep(
+          "station",
+          params.runId,
+          "run station agent",
+          () => runStationAgent(ports, params),
+          (result) => ({ ok: result.ok })
+        )
       )
     } catch (error) {
       result = {
@@ -57,9 +71,16 @@ export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
       runId: params.runId,
       result,
     }
-    await step.do("report to train", stepConfig, () =>
-      this.env.TRAIN_WORKFLOW.get(params.trainId).then((train) =>
-        train.sendEvent({ type: TRAIN_EVENTS.stationOutcome, payload: outcome })
+    await step.do(
+      "report to train",
+      stepConfig,
+      timedStep("station", params.runId, "report to train", () =>
+        this.env.TRAIN_WORKFLOW.get(params.trainId).then((train) =>
+          train.sendEvent({
+            type: TRAIN_EVENTS.stationOutcome,
+            payload: outcome,
+          })
+        )
       )
     )
     return outcome

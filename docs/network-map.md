@@ -22,6 +22,9 @@ Lines follow the curve discipline of the Montréal and London maps. Control poin
 - **Approach lanes form a parallel bundle.** On each side of Terminus, upper Lines curve down and lower Lines curve up into evenly spaced entry ports, on concentric curves. Rows are placed from Terminus outward so that no Line crosses another and none needs a short jog; an odd middle row runs straight in. With many Lines, Terminus becomes a capsule interchange so every port reaches it.
 - **Selecting a Line dims the others** so its route reads at a glance.
 - **A Train is a dot on its track**, cased like the track, with a core tinted by its status that pulses while it is working. Its status label hangs below on a short leader, in the space kept clear under Stations.
+- **A departure sends a signal pulse** down the track from the Train to the Station it signaled: a white head with a fading tail, the width of the line. Only departures seen while the map is open (or within the last few seconds) pulse, so reloads never replay them.
+- **Terminus is approached like any Station.** A returning Train eases on from its last Station toward a point outside Terminus, and runs in when it unloads.
+- **A cleared Train stays where its block stopped it.** In the domain, clearing sends it back to its last stop to run the Station again; the map replays the event log to keep it where it stopped, labelled *clearing block*, until that work is ready, it reaches Terminus, or it moves on to another Station.
 
 Six station-track profiles are available: direct, elbow, dogleg, staircase, sweep, and offset. The Dispatcher already assigns random UUID-based Line IDs, and that entropy picks each new Line's profile from the ones no live Line is using. No random draws happen during rendering, and no second copy of topology is stored in local storage.
 

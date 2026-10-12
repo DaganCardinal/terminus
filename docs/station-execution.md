@@ -8,6 +8,8 @@ Departure forks the Station repository from the Train's current commit. The Stat
 
 Evidence is checkpointed in D1 before the candidate is pushed. A run becomes reusable only after its commit is confirmed in Artifacts. Retries can recover that candidate without another model call. If an unpushed candidate and its Sandbox have both disappeared, the run fails explicitly and requires a new run; it cannot silently attach a Car from incomplete evidence.
 
+Artifacts intermittently refuses to read a repository with HTTP 403 and API code 10004 (not an Artifacts error code), whether or not the repository exists. Every repository lookup waits that out with backoff for about a minute before treating it as real, and logs `artifacts.denied_pause`. Errors with codes Terminus does not recognise also log the API's message, reduced to plain words.
+
 ## Emergency Brake
 
 **Emergency Brake** is available in Network Overview and the map's **Terminus** tab. Confirm **Stop Stations & Discard Work** to stop every Station run in the selected network and delete its disposable Sandbox contents, including containers left behind by earlier attempts and retries. No container IDs or browser console commands are needed.
@@ -57,6 +59,8 @@ Structured verdicts are validated and checkpointed in D1 before applying domain 
 ## Constraints
 
 Artifacts forks copy the current default branch, so the adapter verifies the requested commit before and after forking. Existing completed forks are reusable on retries; an unavailable historical snapshot fails explicitly.
+
+A Train with no Cars is still at the Terminus commit it was forked from, usually moments earlier, and Artifacts can refuse to fork so young a fork for most of a minute. Its first Station therefore forks Terminus instead while Terminus is still at that exact commit: the same starting point, from an older repository. Otherwise, or if reading Terminus fails, it forks the Train. If Terminus moves while Artifacts is forking it, the copy misses the commit; it is this operation's own and unusable, so it is deleted and the Train is forked instead. A fork of the Train itself is never deleted.
 
 Every orchestration install (Station, Conductor, integration and Dispatcher baseline checks, previews) restores npm's download cache from the `DEPENDENCY_CACHE` R2 bucket, keyed by the SHA-256 of `package-lock.json`, then runs `npm ci --prefer-offline`. On a miss, the cache is filled by `npm ci --ignore-scripts` in a scratch copy of only `package.json` and the lockfile, and stored before the real install, so no repository code has run in the container when it is stored. npm verifies every cached tarball against the lockfile's integrity hashes, so the cache cannot change what is installed. If an install fails after a restore but succeeds from the registry alone, the entry is deleted. Projects without a lockfile, or whose dependencies cannot be cached this way (for example npm workspaces), install as before. Each install logs `Dependency install completed` with `cache` (`hit`, `stored`, `miss` or `discarded`) and `durationMs`.
 

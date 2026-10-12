@@ -1,5 +1,6 @@
 import {
   catalogModel,
+  utilityModel,
   claudeResultSchema,
   codexOutcomeEventSchema,
   harnessIdentity,
@@ -146,6 +147,10 @@ export function harnessInvocation(
       env: {
         ANTHROPIC_BASE_URL: base,
         ANTHROPIC_API_KEY: "provided-by-worker",
+        // Claude Code's background calls use its Haiku-class model; point
+        // them at the role's utility model, the only other one granted.
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: catalogModel(utilityModel(config.model))
+          .apiModel,
         CLAUDE_CONFIG_DIR: `${root}/claude`,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         IS_SANDBOX: "1",

@@ -7,7 +7,7 @@ import {
   type PointerEvent,
 } from "react"
 import { Minus, Plus, Scan } from "lucide-react"
-import type { NetworkSnapshot } from "@terminus/protocol"
+import type { EventEnvelope, NetworkSnapshot } from "@terminus/protocol"
 import logomark from "@/assets/terminus-logomark.svg"
 import logomarkWhite from "@/assets/terminus-logomark-white.svg"
 import { statusWords } from "@/views/describe"
@@ -16,9 +16,15 @@ import {
   HUB_RADIUS,
   TRACK_WIDTH,
   awaitingApproval,
+  clearingBlock,
   identitiesOf,
   layoutNetwork,
+  leg,
+  trainDistance,
+  trainStops,
+  type TrainMotion,
 } from "./layout"
+import { useSignalPulses } from "./use-signal-pulses"
 import { useTrainMotion } from "./use-train-motion"
 
 export type MapSelection = {
@@ -96,6 +102,7 @@ const STATUS_LEADING = 17
  * floating panels. */
 export function NetworkMap({
   snapshot,
+  events,
   selection,
   terminusSelected,
   onSelectTerminus,
@@ -105,6 +112,8 @@ export function NetworkMap({
   compactKey,
 }: {
   snapshot: NetworkSnapshot
+  /** The event log, from which the map learns where blocked Trains stopped. */
+  events: EventEnvelope[]
   selection: MapSelection | null
   terminusSelected: boolean
   onSelectTerminus: () => void
@@ -209,16 +218,34 @@ export function NetworkMap({
     awaitingApproval(train.state)
   )
   const capsule = hubHalfHeight > HUB_RADIUS
-  const trainRef = useTrainMotion(
-    routes.flatMap((route) =>
-      snapshot.trains
-        .filter(({ train }) => train.lineId === route.line.id)
-        .map((view) => ({
-          id: view.train.id,
-          motion: { ...view, state: view.train.state },
-          route,
-        }))
-    )
+  const stops = trainStops(events)
+  const motionOf = (view: NetworkSnapshot["trains"][number]): TrainMotion => ({
+    ...view,
+    state: view.train.state,
+    stop: stops.get(view.train.id) ?? null,
+  })
+  const moving = routes.flatMap((route) =>
+    snapshot.trains
+      .filter(({ train }) => train.lineId === route.line.id)
+      .map((view) => ({ id: view.train.id, motion: motionOf(view), route }))
+  )
+  const trainRef = useTrainMotion(moving)
+  // The Engineer's signal runs from where the Train set off to its Station.
+  const pulseLayer = useSignalPulses(
+    moving.map(({ id, motion, route }) => {
+      const { state, stateEnteredAt } = motion
+      const from =
+        state.status === "in_transit" &&
+        trainDistance(motion, route, Date.parse(stateEnteredAt))
+      return {
+        id,
+        stateEnteredAt,
+        signal:
+          state.status === "in_transit" && typeof from === "number"
+            ? { track: route.track, from, to: leg(route, state.toward).to }
+            : null,
+      }
+    })
   )
 
   useEffect(() => {
@@ -437,6 +464,7 @@ export function NetworkMap({
                 />
               </g>
             ))}
+            <g ref={pulseLayer} aria-hidden="true" />
             {interchanges.map((c) => {
               const ys = [
                 c.at.y,
@@ -771,9 +799,12 @@ export function NetworkMap({
                     if (status === "unloaded") {
                       if (!seenOnTrack.has(id) || arrived.has(id)) return null
                     }
-                    const label = awaitingApproval(view.train.state)
-                      ? "awaiting approval"
-                      : statusWords(status)
+                    const clearing = clearingBlock(motionOf(view))
+                    const label = clearing
+                      ? "clearing block"
+                      : awaitingApproval(view.train.state)
+                        ? "awaiting approval"
+                        : statusWords(status)
                     // The Train is a dot on the track, tinted by its status,
                     // with its label hung below. Both are drawn around the
                     // Train's track position, which useTrainMotion sets as
@@ -783,7 +814,7 @@ export function NetworkMap({
                       <g
                         key={id}
                         ref={trainRef(id)}
-                        className={`map-target train-marker train-${status}`}
+                        className={`map-target train-marker train-${status} ${clearing ? "train-clearing" : ""}`}
                         role="button"
                         tabIndex={0}
                         aria-label={`${line.name} Train, ${label}, signal ${view.signal ?? "not available"}`}

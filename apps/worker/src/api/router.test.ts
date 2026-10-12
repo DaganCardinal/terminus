@@ -586,7 +586,7 @@ describe("sandbox limits", () => {
       limits: {
         agent: 10,
         agentless: 10,
-        sizes: { agent: "standard-2", agentless: "standard-1" },
+        sizes: { agent: "standard-2", agentless: "standard-2" },
       },
       updatedAt: null,
     })

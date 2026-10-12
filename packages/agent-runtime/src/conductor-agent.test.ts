@@ -308,12 +308,35 @@ describe("harness Conductor", () => {
       "failed validation after 3 attempts"
     )
     expect(session.close).toHaveBeenCalledOnce()
-    const broken = scripted([])
-    broken.session.prepare.mockRejectedValueOnce(new Error("Sandbox lost"))
-    await expect(broken.conductor.review(review, context)).rejects.toThrow(
-      "Sandbox lost"
-    )
-    expect(broken.session.close).toHaveBeenCalledOnce()
+  })
+
+  it("retries a failed preparation in a fresh session before the model is reached, then gives up", async () => {
+    vi.useFakeTimers()
+    try {
+      const recovered = scripted([accept])
+      recovered.session.prepare.mockRejectedValueOnce(new Error("Sandbox lost"))
+      const verdict = recovered.conductor.review(review, context)
+      await vi.runAllTimersAsync()
+      expect(await verdict).toEqual(accept)
+      expect(recovered.sessions.open).toHaveBeenCalledTimes(2)
+      expect(recovered.session.prepare).toHaveBeenCalledTimes(2)
+      expect(recovered.session.start).toHaveBeenCalledOnce()
+      // The failed session and the reviewing session are both closed.
+      expect(recovered.session.close).toHaveBeenCalledTimes(2)
+
+      const broken = scripted([])
+      broken.session.prepare.mockRejectedValue(new Error("Sandbox lost"))
+      const failed = broken.conductor
+        .review(review, context)
+        .catch((error: unknown) => error)
+      await vi.runAllTimersAsync()
+      expect(await failed).toMatchObject({ message: "Sandbox lost" })
+      expect(broken.session.prepare).toHaveBeenCalledTimes(3)
+      expect(broken.session.start).not.toHaveBeenCalled()
+      expect(broken.session.close).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("verifies Crossing, Junction and repair candidates with their own guidance and material", async () => {

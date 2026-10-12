@@ -12,7 +12,7 @@ import {
   type RepositoryAccess,
 } from "@terminus/artifacts"
 import type { BaselineReport, CheckResult } from "@terminus/domain"
-import { validationCommandsSchema } from "@terminus/protocol"
+import { PerfPhases, validationCommandsSchema } from "@terminus/protocol"
 import { gatewayConfig } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
 import { runProjectChecks } from "./project-checks"
@@ -20,7 +20,11 @@ import type { StationSandbox } from "./station-runner"
 
 type Repositories = Pick<ArtifactsRepositoryHost, "access" | "revoke">
 type FactoryInput = Parameters<DispatchSessionFactory["open"]>[0]
-type OpenInput = FactoryInput & { execution?: RoleExecution }
+type OpenInput = FactoryInput & {
+  execution?: RoleExecution
+  /** TEMPORARY benchmark instrumentation: the Sandbox name. */
+  label?: string
+}
 
 export class SandboxDispatchSessions implements DispatchSessionFactory {
   private readonly env: Env
@@ -40,11 +44,12 @@ export class SandboxDispatchSessions implements DispatchSessionFactory {
       sandboxFactory ?? ((id) => env.SANDBOX.getByName(`dispatch-${id}`))
   }
   open(input: OpenInput): DispatchSession {
+    const id = crypto.randomUUID()
     return new SandboxDispatchSession(
       this.env,
       this.repositories,
-      this.sandboxFactory(crypto.randomUUID()),
-      { ...input, execution: this.execution }
+      this.sandboxFactory(id),
+      { ...input, execution: this.execution, label: `dispatch-${id}` }
     )
   }
 }
@@ -75,23 +80,34 @@ class SandboxDispatchSession implements DispatchSession {
   readonly #input: OpenInput
   readonly #harness: HarnessSession
   #access: RepositoryAccess | undefined
+  /** TEMPORARY benchmark instrumentation. */
+  readonly #phases: PerfPhases
+  #resumes = 0
   constructor(
     env: Env,
     repositories: Repositories,
     sandbox: StationSandbox,
     input: OpenInput
   ) {
+    this.#phases = new PerfPhases("dispatcher.session", {
+      sandbox: input.label,
+      checkBaseline: input.checkBaseline,
+    })
     this.#env = env
     this.#repositories = repositories
     this.#sandbox = sandbox
     this.#input = input
     this.#harness = new HarnessSession(env, sandbox, {
       role: "Dispatcher",
+      label: input.label,
       model: input.model,
       execution: input.execution,
       directory: sealedDirectory,
       startTimeoutMs: 15 * 60_000,
       resumeTimeoutMs: 5 * 60_000,
+      // Always observed: the live runner also stops the harness once a
+      // proposal is accepted, saving the model's closing round trip.
+      onActivity: input.onActivity ?? (() => {}),
     })
   }
 
@@ -103,7 +119,11 @@ class SandboxDispatchSession implements DispatchSession {
     const { repository, checkBaseline, model } = this.#input
     gatewayConfig(this.#env, model)
     const validation = validationCommandsSchema.parse(this.#input.validation)
+    this.#phases.enter("access")
+    this.#input.onActivity?.({ kind: "phase", phase: "preparing_workspace" })
     this.#access = await this.#repositories.access(repository.repoId, "read")
+    this.#phases.enter("configure (container start)")
+    this.#input.onActivity?.({ kind: "phase", phase: "waiting_for_sandbox" })
     await this.#sandbox.configure({
       repositories: [
         {
@@ -114,11 +134,16 @@ class SandboxDispatchSession implements DispatchSession {
       ],
       allowModel: false,
     })
+    this.#phases.enter("checkout")
+    this.#input.onActivity?.({ kind: "phase", phase: "checking_out" })
     await checkoutSealedWorkspace(
       this.#workspace("checkout"),
       this.#access,
       repository.commit
     )
+    this.#phases.enter("baseline checks")
+    if (checkBaseline)
+      this.#input.onActivity?.({ kind: "phase", phase: "checking_baseline" })
     const baseline = checkBaseline
       ? baselineReport(
           repository.commit,
@@ -129,8 +154,12 @@ class SandboxDispatchSession implements DispatchSession {
           )
         )
       : null
+    this.#phases.enter("seal")
+    this.#input.onActivity?.({ kind: "phase", phase: "sealing_workspace" })
     await sealWorkspace(this.#workspace("seal"))
-    // Exploration needs no repository access; only the configured model is reachable.
+    this.#phases.enter("grant model")
+    // Exploration needs no repository access; only the configured model and
+    // the proposal tool, which answers inside the outbound handler, are reachable.
     await this.#sandbox.configure({
       repositories: [],
       allowModel: true,
@@ -138,6 +167,7 @@ class SandboxDispatchSession implements DispatchSession {
       ...(catalogModel(model).provider === "workers-ai"
         ? {}
         : { provider: catalogModel(model).provider }),
+      proposalCheck: { network: this.#input.network, baseline },
     })
     const access = this.#access
     this.#access = undefined
@@ -146,19 +176,26 @@ class SandboxDispatchSession implements DispatchSession {
   }
 
   start(system: string, message: string): Promise<string> {
+    this.#phases.enter("harness start")
+    this.#input.onActivity?.({ kind: "phase", phase: "starting_agent" })
     return this.#harness.start(dispatcherHarnessAgent(system), message)
   }
 
   resume(message: string): Promise<string> {
+    this.#resumes++
+    this.#phases.enter("harness resume (proposal correction)")
     return this.#harness.resume(message)
   }
 
   async close(): Promise<void> {
+    this.#phases.enter("close")
+    this.#input.onActivity?.({ kind: "phase", phase: "closing_workspace" })
     const results = await Promise.allSettled([
       this.#sandbox.close(),
       ...(this.#access ? [this.#repositories.revoke(this.#access)] : []),
     ])
     this.#access = undefined
+    this.#phases.finish({ resumes: this.#resumes })
     if (results.some((result) => result.status === "rejected"))
       throw new Error("Dispatcher workspace cleanup failed")
   }

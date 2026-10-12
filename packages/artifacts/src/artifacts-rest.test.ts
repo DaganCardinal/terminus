@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { errorKind } from "@terminus/protocol"
 import { ArtifactsApiError, ArtifactsRestClient } from "./artifacts-rest"
 
 const base =
@@ -153,6 +154,77 @@ describe("Artifacts REST client", () => {
     await expect(
       importing.rest.namespace("tn-1").get("terminus")
     ).rejects.toMatchObject({ code: "IMPORT_IN_PROGRESS" })
+  })
+
+  it("keeps an unlisted numeric code and the request shape for diagnosis, never names", async () => {
+    const { rest } = client((method) =>
+      method === "GET"
+        ? { result: repo }
+        : { status: 500, errors: [{ code: 10499, message: "Not ready" }] }
+    )
+    using handle = await rest.namespace("tn-1").get("train-1")
+    const failure = await handle
+      .fork("station-1", { description: "", defaultBranchOnly: true })
+      .catch((error: unknown) => error)
+    expect(failure).toMatchObject({
+      code: "INTERNAL_ERROR",
+      status: 500,
+      apiCode: 10499,
+      operation: "POST /repos/:/fork",
+    })
+    expect(errorKind(failure)).toBe(
+      'ArtifactsApiError(INTERNAL_ERROR, status 500, api 10499, POST /repos/:/fork, "Not ready")'
+    )
+  })
+
+  it("logs an unlisted code's message without anything token-like, and no message for listed codes", async () => {
+    const denied = client(() => ({
+      status: 403,
+      errors: [
+        {
+          code: 10004,
+          message: 'Denied for "art_v1_0123456789abcdefghijklmnop" <x>',
+        },
+      ],
+    }))
+    const failure = await denied.rest
+      .namespace("tn-1")
+      .get("station-1")
+      .catch((error: unknown) => error)
+    expect(failure).toMatchObject({ apiMessage: "Denied for … x" })
+    expect(errorKind(failure)).toBe(
+      'ArtifactsApiError(INTERNAL_ERROR, status 403, api 10004, GET /repos/:, "Denied for … x")'
+    )
+
+    const missing = client(() => ({
+      status: 404,
+      errors: [{ code: 10200, message: "Repository station-1 not found" }],
+    }))
+    expect(
+      await missing.rest
+        .namespace("tn-1")
+        .get("station-1")
+        .catch((error: unknown) => error)
+    ).toMatchObject({ code: "NOT_FOUND", apiMessage: null })
+  })
+
+  it("deletes one repository, and treats an already deleted one as done", async () => {
+    let deleted = false
+    const { rest, calls } = client((method) => {
+      if (method === "GET") return { result: repo }
+      if (deleted)
+        return { status: 404, errors: [{ code: 10200, message: "Gone" }] }
+      deleted = true
+      return { status: 202, result: { id: "station-1" } }
+    })
+    using handle = await rest.namespace("tn-1").get("station-1")
+    await handle.delete()
+    await handle.delete()
+    expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "GET /tn-1/repos/station-1",
+      "DELETE /tn-1/repos/station-1",
+      "DELETE /tn-1/repos/station-1",
+    ])
   })
 
   it("treats an existing namespace as already ensured, but surfaces other failures", async () => {

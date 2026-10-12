@@ -2,6 +2,7 @@ import {
   lineIdentities,
   type Line,
   type LineIdentity,
+  type EventEnvelope,
   type NetworkSnapshot,
   type TrainState,
   type TrainView,
@@ -938,7 +939,7 @@ function layoutGraph(
       points,
       stationTrack: stations,
       track,
-      // Returning Trains wait halfway between the last stop and the approach.
+      // Halfway between the last stop and the approach lanes.
       trackEnd: (last + approach) / 2 + TRACK_TAIL * 0.45,
       stations,
       stationDistances: distances,
@@ -971,23 +972,121 @@ const WAIT_GAP = 44
 /** What the map needs to place a Train: its state and when it began. */
 export type TrainMotion = Pick<TrainView, "stateEnteredAt" | "previous"> & {
   state: TrainState
+  /** Where the Train stopped when it was blocked, while that block is
+   * unresolved (see `trainStops`). */
+  stop?: TrainStop | null
 }
+
+/** The run a Train was on when it was blocked, and when it stopped. */
+export type TrainStop = { motion: TrainMotion; at: number }
 
 const secondsBetween = (from: string, to: number) =>
   Math.max(0, (to - Date.parse(from)) / 1000)
 
-/** Track distances of the run toward a Station: where it starts, where a
- * Train waits for the work, and the Station itself. */
-function leg(route: RouteLayout, toward: string) {
-  const index = (route.stopStationIds ?? route.line.stationIds).indexOf(toward)
-  const to = route.stationDistances[index] ?? 0
+/** Track distances of the run toward a Station, or toward Terminus (or the
+ * Junction) when `toward` is null: where it starts, where a Train waits for
+ * the work, and the destination itself. */
+export function leg(route: RouteLayout, toward: string | null) {
+  const stops = route.stopStationIds ?? route.line.stationIds
+  const index = toward === null ? stops.length : stops.indexOf(toward)
+  const to =
+    toward === null ? route.track.length : (route.stationDistances[index] ?? 0)
   const from = index > 0 ? route.stationDistances[index - 1]! : 0
-  return { from, to, wait: Math.max((from + to) / 2, to - WAIT_GAP) }
+  // Terminus is drawn around the track's end, so Trains wait outside it.
+  const gap = toward === null ? HUB_RADIUS + WAIT_GAP : WAIT_GAP
+  return { from, to, wait: Math.max((from + to) / 2, to - gap) }
 }
 
-function transitDistance(route: RouteLayout, toward: string, seconds: number) {
-  const { from, wait } = leg(route, toward)
+function transitDistance(
+  { from, wait }: ReturnType<typeof leg>,
+  seconds: number
+) {
   return from + (wait - from) * (1 - 0.5 ** (seconds / TRANSIT_HALF_LIFE))
+}
+
+/** States in which a Train stays where an unresolved block stopped it. */
+const stopped = ({ state, stop }: TrainMotion) =>
+  !!stop &&
+  ["ready", "in_transit", "returning", "held", "blocked"].includes(state.status)
+
+/** True while a cleared Train works on what it was blocked doing. */
+export const clearingBlock = (motion: TrainMotion) =>
+  stopped(motion) &&
+  ["ready", "in_transit", "returning"].includes(motion.state.status)
+
+/**
+ * Where each Train stopped when it was last blocked, while that block is
+ * unresolved, replayed from the event log. In the domain, clearing a block
+ * sends a Train back to its last stop to run the Station again; the map
+ * leaves it where it stopped until that run's work is ready, it reaches
+ * Terminus, or it moves on to a different Station.
+ */
+export function trainStops(events: EventEnvelope[]): Map<string, TrainStop> {
+  const runs = new Map<string, TrainMotion>()
+  const stops = new Map<string, TrainStop & { toward: string | null }>()
+  const run = (state: TrainState, at: string): TrainMotion => ({
+    state,
+    stateEnteredAt: at,
+    previous: null,
+  })
+  for (const { event, occurredAt } of events) {
+    switch (event.type) {
+      case "train.departed":
+        // Departing again toward the stopped Station re-runs its work.
+        if (stops.get(event.trainId)?.toward === event.stationId) break
+        stops.delete(event.trainId)
+        runs.set(
+          event.trainId,
+          run(
+            {
+              status: "in_transit",
+              from: { kind: "depot" },
+              toward: event.stationId,
+            },
+            occurredAt
+          )
+        )
+        break
+      case "train.returning":
+        if (stops.get(event.trainId)?.toward === null) break
+        stops.delete(event.trainId)
+        runs.set(
+          event.trainId,
+          run({ status: "returning", phase: "awaiting_clearance" }, occurredAt)
+        )
+        break
+      case "train.approaching":
+      case "train.arrived":
+        stops.delete(event.trainId)
+        runs.set(
+          event.trainId,
+          run(
+            {
+              status: "approaching",
+              from: { kind: "depot" },
+              toward: event.stationId,
+            },
+            occurredAt
+          )
+        )
+        break
+      case "train.blocked": {
+        const motion = runs.get(event.trainId)
+        if (!motion || stops.has(event.trainId)) break
+        stops.set(event.trainId, {
+          motion,
+          at: Date.parse(occurredAt),
+          toward: "toward" in motion.state ? motion.state.toward : null,
+        })
+        break
+      }
+      case "train.unloaded":
+      case "train.sided":
+        stops.delete(event.trainId)
+        runs.delete(event.trainId)
+    }
+  }
+  return new Map([...stops].map(([id, { motion, at }]) => [id, { motion, at }]))
 }
 
 /** True while a Train waits for the user to approve its unload. */
@@ -1020,8 +1119,7 @@ function restingDistance(state: TrainState, route: RouteLayout): number | null {
     case "approaching":
       return leg(route, state.toward).to
     case "returning":
-      // Past the last Station, on straight track short of the approach lanes.
-      return route.trackEnd - TRACK_TAIL * 0.45
+      return leg(route, null).wait
   }
 }
 
@@ -1030,22 +1128,29 @@ function restingDistance(state: TrainState, route: RouteLayout): number | null {
  * track. Motion is presentation only and never claims progress the backend has
  * not reported: a Train in transit eases toward a point short of the next
  * Station and waits there, reaching the Station only once its work is ready
- * (`approaching`). A blocked Train stays where it was when it stopped. The
- * renderer eases the drawn Train toward this target, which produces the
- * arrival run however briefly `approaching` lasts.
+ * (`approaching`). Terminus is no different: a returning Train runs on from
+ * its last Station, waits outside, and enters once it unloads. A held or
+ * blocked Train stays where it was when it stopped, and so does a cleared one
+ * until its block resolves. The renderer eases the drawn Train toward this
+ * target, which produces the arrival run however briefly `approaching` lasts.
  */
 export function trainDistance(
   motion: TrainMotion,
   route: RouteLayout,
   now: number
 ): number | null {
-  const { state, previous } = motion
+  const { state, previous, stop } = motion
+  if (stop && stopped(motion)) return trainDistance(stop.motion, route, stop.at)
   const seconds = secondsBetween(motion.stateEnteredAt, now)
   switch (state.status) {
     case "in_transit":
-      return transitDistance(route, state.toward, seconds)
+      return transitDistance(leg(route, state.toward), seconds)
+    case "returning":
+      // Released from a hold at the Terminus gate, it sets off again.
+      return transitDistance(leg(route, null), seconds)
+    case "held":
     case "blocked":
-      return previous && previous.state.status !== "blocked"
+      return previous && previous.state.status !== state.status
         ? trainDistance(
             {
               state: previous.state,
@@ -1063,7 +1168,8 @@ export function trainDistance(
 
 /** True while a Train's target position changes over time. */
 export function isMoving(motion: TrainMotion): boolean {
-  return motion.state.status === "in_transit"
+  if (stopped(motion)) return false
+  return ["in_transit", "returning"].includes(motion.state.status)
 }
 
 const snapshotIdentities = new WeakMap<

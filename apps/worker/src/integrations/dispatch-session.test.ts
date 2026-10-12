@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 import { env } from "cloudflare:test"
 import type { RepositoryAccess } from "@terminus/artifacts"
+import { ProposalSubmissionsExhausted } from "@terminus/agent-runtime"
 import { SandboxDispatchSessions } from "./dispatch-session"
 import type { StationSandbox } from "./station-runner"
+import type { ActivityObserver, AgentActivity } from "@terminus/protocol"
 
 const model = "@cf/zai-org/glm-5.3"
 const commit = "a".repeat(40)
+const network = { validationNames: ["test"], activeLines: [] }
 
 function fixture(options: { testExit?: number; harnessExit?: number } = {}) {
   const calls: { command: string[]; env?: Record<string, string> }[] = []
@@ -91,17 +94,112 @@ function fixture(options: { testExit?: number; harnessExit?: number } = {}) {
     repositories,
     () => sandbox
   )
-  const open = (checkBaseline = false) =>
+  const open = (checkBaseline = false, onActivity?: ActivityObserver) =>
     sessions.open({
       model,
       repository: { repoId: "n/terminus", commit },
       checkBaseline,
       validation: [{ name: "test", command: ["npm", "test"] }],
+      network,
+      onActivity,
     })
   return { sandbox, repositories, calls, order, open }
 }
 
 describe("Sandbox Dispatcher session", () => {
+  it("reports actual preparation phases and streams filtered tools while preserving the final answer", async () => {
+    const f = fixture()
+    const activities: AgentActivity[] = []
+    f.sandbox.runStream = vi.fn(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                '{"type":"activity","activity":{"kind":"tool","tool":"read","status":"completed","path":"src/App.tsx"}}\n{"type":"harness_exit","exitCode":0}\n'
+              )
+            )
+            controller.close()
+          },
+        })
+    )
+    const session = f.open(true, (activity) => {
+      activities.push(activity)
+    })
+    await session.prepare()
+    expect(await session.start("S", "Plan")).toBe("answer 1")
+    await session.close()
+    expect(
+      activities.map((activity) =>
+        activity.kind === "phase" ? activity.phase : activity.tool
+      )
+    ).toEqual([
+      "preparing_workspace",
+      "waiting_for_sandbox",
+      "checking_out",
+      "checking_baseline",
+      "sealing_workspace",
+      "starting_agent",
+      "exploring",
+      "read",
+      "closing_workspace",
+    ])
+    expect(f.sandbox.runStream).toHaveBeenCalledWith(
+      expect.arrayContaining(["/workspace/harness-live.mjs", "opencode"]),
+      expect.any(String),
+      expect.any(Object),
+      15 * 60_000
+    )
+  })
+  it("uses the live runner without an observer, so an accepted proposal ends the session", async () => {
+    const f = fixture()
+    f.sandbox.runStream = vi.fn(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                '{"type":"harness_exit","exitCode":0,"stopped":"proposal_accepted"}\n'
+              )
+            )
+            controller.close()
+          },
+        })
+    )
+    const session = f.open()
+    await session.prepare()
+    expect(await session.start("S", "Plan")).toBe("answer 1")
+    expect(f.sandbox.runStream).toHaveBeenCalledWith(
+      expect.arrayContaining(["/workspace/harness-live.mjs"]),
+      expect.any(String),
+      expect.any(Object),
+      15 * 60_000
+    )
+    expect(f.calls.some(({ command }) => command[0] === "bash")).toBe(false)
+  })
+  it("ends the session with the last submission after repeated rejections", async () => {
+    const f = fixture()
+    f.sandbox.runStream = vi.fn(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                '{"type":"harness_exit","exitCode":0,"stopped":"proposal_rejected"}\n'
+              )
+            )
+            controller.close()
+          },
+        })
+    )
+    const session = f.open()
+    await session.prepare()
+    const error = await session
+      .start("S", "Plan")
+      .catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(ProposalSubmissionsExhausted)
+    expect((error as ProposalSubmissionsExhausted).submission).toBe("answer 1")
+  })
   it("checks out read-only, seals secrets and history, then allows only the model", async () => {
     const f = fixture()
     const session = f.open()
@@ -116,10 +214,12 @@ describe("Sandbox Dispatcher session", () => {
       ],
       allowModel: false,
     })
+    // The proposal tool checks against the same context the plan is reviewed with.
     expect(f.sandbox.configure).toHaveBeenLastCalledWith({
       repositories: [],
       allowModel: true,
       model,
+      proposalCheck: { network, baseline: null },
     })
     expect(f.repositories.access).toHaveBeenCalledWith("n/terminus", "read")
     expect(f.repositories.revoke).toHaveBeenCalledOnce()

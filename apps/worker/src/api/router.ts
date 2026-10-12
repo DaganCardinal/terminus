@@ -1,7 +1,9 @@
 import { layJunction } from "../agents/junctions"
+import { readPerfLogs } from "./perf-logs"
 import { emergencyBrake } from "../agents/emergency-brake"
 import { deleteNetwork } from "../agents/delete-network"
 import { NetworkStore } from "../integrations/network-store"
+import { DispatchActivityStore } from "../integrations/dispatch-activity"
 import {
   alternativeHarnessesEnabled,
   unavailableHarnessSettings,
@@ -658,6 +660,26 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     },
   ],
   [
+    "GET",
+    new URLPattern({
+      pathname: "/api/networks/:networkId/plans/:planId/activity",
+    }),
+    async (request, env, { networkId, planId }) => {
+      const plan = await new NetworkStore(env.DB).dispatchPlan(planId!)
+      if (!plan || plan.networkId !== networkId)
+        throw new DispatchError(404, "Unknown plan")
+      const cursor = new URL(request.url).searchParams.get("after") ?? "0"
+      if (!/^\d+$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))
+        throw new DispatchError(400, "Invalid activity cursor")
+      return Response.json(
+        await new DispatchActivityStore(env.DB).read(planId!, Number(cursor)),
+        {
+          headers: { "cache-control": "no-store" },
+        }
+      )
+    },
+  ],
+  [
     "POST",
     new URLPattern({
       pathname: "/api/networks/:networkId/plans/:planId/launch",
@@ -717,6 +739,18 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     "GET",
     new URLPattern({ pathname: "/api/networks" }),
     async (_, env) => json(await dispatcherPorts(env).store.networkListings()),
+  ],
+  [
+    // TEMPORARY benchmark instrumentation; see perf-logs.ts.
+    "GET",
+    new URLPattern({ pathname: "/api/perf-logs" }),
+    async (request, env) => {
+      const logs = await readPerfLogs(
+        env.PERF_LOGS,
+        new URL(request.url).searchParams
+      )
+      return "error" in logs ? error(400, logs.error) : json(logs)
+    },
   ],
   [
     "GET",

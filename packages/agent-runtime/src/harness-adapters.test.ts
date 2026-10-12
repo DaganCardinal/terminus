@@ -97,6 +97,9 @@ describe("role harness adapters", () => {
         if (role.capability === "review")
           expect(tools).toBe("Read,Glob,Grep,Bash")
         expect(initial.env.ANTHROPIC_API_KEY).toBe("provided-by-worker")
+        expect(initial.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe(
+          "claude-haiku-5-5"
+        )
         const settings = JSON.parse(
           initial.files["/workspace/harness-state/claude-settings.json"]!
         )

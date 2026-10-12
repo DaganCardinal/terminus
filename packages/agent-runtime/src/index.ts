@@ -13,3 +13,4 @@ export * from "./opencode"
 export * from "./technician"
 
 export * from "./harness-adapters"
+export * from "./harness-activity"

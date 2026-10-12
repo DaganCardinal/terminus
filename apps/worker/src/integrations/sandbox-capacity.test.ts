@@ -118,7 +118,7 @@ describe("Sandbox capacity", () => {
       expect(await sandboxLimits(env.DB, "legacy")).toEqual({
         agent: 4,
         agentless: 5,
-        sizes: { agent: "standard-2", agentless: "standard-1" },
+        sizes: { agent: "standard-2", agentless: "standard-2" },
       })
     } finally {
       await env.DB.prepare("DELETE FROM sandbox_limits").run()

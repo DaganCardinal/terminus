@@ -134,6 +134,25 @@ export function pointOnTrack(track: Track, distance: number): Point {
   }
 }
 
+/** The SVG path of the track between two distances along it. */
+export function trackSection(track: Track, from: number, to: number): string {
+  const clamp = (n: number) => Math.max(0, Math.min(track.length, n))
+  const [a, b] = [clamp(from), clamp(to)]
+  const point = (p: Point) => `${round(p.x)},${round(p.y)}`
+  let d = `M${point(pointOnTrack(track, a))}`
+  for (const piece of track.pieces) {
+    const end = Math.min(b, piece.start + piece.length)
+    if (end <= Math.max(a, piece.start)) continue
+    const to = point(pointOnTrack(track, end))
+    if (piece.kind === "line") d += ` L${to}`
+    else {
+      const r = round(piece.radius)
+      d += ` A${r},${r} 0 0 ${piece.sweep > 0 ? 1 : 0} ${to}`
+    }
+  }
+  return d
+}
+
 /** Distance ranges on horizontal straight track, at least `clearance` from
  * any curve. Stations are only placed here, as on a real diagram. */
 export function straightRuns(

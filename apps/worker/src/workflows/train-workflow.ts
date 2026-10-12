@@ -1,6 +1,7 @@
 import {
   stationOutcomeSchema,
   integrationOutcomeSchema,
+  timedStep,
   trainClearEventSchema,
   type IntegrationOutcome,
   type StationOutcome,
@@ -44,14 +45,26 @@ export class TrainWorkflow extends WorkflowEntrypoint<
   async run(event: WorkflowEvent<TrainWorkflowParams>, step: WorkflowStep) {
     const { trainId } = event.payload
     // A Train keeps the models its network chose when it started running.
-    const models = await step.do("resolve role models", stepConfig, () =>
-      trainModels(this.env, trainId)
+    const models = await step.do(
+      "resolve role models",
+      stepConfig,
+      timedStep("train", trainId, "resolve role models", () =>
+        trainModels(this.env, trainId)
+      )
     )
     const ports = trainPorts(this.env, models)
 
     for (let leg = 1; ; leg++) {
-      const move = await step.do(`advance ${leg}`, stepConfig, () =>
-        advanceTrain(ports, trainId)
+      const move = await step.do(
+        `advance ${leg}`,
+        stepConfig,
+        timedStep(
+          "train",
+          trainId,
+          `advance ${leg}`,
+          () => advanceTrain(ports, trainId),
+          (result) => ({ move: result })
+        )
       )
       switch (move.kind) {
         case "moved":
@@ -68,7 +81,16 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             const recorded = await step.do(
               `record ${move.runId} (${leg})`,
               stepConfig,
-              () => recordStationOutcome(ports, trainId, outcome)
+              timedStep(
+                "train",
+                trainId,
+                `record ${move.runId} (${leg})`,
+                () => recordStationOutcome(ports, trainId, outcome),
+                (result) => ({
+                  ok: outcome.result.ok,
+                  backoff: result?.backoff,
+                })
+              )
             )
             // Steps cached before Engineer retries returned nothing.
             if (recorded?.backoff)
@@ -84,13 +106,23 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             await step.do(
               `review ${move.stationId} (${leg})`,
               reviewConfig,
-              () => reviewStation(ports, trainId)
+              timedStep(
+                "train",
+                trainId,
+                `review ${move.stationId} (${leg})`,
+                () => reviewStation(ports, trainId)
+              )
             )
           } catch {
             await step.do(
               `review failed ${move.stationId} (${leg})`,
               stepConfig,
-              () => failReview(ports, trainId)
+              timedStep(
+                "train",
+                trainId,
+                `review failed ${move.stationId} (${leg})`,
+                () => failReview(ports, trainId)
+              )
             )
           }
           break
@@ -109,8 +141,12 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             payload !== null &&
             !trainClearEventSchema.parse(payload).reevaluateOnly
           ) {
-            await step.do(`clear (${leg})`, stepConfig, () =>
-              clearTrain(ports, trainId)
+            await step.do(
+              `clear (${leg})`,
+              stepConfig,
+              timedStep("train", trainId, `clear (${leg})`, () =>
+                clearTrain(ports, trainId)
+              )
             )
           }
           break
@@ -135,7 +171,12 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             await step.do(
               `record integration ${move.integrationId} (${leg})`,
               stepConfig,
-              () => recordIntegrationOutcome(ports, trainId, outcome)
+              timedStep(
+                "train",
+                trainId,
+                `record integration ${move.integrationId} (${leg})`,
+                () => recordIntegrationOutcome(ports, trainId, outcome)
+              )
             )
           }
           break

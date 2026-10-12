@@ -170,6 +170,7 @@ describe("configured model routing", () => {
     ).rejects.toThrow("truncated")
   })
   it("pins both OpenCode model choices and uses only a placeholder key in the Sandbox", () => {
+    // GLM-5.3 Flash is its own utility model.
     const config = JSON.parse(
       opencodeConfig("account", "gateway", model, stationHarnessAgent)
     )

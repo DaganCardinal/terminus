@@ -13,6 +13,7 @@
   "dependencies": {
     "@terminus/domain": "^0.0.0",
     "@terminus/protocol": "^0.0.0",
+    "jsonrepair": "^3.15.0",
     "zod": "^4.6.5"
   }
 }

@@ -15,6 +15,7 @@ import {
   type GitWorkspaceFactory,
   type RepositoryAccess,
 } from "./git"
+import { ArtifactsApiError } from "./artifacts-rest"
 import type { CommittedObjects } from "./repository-browse"
 import { StationGit } from "./station-git"
 
@@ -74,6 +75,8 @@ async function fixture(
   const grants: RepositoryAccess[][] = []
   const namespaces = new Set<string>()
   let lookupError: unknown = null
+  let pauses = 0
+  let afterPause: (() => void) | null = null
   let beforeFork: (() => Promise<void>) | null = null
   let beforePush: (() => Promise<void>) | null = null
   let serial = 0
@@ -99,6 +102,10 @@ async function fixture(
         return { id, plaintext: id }
       },
       revokeToken: async (id) => tokens.delete(id),
+      delete: async () => {
+        repos.delete(id)
+        await rm(remote, { recursive: true, force: true })
+      },
       fork: async (target, options) => {
         await beforeFork?.()
         return create(`${namespace}/${target}`, options.description, remote)
@@ -201,7 +208,10 @@ async function fixture(
   const host = new ArtifactsRepositoryHost(
     artifacts,
     workspaces,
-    async () => {},
+    async () => {
+      pauses++
+      afterPause?.()
+    },
     options.readHeadDirectly ? readHead : undefined
   )
   async function head(name: string) {
@@ -255,6 +265,10 @@ async function fixture(
     namespaces,
     setLookupError: (error: unknown) => {
       lookupError = error
+    },
+    pauses: () => pauses,
+    setAfterPause: (callback: (() => void) | null) => {
+      afterPause = callback
     },
     setBeforePush: (callback: () => Promise<void>) => {
       beforePush = callback
@@ -319,6 +333,43 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.grants).toHaveLength(0)
     expect(f.tokens.size).toBe(0)
     expect(f.handles.size).toBe(0)
+  })
+
+  it("waits out Artifacts' transient 403 (api 10004) on a repository read", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const denial = new ArtifactsApiError(403, "INTERNAL_ERROR", "Denied", {
+      apiCode: 10004,
+    })
+    f.setLookupError(denial)
+    let cleared = 0
+    f.setAfterPause(() => {
+      // The third backoff (four pauses) ends the refusal.
+      if (++cleared === 1 + 2 + 4) f.setLookupError(null)
+    })
+    const access = await f.host.access(terminus.repoId, "read")
+    expect(access.repoId).toBe("p/terminus")
+    expect(f.pauses()).toBe(7)
+    await f.host.revoke(access)
+  })
+
+  it("gives up on a 403 after about a minute, and never waits out other 403s", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const denial = new ArtifactsApiError(403, "INTERNAL_ERROR", "Denied", {
+      apiCode: 10004,
+    })
+    f.setLookupError(denial)
+    await expect(f.host.access(terminus.repoId, "read")).rejects.toBe(denial)
+    // 1 + 2 + 4 + 8 × 7 pauses of one second each.
+    expect(f.pauses()).toBe(63)
+
+    const other = new ArtifactsApiError(403, "INTERNAL_ERROR", "Denied", {
+      apiCode: 10000,
+    })
+    f.setLookupError(other)
+    await expect(f.host.access(terminus.repoId, "read")).rejects.toBe(other)
+    expect(f.pauses()).toBe(63)
   })
 
   it.each([
@@ -738,6 +789,106 @@ describe("Artifacts repository transport with real Git", () => {
     ).toEqual(imported)
     expect(f.tokens.size).toBe(0)
     expect(f.handles.size).toBe(0)
+  })
+
+  it("forks a new Train's first Station from Terminus while both are at the same commit", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const train = await f.host.fork({
+      sourceRepoId: terminus.repoId,
+      commit: terminus.headCommit,
+      name: "train",
+    })
+    const input = {
+      sourceRepoId: train.repoId,
+      commit: train.headCommit,
+      name: "station",
+      preferredSourceRepoId: terminus.repoId,
+    }
+    const station = await f.host.fork(input)
+    expect(station).toEqual({
+      repoId: "p/station",
+      headCommit: terminus.headCommit,
+    })
+    expect((await f.repos.get("p/station")!.info()).description).toBe(
+      `Terminus fork: p/terminus@${terminus.headCommit}`
+    )
+    // A retry reuses it, even once Terminus has moved on.
+    await f.change("p/terminus")
+    expect(await f.host.fork(input)).toEqual(station)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("forks the source when the preferred source is no longer at the commit", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const train = await f.host.fork({
+      sourceRepoId: terminus.repoId,
+      commit: terminus.headCommit,
+      name: "train",
+    })
+    await f.change("p/terminus")
+    expect(
+      await f.host.fork({
+        sourceRepoId: train.repoId,
+        commit: train.headCommit,
+        name: "station",
+        preferredSourceRepoId: terminus.repoId,
+      })
+    ).toEqual({ repoId: "p/station", headCommit: train.headCommit })
+    expect((await f.repos.get("p/station")!.info()).description).toBe(
+      `Terminus fork: p/train@${train.headCommit}`
+    )
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("replaces a preferred-source fork that missed the commit with a fork of the source", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const train = await f.host.fork({
+      sourceRepoId: terminus.repoId,
+      commit: terminus.headCommit,
+      name: "train",
+    })
+    let moved = false
+    f.setBeforeFork(async () => {
+      if (moved) return
+      moved = true
+      await f.change("p/terminus")
+    })
+    expect(
+      await f.host.fork({
+        sourceRepoId: train.repoId,
+        commit: train.headCommit,
+        name: "station",
+        preferredSourceRepoId: terminus.repoId,
+      })
+    ).toEqual({ repoId: "p/station", headCommit: train.headCommit })
+    expect(await f.head("p/station")).toBe(train.headCommit)
+    expect((await f.repos.get("p/station")!.info()).description).toBe(
+      `Terminus fork: p/train@${train.headCommit}`
+    )
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("never replaces a fork of the source itself that missed the commit", async () => {
+    const f = await fixture()
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    f.setBeforeFork(async () => {
+      await f.change("p/terminus")
+    })
+    await expect(
+      f.host.fork({
+        sourceRepoId: terminus.repoId,
+        commit: terminus.headCommit,
+        name: "train",
+        preferredSourceRepoId: "p/elsewhere",
+      })
+    ).rejects.toBeInstanceOf(RepositoryMovedError)
+    expect(f.repos.has("p/train")).toBe(true)
+    expect(f.tokens.size).toBe(0)
   })
 
   it("rejects an existing repository from a different fork operation", async () => {

@@ -1562,6 +1562,12 @@
   font-weight: 400;
   color: var(--muted-foreground);
 }
+.settings-utility {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
 .settings-roles select,
 .settings-roles input {
   width: 100%;

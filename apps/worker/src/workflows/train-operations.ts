@@ -50,6 +50,7 @@ import {
   type TrainId,
 } from "@terminus/domain"
 import {
+  perfSpan,
   stationVerdictSchema,
   type StationOutcome,
   type IntegrationOutcome,
@@ -456,10 +457,16 @@ async function retryOrBlock(
   const advice =
     evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
     "clear"
-      ? await ports.engineer.stationFailure({
-          station: stationBrief(station.value, ports.stationMaxRetries),
-          issues,
-        })
+      ? await perfSpan(
+          "engineer.station_failure",
+          { stationId: station.value.id },
+          () =>
+            ports.engineer.stationFailure({
+              station: stationBrief(station.value, ports.stationMaxRetries),
+              issues,
+            }),
+          (advice) => ({ advice })
+        )
       : null
   if (!advice || advice.value === "escalate") {
     await blockTrainAndStation(ports, train, station, issues)
@@ -761,11 +768,18 @@ export async function reviewStation(
   if (!network) throw new Error(`Unknown network ${train.networkId}`)
   if (station.value.state.status !== "in_review")
     throw new Error(`Station ${station.value.id} is not in review`)
+  const repoId = station.value.state.workspace.repoId
   const verdict = stationVerdictSchema.parse(
-    await ports.conductor.review(input, {
-      repoId: station.value.state.workspace.repoId,
-      validation: network.validation,
-    })
+    await perfSpan(
+      "conductor.review",
+      { stationId: station.value.id, revision: station.value.revisionCount },
+      () =>
+        ports.conductor.review(input, {
+          repoId,
+          validation: network.validation,
+        }),
+      (result) => ({ verdict: result.verdict })
+    )
   )
   await ports.store.recordConductorReview(
     train.networkId,
@@ -866,11 +880,17 @@ async function returnWork(
     evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
     "clear"
   ) {
-    const advice = await ports.engineer.revision({
-      station: stationBrief(station.value, ports.stationMaxRetries),
-      feedback,
-      previousFeedback: station.value.lastReview?.feedback ?? null,
-    })
+    const advice = await perfSpan(
+      "engineer.revision",
+      { stationId: station.value.id },
+      () =>
+        ports.engineer.revision({
+          station: stationBrief(station.value, ports.stationMaxRetries),
+          feedback,
+          previousFeedback: station.value.lastReview?.feedback ?? null,
+        }),
+      (result) => ({ advice: result })
+    )
     if (advice.value === "escalate") {
       await blockTrainAndStation(
         ports,

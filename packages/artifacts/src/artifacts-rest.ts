@@ -27,12 +27,65 @@ const errorCodes: Record<number, string> = {
 export class ArtifactsApiError extends Error {
   readonly code: string
   readonly status: number
-  constructor(status: number, code: string, message: string) {
+  /** The envelope's numeric code. Unlisted codes all map to `INTERNAL_ERROR`. */
+  readonly apiCode: number | null
+  /** The request's method and route shape, such as `POST /repos/:/fork`. */
+  readonly operation: string | null
+  /**
+   * The envelope's message, only for codes this client does not recognise,
+   * reduced to plain words so it is safe to log. Unlisted codes are what we
+   * need to learn about.
+   */
+  readonly apiMessage: string | null
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    detail: {
+      apiCode?: number | null
+      operation?: string | null
+      apiMessage?: string | null
+    } = {}
+  ) {
     super(`ArtifactsError: ${message}`)
     this.name = "ArtifactsApiError"
     this.status = status
     this.code = code
+    this.apiCode = detail.apiCode ?? null
+    this.operation = detail.operation ?? null
+    this.apiMessage = detail.apiMessage ?? null
   }
+}
+
+/** Long runs of word characters may be tokens or ids, so they are dropped. */
+function loggableMessage(message: string): string | null {
+  const words = message
+    .replace(/[A-Za-z0-9_-]{24,}/g, "…")
+    .replace(/[^A-Za-z0-9 .,:;'()/…-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+  return words || null
+}
+
+const routeWords = new Set([
+  "repos",
+  "tokens",
+  "fork",
+  "import",
+  "commit",
+  "tree",
+  "blob",
+])
+
+/** A request's route without namespace, repository or object names. */
+function operation(method: string, path: string): string {
+  const route = path
+    .split("?")[0]!
+    .split("/")
+    .slice(2)
+    .map((part) => (routeWords.has(part) ? part : ":"))
+  return `${method} /${route.join("/")}`
 }
 
 interface Envelope<T> {
@@ -147,6 +200,17 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
           if (error instanceof ArtifactsApiError && error.code === "NOT_FOUND")
             return false
           throw error
+        }
+      },
+      delete: async () => {
+        try {
+          await this.request("DELETE", repo(name))
+        } catch (error) {
+          if (
+            !(error instanceof ArtifactsApiError) ||
+            error.code !== "NOT_FOUND"
+          )
+            throw error
         }
       },
       fork: async (target, options) => {
@@ -272,7 +336,7 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
       .catch(() => null)) as Envelope<T> | null
     if (response.ok && envelope?.success && envelope.result !== null)
       return envelope
-    throw failure(response.status, envelope)
+    throw failure(response.status, envelope, operation(method, path))
   }
 
   /** A successful response whose body is raw bytes rather than an envelope. */
@@ -286,22 +350,30 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
     const envelope = (await response
       .json()
       .catch(() => null)) as Envelope<unknown> | null
-    throw failure(response.status, envelope)
+    throw failure(response.status, envelope, operation(method, path))
   }
 }
 
 function failure(
   status: number,
-  envelope: Envelope<unknown> | null
+  envelope: Envelope<unknown> | null,
+  operation: string
 ): ArtifactsApiError {
   const first = envelope?.errors?.[0]
-  const code =
-    (first && errorCodes[first.code]) ??
-    (status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR")
+  const known = first ? errorCodes[first.code] : undefined
+  const code = known ?? (status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR")
   return new ArtifactsApiError(
     status,
     code,
-    first?.message ?? `Artifacts request failed (${status})`
+    first?.message ?? `Artifacts request failed (${status})`,
+    {
+      apiCode: typeof first?.code === "number" ? first.code : null,
+      operation,
+      apiMessage:
+        !known && typeof first?.message === "string"
+          ? loggableMessage(first.message)
+          : null,
+    }
   )
 }
 

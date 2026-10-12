@@ -105,7 +105,10 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
         const harness = await runPreparedHarness(
           sandbox,
           prepared,
-          technicianDirectory
+          technicianDirectory,
+          undefined,
+          undefined,
+          { role: "Technician", kind: "start" }
         )
         const outcome = harnessResult(prepared.harness, harness)
         if (outcome.error) throw new Error(outcome.error)

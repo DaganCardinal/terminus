@@ -30,6 +30,7 @@ import type { Write } from "../integrations/network-store"
 import { orderedPlans } from "../agents/dispatcher"
 import { applied } from "./transitions"
 import { defaultValidation } from "../integrations/execution-config"
+import type { DispatchActivityRecorder } from "../integrations/dispatch-activity"
 
 export async function prepareDispatchPlan(
   ports: DispatchPlanningPorts,
@@ -44,6 +45,12 @@ export async function prepareDispatchPlan(
   if (!snapshot) throw new Error("Unknown network")
   let proposal: DispatchProposal
   let baseline: BaselineReport | undefined
+  let activity: DispatchActivityRecorder | undefined
+  try {
+    activity = await ports.activity?.begin(planId)
+  } catch {
+    console.warn("Dispatcher activity persistence unavailable")
+  }
   try {
     const result = await ports.planner.plan({
       goal: plan.goal,
@@ -54,6 +61,7 @@ export async function prepareDispatchPlan(
       },
       checkBaseline: !!plan.checkBaseline,
       validation: snapshot.network.validation ?? defaultValidation,
+      onActivity: activity?.observe,
     })
     proposal = dispatchProposalSchema.parse(result.proposal)
     if (result.baseline) {
@@ -61,6 +69,7 @@ export async function prepareDispatchPlan(
       if (baseline.commit !== plan.terminusCommit)
         throw new Error("Baseline checks describe a different commit")
     }
+    activity?.observe({ kind: "phase", phase: "saving_proposal" })
   } catch (error) {
     if (error instanceof DispatchProposalError) {
       // The Dispatcher already used its bounded corrections in-session. Do not repeat them blindly.
@@ -68,6 +77,8 @@ export async function prepareDispatchPlan(
       throw new NonRetryableError(error.message)
     }
     throw error
+  } finally {
+    await activity?.close()
   }
   const ready = applied(
     readyDispatchPlan(plan, proposal, planningContext(snapshot), baseline)

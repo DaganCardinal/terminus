@@ -4,6 +4,7 @@ import {
   roleHarnesses,
   modelForHarness,
   compatibleModels,
+  utilityModel,
   type Harness,
   type HarnessRole,
   type RoleHarnesses,
@@ -511,7 +512,10 @@ function ModelSettingsForm({
           <p>
             {choice === "custom"
               ? "Choose a harness and compatible model for each role. The Engineer uses a Clef decision model."
-              : "Choose a harness to customize a role, or choose Custom to edit models."}
+              : "Choose a harness to customize a role, or choose Custom to edit models."}{" "}
+            Each harness names its sessions with the lowest-cost model from its
+            role model’s provider. That model never plans, writes code or
+            reviews.
           </p>
         </div>
         <table className="settings-roles panel">
@@ -525,6 +529,8 @@ function ModelSettingsForm({
           <tbody>
             {roles.map((role) => {
               const model = catalog(shown[role.id])
+              const utility =
+                role.id === "engineer" ? null : utilityModel(shown[role.id])
               return (
                 <tr key={role.id}>
                   <th scope="row">
@@ -602,6 +608,11 @@ function ModelSettingsForm({
                         {model?.name ?? shown[role.id]}
                         <small>{model?.maker}</small>
                       </span>
+                    )}
+                    {utility && utility !== shown[role.id] && (
+                      <small className="settings-utility">
+                        Session titles: {catalog(utility)!.name}
+                      </small>
                     )}
                   </td>
                 </tr>

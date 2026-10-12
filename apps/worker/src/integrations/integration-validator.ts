@@ -5,6 +5,7 @@ import {
 } from "@terminus/artifacts"
 import type { Evidence } from "@terminus/domain"
 import {
+  PerfPhases,
   validationCommandsSchema,
   type IntegrationCandidate,
   type ValidationCommand,
@@ -37,9 +38,15 @@ export class SandboxIntegrationValidator implements IntegrationValidator {
     commands: ValidationCommand[]
   ): Promise<Evidence> {
     const validation = validationCommandsSchema.parse(commands)
+    // TEMPORARY benchmark instrumentation.
+    const phases = new PerfPhases("integration.validate", {
+      candidate: candidate.headCommit.slice(0, 12),
+    })
+    phases.enter("access")
     const access = await this.repositories.access(candidate.repoId, "read")
     let workspace: import("@terminus/artifacts").GitWorkspace | undefined
     try {
+      phases.enter("open workspace")
       // No Train or Terminus write capability, and no model access. Validation
       // scripts execute in a fresh checkout of the durable merge commit.
       workspace = await this.workspaces.open([access])
@@ -48,15 +55,20 @@ export class SandboxIntegrationValidator implements IntegrationValidator {
         access,
         candidate.headCommit
       )
+      phases.enter("checkout")
       await repository.checkout()
+      phases.enter("install + checks")
       const checks = await runProjectChecks(workspace, validation)
+      phases.enter("assert unchanged")
       await repository.assertUnchanged()
       return { checks }
     } finally {
+      phases.enter("close")
       await Promise.allSettled([
         workspace?.close(),
         this.repositories.revoke(access),
       ]).then((results) => {
+        phases.finish()
         if (results.some((result) => result.status === "rejected"))
           throw new Error("Integration validation cleanup failed")
       })

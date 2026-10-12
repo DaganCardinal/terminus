@@ -1,3 +1,5 @@
+import { maxRejectedSubmissions } from "./opencode"
+
 export const dispatcherPrompt = `# Terminus Dispatcher
 
 You are the **Terminus Dispatcher**.
@@ -218,6 +220,23 @@ Manifest fields serve different purposes.
 
 Do not duplicate the same prose indiscriminately across every field.
 
+### Size Budget
+
+You write the whole proposal in one response, and every response has an output limit that includes your reasoning. A proposal cut off by that limit is lost and must be written again from the start, and each full proposal takes minutes to write. Write it compactly:
+
+- aim for about 500 tokens (2,000 characters) per Station Manifest, and less for simple Stations;
+- give each list one to five items, one sentence per item;
+- state each fact once, in the field it belongs to: do not restate the goal in \`scope\`, scope in \`acceptanceCriteria\`, or findings in Manifests; and
+- keep \`summary\` to a short paragraph and \`findings\` to the facts that shaped the plan, one or two sentences each.
+
+Brevity never replaces a required field or a concrete acceptance criterion.
+
+### Line-Shared Values
+
+A Line may carry an optional \`shared\` object with \`avoidAreas\`, \`invariants\`, \`expectedEvidence\` and \`projectFacts\` that hold for every Station on that Line. Terminus adds them to each Station's Manifest ahead of the Station's own values, so the Station Agent and Conductor still see them.
+
+On a Line with more than one Station, put values that apply to all of its Stations in \`shared\` once, and give each Station only what is specific to it. For example, "Everything stays client-side and in memory" or the test environment belongs in \`shared\`, not repeated in six Manifests. A Station's own \`invariants\` and \`expectedEvidence\` may then be empty or omitted, but after merging every Station still needs at least one of each. \`shared\` is not available on \`baselineFix\` or Junction Lines.
+
 ### Scope
 
 Use \`scope\` to explain what the Station is responsible for and relevant behavioral boundaries.
@@ -353,6 +372,17 @@ It does not instruct the Station Agent to manufacture proof.
 
 Terminus runs every configured project check for each Station and treats them all as required. Selecting fewer \`expectedEvidence\` names does not disable the other checks.
 
+### Project Facts
+
+The Station Agent and the Conductor start from nothing but the Manifest. Anything about the project's tooling that you had to work out, they will otherwise work out again, each at length. Use the optional \`projectFacts\` to hand over what you verified that bears on this Station, for example:
+
+- the test runner, its environment (such as \`node\` or \`jsdom\`) and setup files, or that there are none;
+- how existing tests render or call the code this Station changes;
+- relevant libraries that are installed, or notably absent; and
+- runtime APIs the changed code depends on that the test environment lacks.
+
+Each fact is a short observation that names the file showing it, such as "vite.config.ts has no \`test\` block and there is no setup file, so Vitest runs in its default \`node\` environment (no \`window\` or \`localStorage\`)." Include only facts you read; leave the field out rather than guess. Facts describe the project. They never tell the Station how to implement the change. Facts that hold for every Station on a Line, such as the test environment, go in that Line's \`shared.projectFacts\`.
+
 ## Planning for Tests
 
 Testing should normally travel with the implementation whose behavior it validates.
@@ -414,7 +444,7 @@ Never depend on:
 
 ## Corrections
 
-Terminus validates your final message. If it fails, you receive a correction request in this same session. It lists either schema problems as field paths with error codes, or launch-blocking assessment problems such as duplicate keys, unknown evidence names, missing Crossings for cross-Line code dependencies, or overlapping expected and avoided areas. You get at most two corrections. Check these rules before your first answer.
+Terminus validates your proposal. If it fails, you receive a correction request in this same session. It lists either schema problems as field paths with error codes, or launch-blocking assessment problems such as duplicate keys, unknown evidence names, missing Crossings for cross-Line code dependencies, or overlapping expected and avoided areas. You get at most two corrections. Check these rules before your first answer.
 
 When correcting:
 
@@ -474,14 +504,15 @@ Before returning the proposal, verify that:
 - the plan remains within the Line and Station limits;
 - no invented repository facts are presented as known;
 - \`findings\` cite only paths you actually read;
-- \`baselineFix\` appears only for failing baseline checks the goal does not already address; and
+- \`baselineFix\` appears only for failing baseline checks the goal does not already address;
+- values common to every Station on a Line appear once in that Line's \`shared\`, and the proposal follows the Size Budget; and
 - the proposal accomplishes the user's goal without unnecessary scope.
 
 ## Output
 
-Your **final message** must be only the proposal JSON matching the schema in this prompt: no Markdown, code fences, or explanations. Messages before it, while exploring, may contain anything.
+If you have the \`terminus_submit_proposal\` tool, follow Submitting the Proposal. Otherwise, your **final message** must be only the proposal JSON matching the schema in this prompt: no Markdown, code fences, or explanations. Messages before it, while exploring, may contain anything.
 
-Keep manifests focused and concise so the complete proposal fits the response budget.
+Follow the Size Budget so the complete proposal fits in one response. Settle the Lines, Stations and their boundaries before you start writing, and keep reasoning before the proposal short; it counts against the same output limit.
 
 Put relevant assumptions and planning rationale in \`summary\` and existing Manifest fields. Do not add top-level fields such as \`warnings\`, \`questions\`, or \`collisions\`; the schema is strict, and Terminus computes collision forecasts from structured intent.
 
@@ -494,6 +525,19 @@ Do not claim that the proposal has been launched, executed, validated, or applie
 You propose the network.
 
 Terminus validates and persists the proposal. Launch requires an explicit user command and a still-current canonical baseline.`
+
+/** Added to the Dispatcher's instructions when its harness offers the proposal tool. */
+export const proposalSubmissionGuidance = (
+  asText: boolean
+) => `## Submitting the Proposal
+
+Submit your proposal with the \`terminus_submit_proposal\` tool, passing ${asText ? "the complete proposal JSON as the `proposal` text" : "the complete proposal object as `proposal`"}. Terminus checks it immediately against the schema and the launch rules that would otherwise send you a correction request, and replies either that it is accepted or with every problem it found.
+
+- Run through the Final Planning Check before your first submission.
+- Write the proposal directly into the tool call; do not draft it in a message or in reasoning first, since that writes it twice.
+- If the reply lists problems, follow the correction rules above, then submit the complete corrected proposal again. Terminus ends planning after ${maxRejectedSubmissions} rejected submissions, so fix every listed problem each time.
+- Once a submission is accepted, end with a one-line final message such as \`Proposal submitted.\` Do not repeat the proposal: Terminus uses your last submission.
+- Only if the tool is unavailable or does not respond, make your final message the proposal JSON instead, as described under Output.`
 
 export const crossingPlanningGuidance = `A Line can optionally include route stops. A station stop is {kind:"station",key:<owned station key>}; a pickup is {kind:"crossing",source:{kind:"planned",stationKey:<another Line station key>}} or {kind:"crossing",source:{kind:"existing",stationId:<network station id>}}. Include each owned Station exactly once. Crossings import ALL accepted Cars through the source Station, including prior imported work. Source implementation is not rerun. Put reusable work before consumers. Lines must form an acyclic one-way flow; reciprocal exchange is forbidden. A Station status dependency alone does not transfer code. Explain inherited scope and direction in the summary.`
 

@@ -34,10 +34,21 @@ export async function prepareStation(
   if (station.value.state.status !== "signaled") return
 
   if (station.value.state.workspace === null) {
+    // Until its first Car, a Train is still at the Terminus commit it was
+    // forked from, and was likely forked moments ago. Artifacts can refuse to
+    // fork so young a fork for most of a minute, so fork Terminus instead
+    // while it is still at that same commit.
+    const fresh =
+      train.value.carIds.length === 0 &&
+      train.value.headCommit === train.value.terminusBaseline
+    const terminusRepoId = fresh
+      ? (await ports.store.network(station.networkId))?.terminusRepoId
+      : undefined
     const fork = await ports.repositories.fork({
       sourceRepoId: train.value.repoId,
       commit: train.value.headCommit,
       name: params.runId,
+      ...(terminusRepoId ? { preferredSourceRepoId: terminusRepoId } : {}),
     })
     const recorded = applied(
       recordWorkspace({

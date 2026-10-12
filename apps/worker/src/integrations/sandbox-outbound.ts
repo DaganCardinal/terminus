@@ -1,10 +1,15 @@
 import {
   catalogModel,
+  errorKind,
+  utilityModel,
   modelCallSchema,
+  perf,
   sandboxNetworkSchema,
   type SandboxNetwork,
 } from "@terminus/protocol"
+import { proposalAsText, proposalTool } from "@terminus/agent-runtime"
 import { WorkerEntrypoint } from "cloudflare:workers"
+import { proposalToolResponse } from "./proposal-tool"
 
 /** Each Sandbox receives only the network capabilities for its one operation. */
 export async function outboundRequest(
@@ -14,7 +19,8 @@ export async function outboundRequest(
     "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_ID" | "AI_GATEWAY_TOKEN"
   >,
   network: SandboxNetwork,
-  send: typeof fetch = fetch
+  send: typeof fetch = fetch,
+  hedgeAfterMs: number = modelHedgeAfterMs
 ): Promise<Response> {
   const url = new URL(request.url)
   if (
@@ -24,6 +30,17 @@ export async function outboundRequest(
     url.password
   )
     return denied()
+
+  if (
+    network.proposalCheck &&
+    `${url.origin}${url.pathname}` === proposalTool.url &&
+    !url.search
+  )
+    return proposalToolResponse(
+      request,
+      network.proposalCheck,
+      proposalAsText(network.model ?? "")
+    )
 
   for (const grant of network.repositories) {
     const remote = new URL(grant.remote)
@@ -65,6 +82,14 @@ export async function outboundRequest(
       return denied()
     }
   }
+  // The harness's own housekeeping calls (such as naming its session) use the
+  // role model's utility model, which shares its provider and endpoint.
+  let utilityApiModel: string | undefined
+  try {
+    utilityApiModel = catalogModel(utilityModel(network.model ?? "")).apiModel
+  } catch {
+    utilityApiModel = undefined
+  }
   const modelHost =
     provider === "workers-ai"
       ? "api.cloudflare.com"
@@ -81,6 +106,8 @@ export async function outboundRequest(
     request.method === "POST" &&
     !url.search
   ) {
+    // TEMPORARY benchmark instrumentation: when the request reached the Worker.
+    const entered = Date.now()
     const payload = modelCallSchema.safeParse(
       await request
         .clone()
@@ -89,7 +116,8 @@ export async function outboundRequest(
     )
     if (
       !payload.success ||
-      payload.data.model !== apiModel ||
+      (payload.data.model !== apiModel &&
+        payload.data.model !== utilityApiModel) ||
       !env.AI_GATEWAY_TOKEN
     )
       return denied()
@@ -106,6 +134,7 @@ export async function outboundRequest(
       })
     )
       return denied()
+    const bodyMs = Date.now() - entered
     const headers = cleanHeaders(request.headers)
     if (provider === "workers-ai") {
       headers.set("authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
@@ -119,31 +148,87 @@ export async function outboundRequest(
     const started = Date.now()
     const requestId = crypto.randomUUID()
     console.info("Station model request started", { requestId, provider })
+    const forwarded = JSON.stringify(
+      provider === "workers-ai" ? { ...body, reasoning_effort: "low" } : body
+    )
+    // TEMPORARY benchmark instrumentation.
+    const shape = body as Record<string, unknown>
+    const messages = Array.isArray(shape.messages) ? shape.messages : []
+    const request_ = {
+      requestId: requestId.slice(0, 8),
+      model: body.model,
+      provider,
+      affinity: network.sessionAffinity?.slice(0, 16),
+      kb: Math.round(forwarded.length / 1024),
+      messages: messages.length,
+      systemKB: Math.round(
+        JSON.stringify(
+          messages.filter(
+            (m) =>
+              !!m &&
+              typeof m === "object" &&
+              (m as { role?: unknown }).role === "system"
+          )
+        ).length / 1024
+      ),
+      tools: Array.isArray(shape.tools) ? shape.tools.length : 0,
+      maxTokens: shape.max_tokens ?? shape.max_completion_tokens,
+      stream: shape.stream === true,
+      // When the request reached this handler, comparable with the harness
+      // step timestamps from the Sandbox. Receiving its body is the only wait
+      // before it leaves the Worker: Worker clocks do not advance during CPU work.
+      at: entered,
+      bodyMs,
+      inFlight: ++modelCallsInFlight,
+    }
     try {
-      const response = await send(
-        new Request(request, {
-          headers,
-          body: JSON.stringify(
-            provider === "workers-ai"
-              ? { ...body, reasoning_effort: "low" }
-              : body
-          ),
-          redirect: "manual",
-        })
+      const { response, hedge } = await hedgedSend(
+        (copy, signal) => {
+          const sent = new Headers(headers)
+          // A stalled call is queued where its affinity routes it, so the
+          // copy goes elsewhere and gives up only the prefix cache.
+          if (copy) sent.delete("x-session-affinity")
+          return send(
+            new Request(request, {
+              headers: sent,
+              body: forwarded,
+              redirect: "manual",
+              signal,
+            })
+          )
+        },
+        provider === "workers-ai" && body.stream === true ? hedgeAfterMs : null
       )
+      Object.assign(request_, hedge)
       console.info("Station model response received", {
         requestId,
         provider,
         status: response.status,
         durationMs: Date.now() - started,
         ray: response.headers.get("cf-ray"),
+        ...hedge,
       })
-      if (response.status >= 300 && response.status < 400)
+      if (response.status >= 300 && response.status < 400) {
+        modelCallsInFlight--
+        perf("model.call", {
+          ...request_,
+          outcome: "redirect",
+          status: response.status,
+          headersMs: Date.now() - started,
+        })
         return new Response("Model redirects are not permitted", {
           status: 502,
         })
-      return response
+      }
+      return await timedModelResponse(response, request_, started)
     } catch (error) {
+      modelCallsInFlight--
+      perf("model.call", {
+        ...request_,
+        outcome: "error",
+        error: errorKind(error),
+        headersMs: Date.now() - started,
+      })
       console.error("Station model request failed", {
         requestId,
         provider,
@@ -206,4 +291,224 @@ function cleanHeaders(input: Headers): Headers {
       headers.delete(name)
   }
   return headers
+}
+
+/**
+ * How long a streamed Workers AI call may go without response headers before
+ * a copy is sent. Healthy calls answer in 1–5s; stalls queue for 20s or more
+ * before producing anything, so a copy costs at most its own input.
+ */
+export const modelHedgeAfterMs = 8_000
+
+interface HedgeOutcome {
+  /** When the copy was sent, measured from the original; null if never. */
+  hedgedAtMs: number | null
+  winner: "original" | "copy"
+}
+
+/**
+ * Sends a model call once, and a copy if `afterMs` passes without an answer.
+ * The first successful response wins and the other request is aborted. An
+ * error status or failure only wins when the other has also finished, so a
+ * hedge never turns a call that would have succeeded into an error, and an
+ * error before the hedge fires is returned as is, never retried.
+ */
+function hedgedSend(
+  attempt: (copy: boolean, signal: AbortSignal) => Promise<Response>,
+  afterMs: number | null
+): Promise<{ response: Response; hedge: HedgeOutcome | Record<never, never> }> {
+  const started = Date.now()
+  const controllers: AbortController[] = []
+  let hedgedAtMs: number | null = null
+  let pending = 0
+  let settled = false
+  let fallback: { response: Response; index: number } | null = null
+  let failure: unknown = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  return new Promise((resolve, reject) => {
+    const finish = (response: Response, index: number) => {
+      settled = true
+      clearTimeout(timer)
+      controllers.forEach((controller, i) => {
+        if (i !== index) controller.abort()
+      })
+      if (fallback && fallback.index !== index)
+        void fallback.response.body?.cancel().catch(() => {})
+      resolve({
+        response,
+        hedge:
+          afterMs === null
+            ? {}
+            : { hedgedAtMs, winner: index === 0 ? "original" : "copy" },
+      })
+    }
+    const send = (index: number) => {
+      const controller = new AbortController()
+      controllers.push(controller)
+      pending++
+      attempt(index > 0, controller.signal).then(
+        (response) => {
+          pending--
+          if (settled) {
+            void response.body?.cancel().catch(() => {})
+            return
+          }
+          if (response.ok || (pending === 0 && !fallback))
+            return finish(response, index)
+          if (!fallback) fallback = { response, index }
+          else void response.body?.cancel().catch(() => {})
+          if (pending === 0) finish(fallback.response, fallback.index)
+        },
+        (error: unknown) => {
+          pending--
+          if (settled) return
+          failure ??= error
+          if (pending > 0) return
+          if (fallback) return finish(fallback.response, fallback.index)
+          settled = true
+          clearTimeout(timer)
+          reject(failure)
+        }
+      )
+    }
+    send(0)
+    if (afterMs !== null)
+      timer = setTimeout(() => {
+        if (settled) return
+        hedgedAtMs = Date.now() - started
+        send(1)
+      }, afterMs)
+  })
+}
+
+/** TEMPORARY benchmark instrumentation: model calls this isolate is serving. */
+let modelCallsInFlight = 0
+
+/** AI Gateway and Cloudflare response metadata, safe to log. */
+function gatewayHeaders(headers: Headers): Record<string, unknown> {
+  const gateway: Record<string, string> = {}
+  for (const [name, value] of headers)
+    if (name.startsWith("cf-aig-") && Object.keys(gateway).length < 12)
+      gateway[name.slice("cf-aig-".length)] = value.slice(0, 120)
+  return {
+    gateway,
+    ray: headers.get("cf-ray"),
+    serverTiming: headers.get("server-timing")?.slice(0, 300) ?? undefined,
+    // Names only, to discover what else the gateway and provider report.
+    headerNames: [...headers.keys()].slice(0, 40),
+  }
+}
+
+/** Long runs of word characters may be tokens or ids, so they are dropped. */
+function errorSnippet(text: string): string {
+  return text
+    .replace(/[A-Za-z0-9_-]{24,}/g, "…")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300)
+}
+
+/**
+ * TEMPORARY benchmark instrumentation: passes the response through unchanged
+ * and logs when its first and last bytes arrived, with the usage the final
+ * chunk reports and the gateway's response metadata. Only token counts are
+ * read from a successful body. Calls that end early (the harness stopped or
+ * the stream failed) are logged too, so a stall is visible even when it never
+ * finishes.
+ */
+async function timedModelResponse(
+  response: Response,
+  request: Record<string, unknown>,
+  started: number
+): Promise<Response> {
+  const headersMs = Date.now() - started
+  const metadata = gatewayHeaders(response.headers)
+  const failure = response.ok
+    ? {}
+    : {
+        errorBody: errorSnippet(
+          await response
+            .clone()
+            .text()
+            .catch(() => "")
+        ),
+      }
+  if (!response.body) {
+    modelCallsInFlight--
+    perf("model.call", {
+      ...request,
+      ...metadata,
+      ...failure,
+      outcome: "complete",
+      status: response.status,
+      headersMs,
+    })
+    return response
+  }
+  const decoder = new TextDecoder()
+  let firstChunkMs: number | null = null
+  let bytes = 0
+  let chunks = 0
+  let tail = ""
+  let logged = false
+  const number = (pattern: RegExp) => {
+    const matches = [...tail.matchAll(pattern)]
+    const last = matches.at(-1)?.[1]
+    return last === undefined ? undefined : Number(last)
+  }
+  const log = (outcome: "complete" | "canceled" | "stream_error") => {
+    if (logged) return
+    logged = true
+    modelCallsInFlight--
+    const totalMs = Date.now() - started
+    perf("model.call", {
+      ...request,
+      ...metadata,
+      ...failure,
+      outcome,
+      status: response.status,
+      headersMs,
+      firstChunkMs,
+      totalMs,
+      generateMs: firstChunkMs === null ? null : totalMs - firstChunkMs,
+      responseKB: Math.round(bytes / 1024),
+      chunks,
+      promptTokens: number(/"prompt_tokens"\s*:\s*(\d+)/g),
+      completionTokens: number(/"completion_tokens"\s*:\s*(\d+)/g),
+      cachedTokens: number(/"cached_tokens"\s*:\s*(\d+)/g),
+      reasoningTokens: number(/"reasoning_tokens"\s*:\s*(\d+)/g),
+      finish: tail
+        .match(/"finish_reason"\s*:\s*"([a-z_]+)"/g)
+        ?.at(-1)
+        ?.split('"')[3],
+    })
+  }
+  const reader = response.body.getReader()
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let next: ReadableStreamReadResult<Uint8Array>
+      try {
+        next = await reader.read()
+      } catch (error) {
+        log("stream_error")
+        controller.error(error)
+        return
+      }
+      if (next.done) {
+        log("complete")
+        controller.close()
+        return
+      }
+      firstChunkMs ??= Date.now() - started
+      bytes += next.value.byteLength
+      chunks++
+      tail = (tail + decoder.decode(next.value, { stream: true })).slice(-8192)
+      controller.enqueue(next.value)
+    },
+    async cancel(reason) {
+      log("canceled")
+      await reader.cancel(reason)
+    },
+  })
+  return new Response(body, response)
 }

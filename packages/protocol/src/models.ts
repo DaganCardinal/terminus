@@ -86,6 +86,16 @@ export const MODEL_CATALOG = [
     costOrder: 1,
   },
   {
+    id: "anthropic/claude-haiku-5-5",
+    apiModel: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    maker: "Anthropic",
+    kind: "text",
+    provider: "anthropic",
+    harnesses: ["opencode", "claude-code"],
+    costOrder: 4,
+  },
+  {
     id: "anthropic/claude-haiku-4-5-20251001",
     apiModel: "claude-haiku-4-5-20251001",
     name: "Claude Haiku 4.5",
@@ -93,7 +103,7 @@ export const MODEL_CATALOG = [
     kind: "text",
     provider: "anthropic",
     harnesses: ["opencode", "claude-code"],
-    costOrder: 4,
+    costOrder: 5,
   },
   {
     id: "anthropic/claude-sonnet-5-5",
@@ -103,7 +113,7 @@ export const MODEL_CATALOG = [
     kind: "text",
     provider: "anthropic",
     harnesses: ["opencode", "claude-code"],
-    costOrder: 5,
+    costOrder: 6,
   },
   {
     id: "openai/gpt-6-luna",
@@ -123,7 +133,7 @@ export const MODEL_CATALOG = [
     kind: "text",
     provider: "openai",
     harnesses: ["opencode", "codex"],
-    costOrder: 6,
+    costOrder: 7,
   },
 ] as const
 
@@ -141,6 +151,17 @@ export function compatibleModels(harness: Harness) {
 }
 export function compatibleModel(harness: Harness, model: string): boolean {
   return compatibleModels(harness).some((entry) => entry.id === model)
+}
+/**
+ * The model a harness uses for its own housekeeping, such as naming its
+ * session, never for a role's planning, code or reviews: the lowest-cost text
+ * model from the role model's provider, so one provider grant covers both.
+ */
+export function utilityModel(model: string): string {
+  const { provider } = catalogModel(model)
+  return MODEL_CATALOG.filter(
+    (entry) => entry.kind === "text" && entry.provider === provider
+  ).sort((a, b) => a.costOrder - b.costOrder)[0]!.id
 }
 export function modelForHarness(harness: Harness, current: string): string {
   return compatibleModel(harness, current)

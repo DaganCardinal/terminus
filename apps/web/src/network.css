@@ -725,6 +725,11 @@ button:disabled {
   --dot: #7ce0ae;
   --pulse: #2f9e6b;
 }
+/* A cleared Train working on what it was blocked doing. */
+.train-marker.train-clearing {
+  --dot: #ffc4cc;
+  --pulse: var(--map-danger);
+}
 .train-car {
   stroke: var(--map-paper);
   stroke-width: 3px;
@@ -743,11 +748,19 @@ button:disabled {
 .train-docked .train-pulse,
 .train-reviewing .train-pulse,
 .train-returning .train-pulse,
+.train-clearing .train-pulse,
 .train-blocked .train-pulse {
   animation: train-pulse 1.8s ease-out infinite;
 }
 .train-blocked .train-pulse {
   animation-duration: 1.1s;
+}
+/* The Engineer's signal, rushing down the track to the Station. */
+.signal-pulse {
+  fill: none;
+  stroke: #fff;
+  stroke-linecap: round;
+  pointer-events: none;
 }
 /* An unloaded Train runs on into Terminus, passing under the hub, then fades
  * once it is inside. The map drops it when this animation ends. */
@@ -2060,6 +2073,57 @@ ul.manifest-route {
 }
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+.dispatch-activity {
+  margin-block: 12px;
+}
+.dispatch-activity-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.dispatch-activity-list li {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+.dispatch-activity-list svg {
+  margin-top: 3px;
+}
+.dispatch-activity-list code {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+  color: var(--foreground);
+}
+.dispatch-activity-list time {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dispatch-activity-trigger {
+  margin-top: 8px;
+  padding-inline: 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.dispatch-activity-trigger[data-panel-open] svg {
+  transform: rotate(180deg);
+}
+.dispatch-activity-scroll {
+  height: 180px;
+  margin-block: 12px;
+}
+.dispatch-activity-scroll ol {
+  padding-right: 12px;
 }
 .dmsg-link {
   font-size: 12px;

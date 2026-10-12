@@ -9,6 +9,7 @@ export * from "./manifest"
 export * from "./models"
 export * from "./integration"
 export * from "./dispatch"
+export * from "./agent-activity"
 export * from "./preview"
 export * from "./sandbox"
 export * from "./repository"
@@ -20,3 +21,6 @@ export * from "./junction"
 
 export * from "./junction-details"
 export * from "./line-identity"
+
+// TEMPORARY benchmark instrumentation; remove with perf-log.ts.
+export * from "./perf-log"

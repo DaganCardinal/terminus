@@ -1,5 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+  FakeDispatchPlanner,
+  proposalTool,
+  type DispatchPlanningInput,
+} from "@terminus/agent-runtime"
 import { outboundRequest } from "./sandbox-outbound"
+
+const planningInput: DispatchPlanningInput = {
+  goal: "Add a footer",
+  network: { validationNames: ["test"], activeLines: [] },
+  repository: { repoId: "n/terminus", commit: "a".repeat(40) },
+  checkBaseline: false,
+  validation: [{ name: "test", command: ["npm", "test"] }],
+}
 
 const env = {
   AI_GATEWAY_ACCOUNT_ID: "account",
@@ -65,7 +78,8 @@ describe("Sandbox outbound capabilities", () => {
         })
       const grant = { repositories: [], allowModel: true, provider, model }
       const response = await outboundRequest(request(), env, grant, send)
-      expect(response.body).toBe(stream)
+      // TEMPORARY benchmark instrumentation pipes the body through a timing
+      // pass-through; restore `expect(response.body).toBe(stream)` with it.
       expect(await response.text()).toBe("data: first\n\n")
       const forwarded = send.mock.calls[0]![0] as Request
       expect(forwarded.headers.get("cf-aig-authorization")).toBe(
@@ -174,13 +188,290 @@ describe("Sandbox outbound capabilities", () => {
     expect(failed).toHaveBeenCalledWith(
       "Station model request failed",
       expect.objectContaining({
-        requestId: info.mock.calls[0]![1].requestId,
+        requestId: info.mock.calls.find(
+          ([line]) => line === "Station model request started"
+        )![1].requestId,
         reference: "abc123",
       })
     )
     const logs = JSON.stringify([info.mock.calls, failed.mock.calls])
     for (const secret of ["worker-secret", "station-token", "private-prompt"])
       expect(logs).not.toContain(secret)
+  })
+  it("times each model call with the gateway's metadata, including calls that end early", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {})
+    const calls = () =>
+      info.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.startsWith("[perf] model.call "))
+        .map(
+          (line) =>
+            JSON.parse(line.slice("[perf] model.call ".length)) as Record<
+              string,
+              unknown
+            >
+        )
+    const request = () =>
+      new Request(
+        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            model,
+            stream: true,
+            messages: [{ role: "user", content: "private-prompt" }],
+          }),
+        }
+      )
+    const streamed = (chunks: string[]) =>
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                for (const chunk of chunks)
+                  controller.enqueue(new TextEncoder().encode(chunk))
+                controller.close()
+              },
+            }),
+            {
+              headers: {
+                "content-type": "text/event-stream",
+                "cf-aig-log-id": "01JLOGID",
+                "cf-aig-cache-status": "MISS",
+                "cf-ray": "abc-SJC",
+                "server-timing": "upstream;dur=812",
+                "set-cookie": "private-cookie",
+              },
+            }
+          )
+      )
+
+    const complete = await outboundRequest(
+      request(),
+      env,
+      network,
+      streamed([
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\n',
+      ])
+    )
+    expect(await complete.text()).toContain('"content":"hi"')
+    expect(calls()[0]).toMatchObject({
+      outcome: "complete",
+      status: 200,
+      gateway: { "log-id": "01JLOGID", "cache-status": "MISS" },
+      ray: "abc-SJC",
+      serverTiming: "upstream;dur=812",
+      headerNames: expect.arrayContaining(["cf-aig-log-id", "set-cookie"]),
+      at: expect.any(Number),
+      bodyMs: expect.any(Number),
+      // Isolate-wide, so earlier tests' unread responses count too.
+      inFlight: expect.any(Number),
+      promptTokens: 12,
+      completionTokens: 3,
+      finish: "stop",
+    })
+
+    // The harness stopped reading mid-stream.
+    const canceled = await outboundRequest(
+      request(),
+      env,
+      network,
+      streamed(["data: {}\n\n", "data: {}\n\n"])
+    )
+    const reader = canceled.body!.getReader()
+    await reader.read()
+    await reader.cancel()
+    expect(calls()[1]).toMatchObject({ outcome: "canceled", chunks: 1 })
+
+    // Gateway errors keep their body for the client and a summary for us.
+    const rejected = await outboundRequest(
+      request(),
+      env,
+      network,
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response("Capacity temporarily exceeded, retry later", {
+            status: 429,
+            headers: { "cf-aig-log-id": "01JLOGID2" },
+          })
+      )
+    )
+    expect(await rejected.text()).toBe(
+      "Capacity temporarily exceeded, retry later"
+    )
+    expect(calls()[2]).toMatchObject({
+      outcome: "complete",
+      status: 429,
+      gateway: { "log-id": "01JLOGID2" },
+      errorBody: "Capacity temporarily exceeded, retry later",
+    })
+
+    const logs = JSON.stringify(info.mock.calls)
+    for (const secret of ["worker-secret", "private-prompt", "private-cookie"])
+      expect(logs).not.toContain(secret)
+  })
+  describe("hedging stalled Workers AI calls", () => {
+    const workersAi =
+      "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions"
+    const streamedRequest = (stream = true) =>
+      new Request(workersAi, {
+        method: "POST",
+        body: JSON.stringify({ model, stream, messages: [] }),
+      })
+    const affine = { ...network, sessionAffinity: "ses_sandbox" }
+    /** A response that never arrives unless the request is aborted. */
+    const stalled = (forwarded: Request) =>
+      new Promise<Response>((_, reject) =>
+        forwarded.signal.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError"))
+        )
+      )
+    const after = (ms: number, response: () => Response) =>
+      new Promise<Response>((resolve) =>
+        setTimeout(() => resolve(response()), ms)
+      )
+    const sent = (send: ReturnType<typeof vi.fn<typeof fetch>>) =>
+      send.mock.calls.map(([forwarded]) => forwarded as Request)
+
+    it("sends a copy without session affinity when headers are late, and aborts the original", async () => {
+      vi.spyOn(console, "info").mockImplementation(() => {})
+      let calls = 0
+      const send = vi.fn<typeof fetch>(async (input) =>
+        calls++ === 0
+          ? stalled(input as Request)
+          : new Response("from the copy")
+      )
+      const response = await outboundRequest(
+        streamedRequest(),
+        env,
+        affine,
+        send,
+        20
+      )
+      expect(await response.text()).toBe("from the copy")
+      const [original, copy] = sent(send)
+      expect(original!.signal.aborted).toBe(true)
+      expect(original!.headers.get("x-session-affinity")).toBe("ses_sandbox")
+      expect(copy!.headers.has("x-session-affinity")).toBe(false)
+      expect(copy!.headers.get("authorization")).toBe("Bearer worker-secret")
+      expect(await copy!.json()).toMatchObject({ model, stream: true })
+    })
+    it("keeps the original when it answers first, even after the copy is sent", async () => {
+      vi.spyOn(console, "info").mockImplementation(() => {})
+      let calls = 0
+      const send = vi.fn<typeof fetch>(async (input) =>
+        calls++ === 0
+          ? after(40, () => new Response("from the original"))
+          : stalled(input as Request)
+      )
+      const response = await outboundRequest(
+        streamedRequest(),
+        env,
+        affine,
+        send,
+        20
+      )
+      expect(await response.text()).toBe("from the original")
+      expect(sent(send)[1]!.signal.aborted).toBe(true)
+    })
+    it("never copies prompt answers, unstreamed calls, other providers, or early errors", async () => {
+      const prompt = vi.fn<typeof fetch>(async () => new Response("ok"))
+      await outboundRequest(streamedRequest(), env, affine, prompt, 20)
+      const unstreamed = vi.fn<typeof fetch>(async () =>
+        after(40, () => new Response("ok"))
+      )
+      await outboundRequest(streamedRequest(false), env, affine, unstreamed, 20)
+      const anthropic = vi.fn<typeof fetch>(async () =>
+        after(40, () => new Response("ok"))
+      )
+      await outboundRequest(
+        new Request(
+          "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic/v1/messages",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              model: "claude-haiku-4-5-20251001",
+              stream: true,
+            }),
+          }
+        ),
+        env,
+        {
+          repositories: [],
+          allowModel: true,
+          provider: "anthropic",
+          model: "anthropic/claude-haiku-4-5-20251001",
+        },
+        anthropic,
+        20
+      )
+      const overloaded = vi.fn<typeof fetch>(
+        async () => new Response("busy", { status: 429 })
+      )
+      const rejected = await outboundRequest(
+        streamedRequest(),
+        env,
+        affine,
+        overloaded,
+        20
+      )
+      expect(rejected.status).toBe(429)
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      for (const send of [prompt, unstreamed, anthropic, overloaded])
+        expect(send).toHaveBeenCalledTimes(1)
+    })
+    it("waits for the other request before returning an error, and reports the first error when both fail", async () => {
+      vi.spyOn(console, "info").mockImplementation(() => {})
+      let calls = 0
+      const recovered = vi.fn<typeof fetch>(async () =>
+        calls++ === 0
+          ? after(40, () => new Response("from the original"))
+          : new Response("busy", { status: 503 })
+      )
+      const response = await outboundRequest(
+        streamedRequest(),
+        env,
+        affine,
+        recovered,
+        20
+      )
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe("from the original")
+
+      calls = 0
+      const failing = vi.fn<typeof fetch>(async () => {
+        if (calls++ === 0) {
+          await after(40, () => new Response())
+          throw new Error("original failed")
+        }
+        throw new Error("copy failed")
+      })
+      vi.spyOn(console, "error").mockImplementation(() => {})
+      await expect(
+        outboundRequest(streamedRequest(), env, affine, failing, 20)
+      ).rejects.toThrow("copy failed")
+    })
+    it("records which request answered and when the copy was sent", async () => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => {})
+      let calls = 0
+      const send = vi.fn<typeof fetch>(async (input) =>
+        calls++ === 0 ? stalled(input as Request) : new Response("data: {}\n\n")
+      )
+      await (
+        await outboundRequest(streamedRequest(), env, affine, send, 20)
+      ).text()
+      const call = info.mock.calls
+        .map(([line]) => String(line))
+        .find((line) => line.startsWith("[perf] model.call "))!
+      expect(JSON.parse(call.slice("[perf] model.call ".length))).toMatchObject(
+        {
+          winner: "copy",
+          hedgedAtMs: expect.any(Number),
+        }
+      )
+    })
   })
   it("injects the model credential only for the configured account, route, and model", async () => {
     const send = vi.fn<typeof fetch>(async () => new Response("ok"))
@@ -246,6 +537,52 @@ describe("Sandbox outbound capabilities", () => {
     )
     expect(workersAi!.headers.get("x-session-affinity")).toBe(sessionAffinity)
     expect(anthropic!.headers.has("x-session-affinity")).toBe(false)
+  })
+  it("also allows the role model's utility model, from the same provider only", async () => {
+    const send = vi.fn<typeof fetch>(async () => new Response("ok"))
+    const call = (model: string) =>
+      new Request(
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic/v1/messages",
+        { method: "POST", body: JSON.stringify({ model }) }
+      )
+    const sonnet = {
+      repositories: [],
+      allowModel: true,
+      provider: "anthropic" as const,
+      model: "anthropic/claude-sonnet-5-5",
+    }
+    for (const model of ["claude-sonnet-5-5", "claude-haiku-5-5"])
+      expect(
+        (await outboundRequest(call(model), env, sonnet, send)).status
+      ).toBe(200)
+    for (const model of ["claude-haiku-4-5-20251001", "gpt-6-luna"])
+      expect(
+        (await outboundRequest(call(model), env, sonnet, send)).status
+      ).toBe(403)
+    const kimi = {
+      ...network,
+      model: "@cf/moonshotai/kimi-k2.7-code",
+    }
+    const workersAi = (model: string) =>
+      new Request(
+        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
+        { method: "POST", body: JSON.stringify({ model }) }
+      )
+    expect(
+      (
+        await outboundRequest(
+          workersAi("@cf/zai-org/glm-5.3-flash"),
+          env,
+          kimi,
+          send
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      (await outboundRequest(workersAi("@cf/zai-org/glm-5.3"), env, kimi, send))
+        .status
+    ).toBe(403)
+    expect(send).toHaveBeenCalledTimes(3)
   })
   it("blocks attempts to use a different model or access the model from a Git-only Sandbox", async () => {
     const send = vi.fn<typeof fetch>()
@@ -398,5 +735,120 @@ describe("Sandbox outbound capabilities", () => {
     expect(
       (send.mock.calls[0]![0] as Request).headers.has("authorization")
     ).toBe(false)
+  })
+
+  it("answers the Dispatcher's proposal tool as an MCP server, without leaving the Worker", async () => {
+    const send = vi.fn<typeof fetch>()
+    const planning = {
+      repositories: [],
+      allowModel: true,
+      model,
+      proposalCheck: {
+        network: { validationNames: ["test"], activeLines: [] },
+        baseline: null,
+      },
+    }
+    const rpc = async (body: object, method = "POST") => {
+      const response = await outboundRequest(
+        new Request(proposalTool.url, {
+          method,
+          ...(method === "POST"
+            ? {
+                headers: {
+                  "content-type": "application/json",
+                  accept: "application/json, text/event-stream",
+                },
+                body: JSON.stringify(body),
+              }
+            : {}),
+        }),
+        env,
+        planning,
+        send
+      )
+      return {
+        status: response.status,
+        body: response.status === 200 ? await response.json() : null,
+      }
+    }
+
+    // The handshake OpenCode 1.18.32 performs.
+    expect(
+      await rpc({
+        jsonrpc: "2.0",
+        id: 0,
+        method: "initialize",
+        params: { protocolVersion: "2025-11-25", capabilities: {} },
+      })
+    ).toMatchObject({
+      status: 200,
+      body: {
+        id: 0,
+        result: {
+          protocolVersion: "2025-11-25",
+          capabilities: { tools: {} },
+        },
+      },
+    })
+    expect(
+      await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })
+    ).toEqual({ status: 202, body: null })
+    expect((await rpc({}, "GET")).status).toBe(405)
+    const tools = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+    expect(tools.body).toMatchObject({
+      result: { tools: [{ name: "submit_proposal" }] },
+    })
+
+    const call = (proposal: unknown) =>
+      rpc({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "submit_proposal", arguments: { proposal } },
+      })
+    const proposal = (await new FakeDispatchPlanner().plan(planningInput))
+      .proposal
+    const accepted = (await call(proposal)).body as {
+      result: { content: { text: string }[] }
+    }
+    expect(accepted.result.content[0]!.text).toMatch(/^Accepted/)
+    // GLM passes the proposal as JSON text, so a nesting slip arrives and is repaired.
+    expect(tools.body).toMatchObject({
+      result: {
+        tools: [
+          { inputSchema: { properties: { proposal: { type: "string" } } } },
+        ],
+      },
+    })
+    const slipped = JSON.stringify(proposal).replace(/\}\]\}$/, "]}")
+    expect(() => JSON.parse(slipped)).toThrow()
+    const repaired = (await call(slipped)).body as {
+      result: { content: { text: string }[] }
+    }
+    expect(repaired.result.content[0]!.text).toMatch(/^Accepted/)
+    const rejected = (await call({ summary: "No lines" })).body as {
+      result: { content: { text: string }[]; isError?: boolean }
+    }
+    expect(rejected.result.content[0]!.text).toMatch(/^Not accepted/)
+    expect(rejected.result.isError).toBeUndefined()
+    expect(
+      await rpc({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "other", arguments: {} },
+      })
+    ).toMatchObject({ body: { id: 3, error: { code: -32602 } } })
+    expect(send).not.toHaveBeenCalled()
+
+    // Without a granted check, the same address is just another refused destination.
+    const refused = await outboundRequest(
+      new Request(proposalTool.url, { method: "POST", body: "{}" }),
+      env,
+      network,
+      send
+    )
+    expect(refused.status).toBe(403)
+    expect(send).not.toHaveBeenCalled()
   })
 })

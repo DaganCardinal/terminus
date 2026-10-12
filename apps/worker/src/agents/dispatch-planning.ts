@@ -16,6 +16,7 @@ import { DispatchError, type DispatcherPorts } from "./dispatcher"
 import { StaleWriteError } from "../integrations/network-store"
 import { applied } from "../workflows/transitions"
 import { defaultValidation } from "../integrations/execution-config"
+import type { DispatchActivityStore } from "../integrations/dispatch-activity"
 
 export interface DispatchPlanningPorts extends Pick<
   DispatcherPorts,
@@ -23,6 +24,7 @@ export interface DispatchPlanningPorts extends Pick<
 > {
   startJunction?(id: string): Promise<void>
   planner: DispatchPlanner
+  activity?: DispatchActivityStore
   startPlanning(planId: string): Promise<void>
   wakePlan(planId: string): Promise<void>
   retryPlan(planId: string): Promise<void>
