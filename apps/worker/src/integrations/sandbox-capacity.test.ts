@@ -8,6 +8,7 @@ import {
   releaseSandboxLease,
   renewSandboxLease,
   sandboxLimit,
+  sandboxLimits,
   type SandboxLease,
 } from "./sandbox-capacity"
 
@@ -104,6 +105,26 @@ describe("Sandbox capacity", () => {
     ).toBe(false)
   })
 
+  it("gives limits saved before sizes existed the default sizes", async () => {
+    await env.DB.prepare(
+      "INSERT INTO sandbox_limits VALUES ('general', NULL, ?, ?)"
+    )
+      .bind(
+        JSON.stringify({ agent: 4, agentless: 5 }),
+        new Date().toISOString()
+      )
+      .run()
+    try {
+      expect(await sandboxLimits(env.DB, "legacy")).toEqual({
+        agent: 4,
+        agentless: 5,
+        sizes: { agent: "standard-2", agentless: "standard-1" },
+      })
+    } finally {
+      await env.DB.prepare("DELETE FROM sandbox_limits").run()
+    }
+  })
+
   it("applies the network override, else General, else the defaults", async () => {
     const ports = testPorts()
     const network = await createNetwork(ports.dispatcher, { name: "Limits" })
@@ -114,7 +135,14 @@ describe("Sandbox capacity", () => {
       10, 10,
     ])
     const now = new Date().toISOString()
-    await ports.store.setGeneralSandboxLimits({ agent: 3, agentless: 7 }, now)
+    await ports.store.setGeneralSandboxLimits(
+      {
+        agent: 3,
+        agentless: 7,
+        sizes: { agent: "standard-3", agentless: "standard-2" },
+      },
+      now
+    )
     expect([await limit("SANDBOX"), await limit("WORKSPACE_SANDBOX")]).toEqual([
       3, 7,
     ])
@@ -125,16 +153,30 @@ describe("Sandbox capacity", () => {
         binding: "SANDBOX",
       })
     ).toBe(3)
+    expect((await sandboxLimits(env.DB, namespace)).sizes).toEqual({
+      agent: "standard-3",
+      agentless: "standard-2",
+    })
     await ports.store.setNetworkSandboxLimits(
       network.id,
-      { agent: 25, agentless: 1 },
+      {
+        agent: 25,
+        agentless: 1,
+        sizes: { agent: "standard-1", agentless: "standard-1" },
+      },
       now
     )
     expect([await limit("SANDBOX"), await limit("WORKSPACE_SANDBOX")]).toEqual([
       25, 1,
     ])
+    expect((await sandboxLimits(env.DB, namespace)).sizes.agent).toBe(
+      "standard-1"
+    )
     await ports.store.setNetworkSandboxLimits(network.id, null, now)
     expect(await limit("SANDBOX")).toBe(3)
+    expect((await sandboxLimits(env.DB, namespace)).sizes.agent).toBe(
+      "standard-3"
+    )
     await env.DB.prepare("DELETE FROM sandbox_limits").run()
   })
 })

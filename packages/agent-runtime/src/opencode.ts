@@ -330,7 +330,7 @@ export function finalMessageJson(text: string): unknown {
   try {
     return JSON.parse(json) as unknown
   } catch (error) {
-    const repaired = closeSkippedBrackets(json)
+    const repaired = repairBrackets(json)
     if (repaired === null) throw error
     try {
       return JSON.parse(repaired) as unknown
@@ -349,18 +349,21 @@ export function jsonParseHint(parseError: string): string {
 }
 
 /**
- * Models lose count in long, deeply nested answers and write `}]}` where
- * `}}]}` was meant. Inserts the closers skipped before a later closer, and
- * returns null when there are none or the brackets are wrong in any other way.
- * The result still goes through schema validation.
+ * Models lose count in long, deeply nested answers. They write `}]}` where
+ * `}}]}` was meant, or close the root object and then add stray closers.
+ * Inserts the closers skipped before a later closer, drops closers left over
+ * after the root closes, and returns null when there is nothing to repair or
+ * the brackets are wrong in any other way. The result still goes through
+ * schema validation.
  */
-export function closeSkippedBrackets(json: string): string | null {
+export function repairBrackets(json: string): string | null {
   const closers: string[] = []
   let output = ""
-  let inserted = false
+  let repaired = false
   let inString = false
   let escaped = false
-  for (const char of json) {
+  for (let index = 0; index < json.length; index++) {
+    const char = json[index]!
     if (inString) {
       if (escaped) escaped = false
       else if (char === "\\") escaped = true
@@ -372,12 +375,17 @@ export function closeSkippedBrackets(json: string): string | null {
       const at = closers.lastIndexOf(char)
       if (at < 0) return null
       const skipped = closers.splice(at).slice(1).reverse()
-      if (skipped.length) inserted = true
+      if (skipped.length) repaired = true
       output += skipped.join("")
+      if (!closers.length) {
+        const rest = json.slice(index + 1)
+        if (!/^[\s}\]]*$/.test(rest)) return null
+        return repaired || rest.trim() ? output + char : null
+      }
     }
     output += char
   }
-  return inserted && !inString && !closers.length ? output : null
+  return null
 }
 
 const sessionEventSchema = z.object({ sessionID: z.string().min(1) })

@@ -252,8 +252,43 @@ describe("Technician reconciliation orchestration", () => {
       true
     )
   })
+  it("reuses the repair's independent evidence instead of validating its exact candidate again", async () => {
+    const f = await fixture()
+    const repair = await f.ready()
+    await approveTechnician(f.technician, f.network.id, repair.id)
+    await advanceTrain(f.ports.train, f.train.id)
+    await advanceTrain(f.ports.train, f.train.id)
+    const attempt = (await f.ports.store.latestIntegration(f.train.id))!
+    const validate = vi.spyOn(f.integration.validator, "validate")
+    await prepareIntegration(f.integration, attempt.input.id)
+    expect(validate).not.toHaveBeenCalled()
+    const approved = (await f.ports.store.repair(repair.id))!.value.state
+    if (approved.status !== "approved") throw new Error("Expected approval")
+    const prepared = (await f.ports.store.integration(attempt.input.id))!
+    expect(prepared.status).toBe("prepared")
+    expect(prepared.evidence).toEqual(approved.proposal.evidence)
+    expect((await promoteIntegration(f.integration, attempt.input.id)).ok).toBe(
+      true
+    )
+  })
   it("retains a rejected candidate on final validation failure and requires fresh intervention", async () => {
     const f = await fixture()
+    // Evidence recorded under other commands no longer proves this
+    // attempt's checks, so integration validates the candidate itself.
+    const validate = f.technician.validator.validate.bind(
+      f.technician.validator
+    )
+    vi.spyOn(f.technician.validator, "validate").mockImplementation(
+      async (candidate, commands) => {
+        const evidence = await validate(candidate, commands)
+        return {
+          checks: evidence.checks.map((check) => ({
+            ...check,
+            command: [...(check.command ?? []), "--previous-config"],
+          })),
+        }
+      }
+    )
     const repair = await f.ready()
     await approveTechnician(f.technician, f.network.id, repair.id)
     await advanceTrain(f.ports.train, f.train.id)
@@ -263,6 +298,7 @@ describe("Technician reconciliation orchestration", () => {
       checks: [{ name: "test", required: true, status: "failed" }],
     })
     await prepareIntegration(f.integration, attempt.input.id)
+    expect(f.integration.validator.validate).toHaveBeenCalledOnce()
     await advanceTrain(f.ports.train, f.train.id)
     expect((await f.ports.store.repair(repair.id))!.value.state.status).toBe(
       "rejected"
@@ -273,6 +309,7 @@ describe("Technician reconciliation orchestration", () => {
     expect((await f.ports.store.conflicts(f.network.id))[0]!.status).toBe(
       "open"
     )
+    vi.mocked(f.technician.validator.validate).mockRestore()
     const fresh = await f.ready()
     expect(fresh.id).not.toBe(repair.id)
     expect(fresh.state.status).toBe("ready")
@@ -318,22 +355,19 @@ describe("Technician reconciliation orchestration", () => {
     )
     expect(await f.ports.store.repairs(f.network.id)).toHaveLength(1)
   })
-  it("rejects changed durable diffs before promotion", async () => {
+  it("rejects a repair whose repositories moved before promotion", async () => {
     const f = await fixture()
     const repair = await f.ready()
     await approveTechnician(f.technician, f.network.id, repair.id)
     await advanceTrain(f.ports.train, f.train.id)
     await advanceTrain(f.ports.train, f.train.id)
     const attempt = (await f.ports.store.latestIntegration(f.train.id))!
-    vi.spyOn(f.ports.train.repositories, "inspectRepair").mockResolvedValue({
-      diff: "changed after review",
-      changedPaths: [],
-      repairDiff: "changed",
-      repairPaths: [],
-    })
+    vi.spyOn(f.ports.train.repositories, "confirmRepair").mockRejectedValue(
+      new Error("Repair repository no longer contains the reviewed candidate")
+    )
     await expect(
       prepareIntegration(f.integration, attempt.input.id)
-    ).rejects.toThrow("reviewed diffs")
+    ).rejects.toThrow("reviewed candidate")
     await failIntegration(f.integration, attempt.input.id, "Candidate changed")
     expect((await f.ports.store.network(f.network.id))!.terminusCommit).toBe(
       f.network.terminusCommit

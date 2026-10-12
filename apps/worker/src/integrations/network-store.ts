@@ -557,6 +557,28 @@ export class NetworkStore {
     ])
   }
 
+  /** Whether a promotion into `targetRepoId` holds its exclusive reservation. */
+  async hasActiveIntegration(targetRepoId: string): Promise<boolean> {
+    // Matches the partial unique index that enforces the reservation.
+    const row = await this.#db
+      .prepare(
+        `SELECT 1 FROM integration_attempts
+      WHERE COALESCE(target_repo_id, json_extract(input, '$.terminusRepoId')) = ?
+      AND status IN ('cleared', 'prepared') LIMIT 1`
+      )
+      .bind(targetRepoId)
+      .first()
+    return row !== null
+  }
+
+  async trainCars(trainId: string): Promise<Car[]> {
+    const { results } = await this.#db
+      .prepare("SELECT record FROM cars WHERE train_id = ?")
+      .bind(trainId)
+      .all<RecordRow>()
+    return results.map((row) => parse<Car>(row))
+  }
+
   async integrations(networkId: string): Promise<IntegrationAttempt[]> {
     const { results } = await this.#db
       .prepare(

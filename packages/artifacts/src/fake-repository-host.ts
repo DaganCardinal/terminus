@@ -36,6 +36,7 @@ export class FakeRepositoryHost implements RepositoryHost {
       repairDiff: "Fake reconciliation diff",
     }
   }
+  async confirmRepair(): Promise<void> {}
   async readOverview(_repoId: string, commit: string) {
     const documents = fakeEntries
       .filter((entry) => isDocumentPath(entry.path))

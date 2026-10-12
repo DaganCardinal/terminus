@@ -38,7 +38,7 @@ const response = await fetch(`/api/stations/${encodeURIComponent(stationId)}/san
 console.log(response.status, response.status === 204 ? "Stopped" : await response.text())
 ```
 
-Use the full container name from Cloudflare with its leading `station-` removed as `runId`. If a failed run's Workflow is still active, finish or explicitly terminate that exact `terminus-station` instance before cleanup. Termination interrupts reporting to the Train, so use the app's intervention flow afterward if its Train is still awaiting an outcome. Pausing a Workflow alone does not stop its container. Verify the instance shows `Stopped` in the Containers dashboard before restarting work; stopped instances do not consume running-instance capacity. Do not use `wrangler containers delete`, which deletes the entire application.
+Station containers run in the `ExecutionSandboxStandard1`–`3` applications, one per instance size. Use the full container name from Cloudflare with its leading `station-` removed as `runId`. If a failed run's Workflow is still active, finish or explicitly terminate that exact `terminus-station` instance before cleanup. Termination interrupts reporting to the Train, so use the app's intervention flow afterward if its Train is still awaiting an outcome. Pausing a Workflow alone does not stop its container. Verify the instance shows `Stopped` in the Containers dashboard before restarting work; stopped instances do not consume running-instance capacity. Do not use `wrangler containers delete`, which deletes the entire application.
 
 ## Revisions and retries
 

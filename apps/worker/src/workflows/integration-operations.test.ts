@@ -7,7 +7,12 @@ import {
   testPorts,
   type TestPorts,
 } from "../../test/fixtures"
-import { placeHold, releaseHold, resolveConflict } from "../agents/dispatcher"
+import {
+  placeHold,
+  releaseHold,
+  requestTerminusClearance,
+  resolveConflict,
+} from "../agents/dispatcher"
 import {
   advanceTrain,
   clearTrain,
@@ -15,8 +20,10 @@ import {
 } from "./train-operations"
 import {
   failIntegration,
+  mergeIntegration,
   prepareIntegration,
   promoteIntegration,
+  validateIntegration,
   type IntegrationPorts,
 } from "./integration-operations"
 
@@ -69,6 +76,54 @@ describe("Terminus integration orchestration", () => {
       issues: [{ kind: "required_checks_failed" }],
     })
     expect((await ports.store.integration(id))!.status).toBe("failed")
+  })
+  it("finishes failing evidence checkpointed before a crash when validation retries", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const train = await returning(ports, network.id)
+    const id = await clear(ports, train.id)
+    await ports.store.prepareIntegration(
+      id,
+      { repoId: id, headCommit: "fake-merge" },
+      { checks: [{ name: "test", required: true, status: "failed" }] }
+    )
+    await validateIntegration(integrationPorts(ports), id, null)
+    expect(await ports.store.integration(id)).toMatchObject({
+      status: "failed",
+      result: { ok: false, issues: [{ kind: "required_checks_failed" }] },
+    })
+  })
+  it("keeps the merge out of validation retries", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const train = await returning(ports, network.id)
+    const id = await clear(ports, train.id)
+    const integration = integrationPorts(ports)
+    const merge = vi.spyOn(integration.repositories, "prepareIntegration")
+    const validate = vi.spyOn(integration.validator, "validate")
+    const candidate = await mergeIntegration(integration, id)
+    await validateIntegration(integration, id, candidate)
+    await validateIntegration(integration, id, candidate)
+    expect(merge).toHaveBeenCalledOnce()
+    expect(validate).toHaveBeenCalledOnce()
+    // A replay after the checkpoint has nothing left to merge.
+    expect(await mergeIntegration(integration, id)).toBeNull()
+    expect((await ports.store.integration(id))!.candidate).toEqual(candidate)
+  })
+  it("answers waiting Trains from the reservation alone while a promotion holds it", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const one = await returning(ports, network.id)
+    const two = await returning(ports, network.id)
+    await clear(ports, one.id)
+    expect(await advanceTrain(ports.train, two.id)).toEqual({
+      kind: "await_terminus",
+    })
+    const ranked = vi.spyOn(ports.dispatcher.store, "returningTrains")
+    const cars = vi.spyOn(ports.dispatcher.store, "trainCars")
+    expect(await requestTerminusClearance(ports.dispatcher, two.id)).toBeNull()
+    expect(ranked).not.toHaveBeenCalled()
+    expect(cars).not.toHaveBeenCalled()
   })
   it("grants one clearance, promotes, unloads, and bases the next attempt on current Terminus", async () => {
     const ports = testPorts()

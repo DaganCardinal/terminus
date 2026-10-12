@@ -107,6 +107,19 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
+  async confirmRepair(input: RepairGitInput, candidate: RepoRef) {
+    const [train, saved] = await Promise.all([
+      this.currentHead(input.source.trainRepoId),
+      this.currentHead(candidate.repoId),
+    ])
+    if (train !== input.source.trainCommit)
+      throw new RepositoryMovedError("Train moved before repair")
+    if (saved !== candidate.headCommit)
+      throw new RepositoryMovedError(
+        "Repair repository no longer contains the reviewed candidate"
+      )
+  }
+
   async head(repoId: string): Promise<string> {
     const head = await this.currentHead(repoId)
     if (!head) throw new Error("Repository has no default-branch commit")

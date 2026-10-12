@@ -187,7 +187,7 @@ export function ManifestView({
               {met ? "All met" : manifest.acceptanceCriteria.length}
             </span>
           </h4>
-          <ul className={`manifest-checklist${met ? "is-met" : ""}`}>
+          <ul className={`manifest-checklist${met ? " is-met" : ""}`}>
             {manifest.acceptanceCriteria.map((item, i) => (
               <li key={i}>
                 <MetIcon size={14} aria-hidden="true" />

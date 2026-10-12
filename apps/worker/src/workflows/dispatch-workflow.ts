@@ -4,6 +4,7 @@ import {
   type WorkflowStep,
 } from "cloudflare:workers"
 import { dispatchPlanningPorts, planModels } from "../agents/ports"
+import { DISPATCH_EVENTS } from "./events"
 import {
   dispatchPlanState,
   layDispatchLines,
@@ -48,7 +49,7 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
         if (status !== "ready") break
         try {
           await step.waitForEvent(`await launch ${gate}`, {
-            type: "dispatcher.launch",
+            type: DISPATCH_EVENTS.launch,
             timeout: "1 minute",
           })
         } catch {

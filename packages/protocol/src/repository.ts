@@ -2,8 +2,8 @@ import { z } from "zod"
 
 /**
  * A read-only view of one Terminus commit for people browsing a project:
- * its file inventory and the documents worth reading first. Ephemeral and
- * commit-addressed; never persisted in D1.
+ * its file inventory and the documents worth reading first. Commit-addressed,
+ * so the Worker caches each one in D1 after its first read.
  */
 export const repositoryEntrySchema = z.object({
   path: z.string(),

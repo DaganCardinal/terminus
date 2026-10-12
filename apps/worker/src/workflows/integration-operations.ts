@@ -2,6 +2,7 @@ import {
   blockingIssues,
   holdReasons,
   conflictsForRepair,
+  evidenceCovers,
   repairMatches,
   evaluateTerminusEntry,
   unmetRequiredChecks,
@@ -12,6 +13,7 @@ import {
   conductorVerdictSchema,
   evidenceSchema,
   type IntegrationAttempt,
+  type IntegrationCandidate,
   type IntegrationResult,
 } from "@terminus/protocol"
 import type { NetworkStore } from "../integrations/network-store"
@@ -42,8 +44,20 @@ export async function prepareIntegration(
   ports: IntegrationPorts,
   id: string
 ): Promise<void> {
+  await validateIntegration(ports, id, await mergeIntegration(ports, id))
+}
+
+/**
+ * Builds the durable merge candidate, or returns null once there is nothing
+ * left to validate. A separate Workflow step from validation, so a validation
+ * retry reuses this result instead of merging again.
+ */
+export async function mergeIntegration(
+  ports: IntegrationPorts,
+  id: string
+): Promise<IntegrationCandidate | null> {
   const attempt = await load(ports, id)
-  if (attempt.status !== "cleared") return
+  if (attempt.status !== "cleared" || attempt.result) return null
   const { input } = attempt
   const train =
     input.purpose === "junction"
@@ -77,14 +91,10 @@ export async function prepareIntegration(
       repoId: repair.state.workspaceRepoId,
       headCommit: repair.state.proposal.headCommit,
     }
-    const snapshot = await ports.repositories.inspectRepair(repair, candidate)
-    if (
-      snapshot.diff !== repair.state.proposal.diff ||
-      snapshot.repairDiff !== repair.state.repairDiff ||
-      JSON.stringify(snapshot.repairPaths) !==
-        JSON.stringify(repair.state.repairPaths)
-    )
-      throw new Error("Repair no longer matches the reviewed diffs")
+    // The Technician's inspection derived the reviewed diffs, parents and
+    // ancestry from these exact commit IDs, so only the repositories can
+    // have changed since.
+    await ports.repositories.confirmRepair(repair, candidate)
     merged = { ok: true, candidate }
   } else merged = await ports.repositories.prepareIntegration(input)
   if (!merged.ok) {
@@ -98,12 +108,35 @@ export async function prepareIntegration(
       ],
       conflictPaths: merged.conflictPaths,
     })
-    return
+    return null
   }
-  const evidence = evidenceSchema.parse(
-    await ports.validator.validate(merged.candidate, input.validation)
-  )
-  await ports.store.prepareIntegration(id, merged.candidate, evidence)
+  return merged.candidate
+}
+
+/**
+ * Collects independent evidence for the merged candidate and checkpoints it.
+ * Failing evidence finishes the attempt, including after a crash between
+ * the checkpoint and that result.
+ */
+export async function validateIntegration(
+  ports: IntegrationPorts,
+  id: string,
+  candidate: IntegrationCandidate | null
+): Promise<void> {
+  const attempt = await load(ports, id)
+  if (attempt.result) return
+  const { input } = attempt
+  let evidence: Evidence
+  if (attempt.status === "prepared" && attempt.evidence)
+    evidence = attempt.evidence
+  else if (attempt.status === "cleared" && candidate) {
+    evidence =
+      (await reusableRepairEvidence(ports, attempt, candidate)) ??
+      evidenceSchema.parse(
+        await ports.validator.validate(candidate, input.validation)
+      )
+    await ports.store.prepareIntegration(id, candidate, evidence)
+  } else return
   const failing = unmetRequiredChecks(
     evidence,
     input.validation.map((check) => check.name)
@@ -121,6 +154,29 @@ export async function prepareIntegration(
     })
     return
   }
+}
+
+/**
+ * The independent validator already ran on an approved repair's exact
+ * candidate. Running the same commands on the same commit again proves
+ * nothing new, so that evidence stands when it covers this attempt's checks.
+ */
+async function reusableRepairEvidence(
+  ports: IntegrationPorts,
+  attempt: IntegrationAttempt,
+  candidate: IntegrationCandidate
+): Promise<Evidence | null> {
+  const { input } = attempt
+  if (input.purpose === "crossing" || !input.repairId) return null
+  const repair = (await ports.store.repair(input.repairId))?.value
+  if (
+    repair?.state.status !== "approved" ||
+    repair.state.workspaceRepoId !== candidate.repoId ||
+    repair.state.proposal.headCommit !== candidate.headCommit
+  )
+    return null
+  const evidence = evidenceSchema.parse(repair.state.proposal.evidence)
+  return evidenceCovers(evidence, input.validation) ? evidence : null
 }
 
 /** Never re-merge during promotion: push exactly the independently validated commit. */

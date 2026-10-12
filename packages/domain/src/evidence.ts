@@ -49,3 +49,27 @@ export interface Evidence {
 export function failingRequiredChecks(checks: CheckResult[]): CheckResult[] {
   return checks.filter((check) => check.required && check.status !== "passed")
 }
+
+/**
+ * Whether existing evidence already proves `validation` passes: it recorded
+ * checks, none required failed, and each configured check passed running
+ * exactly its configured command. Evidence for a commit can then stand in for
+ * running the same commands on that same commit again.
+ */
+export function evidenceCovers(
+  evidence: Evidence,
+  validation: { name: string; command: string[] }[]
+): boolean {
+  return (
+    evidence.checks.length > 0 &&
+    failingRequiredChecks(evidence.checks).length === 0 &&
+    validation.every(({ name, command }) =>
+      evidence.checks.some(
+        (check) =>
+          check.name === name &&
+          check.status === "passed" &&
+          JSON.stringify(check.command) === JSON.stringify(command)
+      )
+    )
+  )
+}

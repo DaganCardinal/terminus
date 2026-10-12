@@ -7,9 +7,10 @@ import type { IntegrationOutcome } from "@terminus/protocol"
 import { integrationPorts } from "../agents/ports"
 import {
   failIntegration,
-  prepareIntegration,
+  mergeIntegration,
   promoteIntegration,
   reviewIntegration,
+  validateIntegration,
 } from "./integration-operations"
 import { TRAIN_EVENTS } from "./events"
 
@@ -32,10 +33,17 @@ export class IntegrationWorkflow extends WorkflowEntrypoint<
     let outcome: IntegrationOutcome
     let interrupted = false
     try {
-      await step.do(
-        "merge and validate",
+      // Separate steps, so a validation retry reuses the cached candidate
+      // instead of opening another merge Sandbox.
+      const candidate = await step.do(
+        "merge candidate",
         { retries, timeout: "30 minutes" },
-        () => prepareIntegration(ports, id)
+        () => mergeIntegration(ports, id)
+      )
+      await step.do(
+        "validate candidate",
+        { retries, timeout: "30 minutes" },
+        () => validateIntegration(ports, id, candidate)
       )
       // Crossing and Junction-input candidates get a sandboxed Conductor
       // review, a paid session that verifies the app, so it gets one retry.

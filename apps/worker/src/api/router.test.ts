@@ -583,10 +583,18 @@ describe("sandbox limits", () => {
   it("saves General limits and lets a network override or follow them", async () => {
     const network = await createNetwork()
     expect(await (await api("/settings/sandboxes")).json()).toEqual({
-      limits: { agent: 10, agentless: 10 },
+      limits: {
+        agent: 10,
+        agentless: 10,
+        sizes: { agent: "standard-2", agentless: "standard-1" },
+      },
       updatedAt: null,
     })
-    const general = { agent: 4, agentless: 12 }
+    const general = {
+      agent: 4,
+      agentless: 12,
+      sizes: { agent: "standard-3", agentless: "standard-1" },
+    }
     expect((await put("/settings/sandboxes", general)).status).toBe(200)
 
     const path = `/networks/${network.id}/settings/sandboxes`
@@ -595,7 +603,11 @@ describe("sandbox limits", () => {
       general,
       updatedAt: null,
     })
-    const override = { agent: 20, agentless: 2 }
+    const override = {
+      agent: 20,
+      agentless: 2,
+      sizes: { agent: "standard-1", agentless: "standard-2" },
+    }
     const saved = await put(path, { override })
     expect(saved.status).toBe(200)
     expect(await saved.json()).toMatchObject({ override, general })
@@ -607,12 +619,18 @@ describe("sandbox limits", () => {
     await put("/settings/sandboxes", { agent: 10, agentless: 10 })
   })
 
-  it("refuses limits outside 1 to 100, partial limits, and unknown networks", async () => {
+  it("refuses limits outside 1 to 100, partial limits, unknown sizes, and unknown networks", async () => {
     for (const limits of [
       { agent: 0, agentless: 10 },
       { agent: 10, agentless: 101 },
       { agent: 2.5, agentless: 10 },
       { agent: 10 },
+      {
+        agent: 10,
+        agentless: 10,
+        sizes: { agent: "basic", agentless: "standard-1" },
+      },
+      { agent: 10, agentless: 10, sizes: { agent: "standard-2" } },
     ])
       expect((await put("/settings/sandboxes", limits)).status).toBe(400)
     expect((await api("/networks/missing/settings/sandboxes")).status).toBe(404)

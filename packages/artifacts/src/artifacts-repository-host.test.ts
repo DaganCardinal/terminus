@@ -435,6 +435,50 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.tokens.size).toBe(0)
   })
 
+  it("confirms a reviewed repair from repository heads alone, and refuses moved ones", async () => {
+    const f = await fixture({ readHeadDirectly: true })
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    for (const name of ["train", "repair"])
+      await f.host.fork({
+        sourceRepoId: "p/terminus",
+        commit: terminus.headCommit,
+        name,
+      })
+    const trainCommit = (await f.change("p/train")).commit
+    const candidate = {
+      repoId: "p/repair",
+      headCommit: (await f.change("p/repair")).commit,
+    }
+    const input = {
+      id: "repair",
+      scope: ["README.md"],
+      source: {
+        integrationId: "failed",
+        trainId: "train",
+        trainRepoId: "p/train",
+        trainCommit,
+        trainBaseline: terminus.headCommit,
+        terminusRepoId: "p/terminus",
+        terminusCommit: terminus.headCommit,
+        acceptedCommits: [trainCommit],
+      },
+    }
+    const opened = f.grants.length
+    await f.host.confirmRepair(input, candidate)
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+
+    await f.change("p/repair", "README.md", "changed after review\n")
+    await expect(f.host.confirmRepair(input, candidate)).rejects.toThrow(
+      "reviewed candidate"
+    )
+    await f.change("p/train", "README.md", "moved\n")
+    await expect(f.host.confirmRepair(input, candidate)).rejects.toThrow(
+      "Train moved"
+    )
+    expect(f.tokens.size).toBe(0)
+  })
+
   it("reads files from objects by the same rules as a workspace, without opening one", async () => {
     const f = await fixture({ readObjectsDirectly: true })
     const terminus = await f.host.createTerminus({ namespace: "p" })

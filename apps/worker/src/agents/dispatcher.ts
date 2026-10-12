@@ -427,6 +427,10 @@ export async function requestTerminusClearance(
   }
   const network = await ports.store.network(loaded.networkId)
   if (!network) throw new DispatchError(404, "Unknown network")
+  // The claim below would fail anyway; waiting Trains ask every minute, so
+  // skip ranking the queue while another promotion holds the reservation.
+  if (await ports.store.hasActiveIntegration(network.terminusRepoId))
+    return null
   const [trains, holds, conflicts] = await Promise.all([
     ports.store.returningTrains(network.id),
     ports.store.holds(network.id),
@@ -460,12 +464,10 @@ export async function requestTerminusClearance(
       }).kind === "clear"
   )
   if (eligible[0]?.value.id !== trainId) return null
-  const snapshot = await ports.store.snapshot(network.id)
+  const cars = await ports.store.trainCars(trainId)
   const train = loaded.value
   const acceptedCommits = train.carIds.map((id) => {
-    const car = snapshot?.cars.find(
-      (car) => car.id === id && car.trainId === trainId
-    )
+    const car = cars.find((car) => car.id === id && car.trainId === trainId)
     if (!car)
       throw new DispatchError(409, `Train is missing provenance for Car ${id}`)
     return car.acceptedCommit

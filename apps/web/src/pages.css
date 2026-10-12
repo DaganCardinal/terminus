@@ -481,33 +481,9 @@
   text-align: center;
 }
 .board-empty-art {
-  width: 220px;
+  width: 72px;
+  height: 72px;
   margin-bottom: 24px;
-  fill: none;
-  stroke-linecap: round;
-}
-.board-empty-art path {
-  stroke-width: 6;
-}
-.board-empty-art path:nth-child(1) {
-  stroke: #ce3548;
-}
-.board-empty-art path:nth-child(2) {
-  stroke: #176ab5;
-}
-.board-empty-art path:nth-child(3) {
-  stroke: #008477;
-}
-.board-empty-art circle {
-  fill: var(--panel);
-  stroke: var(--foreground);
-  stroke-width: 5;
-}
-.board-empty-art text {
-  fill: var(--foreground);
-  stroke: none;
-  font-size: 18px;
-  font-weight: 700;
 }
 .board-empty h2 {
   font-size: 18px;
@@ -1605,7 +1581,13 @@
   border-color: var(--danger-ink);
 }
 .settings-limits th:first-child {
-  width: 58%;
+  width: 52%;
+}
+.settings-limits td > small {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 
 .settings-footer {

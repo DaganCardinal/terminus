@@ -50,7 +50,7 @@ import {
   stationMaxRetries,
 } from "../integrations/execution-config"
 import type { JunctionDispatchPorts } from "./junctions"
-import { TRAIN_EVENTS } from "../workflows/events"
+import { DISPATCH_EVENTS, TRAIN_EVENTS } from "../workflows/events"
 import {
   FakeIntegrationValidator,
   SandboxIntegrationValidator,
@@ -387,7 +387,7 @@ export function dispatchPlanningPorts(
       if ((await instance.status()).status === "errored")
         await instance.restart()
       try {
-        await instance.sendEvent({ type: "dispatcher.launch", payload: {} })
+        await instance.sendEvent({ type: DISPATCH_EVENTS.launch, payload: {} })
       } catch {
         // A periodic gate read observes the already persisted launch command.
       }

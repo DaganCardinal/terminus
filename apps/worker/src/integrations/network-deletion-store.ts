@@ -132,6 +132,9 @@ export class NetworkDeletionStore {
       this.db
         .prepare("DELETE FROM repository_provisions WHERE namespace = ?")
         .bind(namespace),
+      this.db
+        .prepare("DELETE FROM repository_overviews WHERE namespace = ?")
+        .bind(namespace),
       this.db.prepare("DELETE FROM networks WHERE id = ?").bind(networkId),
     ]
     await this.db.batch(statements)

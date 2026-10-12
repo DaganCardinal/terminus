@@ -14,10 +14,12 @@ import {
   type ModelSettings,
   type RoleModels,
   MAX_SANDBOX_INSTANCES,
+  SANDBOX_SIZES,
   sandboxLimitsSchema,
   type NetworkSandboxLimits,
   type SandboxKind,
   type SandboxLimits,
+  type SandboxSize,
 } from "@terminus/protocol"
 import { Button, buttonVariants } from "@terminus/ui/components/button"
 import { cn } from "@terminus/ui/lib/utils"
@@ -184,8 +186,8 @@ const sections: { id: SettingsSection; name: string }[] = [
 ]
 
 /**
- * Which models the agents run, and how many Sandboxes a network may run at
- * once. General settings apply to every network; a network's own settings
+ * Which models the agents run, and how big and how many Sandboxes a network
+ * may run at once. General settings apply to every network; a network's own settings
  * override them.
  */
 export function SettingsPage({
@@ -294,8 +296,8 @@ export function SettingsPage({
               <h1>{networkId ? `Sandboxes for ${scopeName}` : "Sandboxes"}</h1>
               <p>
                 {networkId
-                  ? "Follow the General limits, or set how many Sandboxes this network may run at once."
-                  : "How many Sandboxes each network may run at once. A network can override these in its own settings."}{" "}
+                  ? "Follow the General limits, or set how big this network’s Sandboxes are and how many it may run at once."
+                  : "How big each network’s Sandboxes are, and how many it may run at once. A network can override these in its own settings."}{" "}
                 At its limit, a network’s work waits for a running Sandbox to
                 finish; a preview reports the limit instead of waiting.
               </p>
@@ -697,27 +699,34 @@ const sandboxKinds: {
   id: SandboxKind
   name: string
   detail: string
-  size: string
 }[] = [
   {
     id: "agent",
     name: "Agent Sandboxes",
     detail:
       "Run harnesses: Station work, Conductor reviews, Dispatcher planning and Technician repairs",
-    size: "standard-2",
   },
   {
     id: "agentless",
     name: "Agentless Sandboxes",
     detail: "Run Git operations, integration validation and previews",
-    size: "standard-1",
   },
 ]
 
-type LimitInputs = Record<SandboxKind, string>
+/** Cloudflare's resources for each instance type. */
+const sandboxSizeResources: Record<SandboxSize, string> = {
+  "standard-1": "½ vCPU · 4 GiB",
+  "standard-2": "1 vCPU · 6 GiB",
+  "standard-3": "2 vCPU · 8 GiB",
+}
+
+type LimitInputs = Record<SandboxKind, string> & {
+  sizes: Record<SandboxKind, SandboxSize>
+}
 const inputsFor = (limits: SandboxLimits): LimitInputs => ({
   agent: String(limits.agent),
   agentless: String(limits.agentless),
+  sizes: { ...limits.sizes },
 })
 
 function SandboxLimitsForm({
@@ -739,6 +748,7 @@ function SandboxLimitsForm({
   const parsed = sandboxLimitsSchema.safeParse({
     agent: Number(inputs.agent),
     agentless: Number(inputs.agentless),
+    sizes: inputs.sizes,
   })
   const target: SandboxLimits | null = follow
     ? null
@@ -787,7 +797,7 @@ function SandboxLimitsForm({
           >
             <ScopeOption
               name="Use General limits"
-              detail={`Currently ${saved.general.agent} agent and ${saved.general.agentless} agentless. Follows any change to General.`}
+              detail={`Currently ${saved.general.agent} agent at ${saved.general.sizes.agent} and ${saved.general.agentless} agentless at ${saved.general.sizes.agentless}. Follows any change to General.`}
               checked={follow}
               onChange={() => {
                 setFollow(true)
@@ -817,11 +827,11 @@ function SandboxLimitsForm({
 
       <section aria-labelledby="settings-limits">
         <div className="settings-section-heading">
-          <h2 id="settings-limits">Concurrent Sandboxes</h2>
+          <h2 id="settings-limits">Sandbox sizes and limits</h2>
           <p>
             Each kind counts separately, from 1 to {MAX_SANDBOX_INSTANCES}.
-            Lowering a limit never stops running Sandboxes; it applies as they
-            finish.
+            Changing a size or lowering a limit never stops running Sandboxes;
+            it applies as they finish and new ones start.
           </p>
         </div>
         <table className="settings-roles settings-limits panel">
@@ -840,7 +850,40 @@ function SandboxLimitsForm({
                   <small>{kind.detail}</small>
                 </th>
                 <td data-label="Instance">
-                  <span className="settings-model">{kind.size}</span>
+                  {follow ? (
+                    <span className="settings-model">
+                      {shown.sizes[kind.id]}
+                      <small>
+                        {sandboxSizeResources[shown.sizes[kind.id]]}
+                      </small>
+                    </span>
+                  ) : (
+                    <>
+                      <select
+                        aria-label={`${kind.name} instance`}
+                        value={inputs.sizes[kind.id]}
+                        onChange={(event) => {
+                          setInputs({
+                            ...inputs,
+                            sizes: {
+                              ...inputs.sizes,
+                              [kind.id]: event.target.value as SandboxSize,
+                            },
+                          })
+                          setError(null)
+                        }}
+                      >
+                        {SANDBOX_SIZES.map((size) => (
+                          <option key={size} value={size}>
+                            {size}
+                          </option>
+                        ))}
+                      </select>
+                      <small>
+                        {sandboxSizeResources[inputs.sizes[kind.id]]}
+                      </small>
+                    </>
+                  )}
                 </td>
                 <td data-label="Limit">
                   {follow ? (

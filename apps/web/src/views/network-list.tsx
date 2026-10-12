@@ -1,7 +1,9 @@
 import type { NetworkListing } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
-import { Plus, RotateCw, Search, X } from "lucide-react"
+import { LoaderCircle, Plus, RotateCw, Search, X } from "lucide-react"
+import logomark from "@/assets/terminus-logomark.svg"
+import logomarkWhite from "@/assets/terminus-logomark-white.svg"
 import { AppNav } from "@/components/app-nav"
 import { RepositoryIcon } from "@/components/repository-icon"
 import { useNow } from "@/components/use-now"
@@ -372,15 +374,22 @@ function BoardSkeleton() {
 function FirstNetwork() {
   return (
     <section className="board-empty panel">
-      <svg viewBox="0 0 220 96" aria-hidden="true" className="board-empty-art">
-        <path d="M8 22 H120 Q140 22 150 40 L160 48" />
-        <path d="M8 48 H160" />
-        <path d="M8 74 H120 Q140 74 150 56 L160 48" />
-        <circle cx="186" cy="48" r="22" />
-        <text x="186" y="54" textAnchor="middle">
-          T
-        </text>
-      </svg>
+      <span className="board-empty-art" aria-hidden="true">
+        <img
+          className="logomark-light"
+          src={logomark}
+          alt=""
+          width="72"
+          height="72"
+        />
+        <img
+          className="logomark-dark"
+          src={logomarkWhite}
+          alt=""
+          width="72"
+          height="72"
+        />
+      </span>
       <h2>Lay your first network</h2>
       <p>
         A network coordinates many agents working on one project at once. Import
@@ -456,7 +465,11 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
           </Button>
         )}
         <Button type="submit" disabled={pending}>
-          <Plus size={16} />
+          {pending ? (
+            <LoaderCircle size={16} className="animate-spin" />
+          ) : (
+            <Plus size={16} />
+          )}
           {pending ? "Creating…" : "Create network"}
         </Button>
       </div>

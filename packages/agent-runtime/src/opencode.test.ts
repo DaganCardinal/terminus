@@ -12,7 +12,6 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import {
-  closeSkippedBrackets,
   conductorHarnessAgent,
   dispatcherHarnessAgent,
   finalMessageJson,
@@ -24,6 +23,7 @@ import {
   opencodeConfig,
   opencodeEnvironment,
   opencodeRunCommand,
+  repairBrackets,
   repositoryContentPolicy,
   stationHarnessAgent,
 } from "./opencode"
@@ -272,15 +272,30 @@ describe("Final message JSON", () => {
     })
   })
 
+  it("drops closers left over after the root object closes", () => {
+    // A live Dispatcher repeated this across all three attempts.
+    expect(
+      finalMessageJson(
+        '{"lines":[{"stations":[{"manifest":{"goal":"a"}}]}],"findings":[{"topic":"b"}]}]}'
+      )
+    ).toEqual({
+      lines: [{ stations: [{ manifest: { goal: "a" } }] }],
+      findings: [{ topic: "b" }],
+    })
+    expect(finalMessageJson('{"a":{"b":1}}]}\n}')).toEqual({ a: { b: 1 } })
+  })
+
   it("leaves every other defect to the parser", () => {
     for (const text of [
       '{"a":{"b":1}',
-      '{"a":1}}',
+      '{"a":1},{"b":2}',
+      '{"a":1}]"b"}',
       '{"a":[1,]}',
       '{"a":"b}',
       '{"a":1}',
+      '{"a":1}\n',
     ])
-      expect(closeSkippedBrackets(text)).toBeNull()
+      expect(repairBrackets(text)).toBeNull()
     expect(() => finalMessageJson('{"a":{"b":1}')).toThrow(SyntaxError)
     expect(() => finalMessageJson('{"a":[1,]}')).toThrow(SyntaxError)
   })

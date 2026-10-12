@@ -2,6 +2,7 @@ import {
   DEFAULT_SANDBOX_LIMITS,
   sandboxLimitsSchema,
   type SandboxKind,
+  type SandboxLimits,
 } from "@terminus/protocol"
 import type { SandboxBinding } from "./execution-sandbox"
 
@@ -23,29 +24,37 @@ export interface SandboxLease {
 }
 
 /**
- * The network's limit for this kind of Sandbox: its override, else General,
- * else the default. A namespace still being onboarded has no network yet,
- * so it follows General.
+ * The network's Sandbox limits and sizes: its override, else General, else
+ * the defaults. A namespace still being onboarded has no network yet, so it
+ * follows General.
  */
-export async function sandboxLimit(
+export async function sandboxLimits(
   db: D1Database,
-  lease: Pick<SandboxLease, "namespace" | "binding">
-): Promise<number> {
+  namespace: string
+): Promise<SandboxLimits> {
   const { results } = await db
     .prepare(
       "SELECT scope, limits FROM sandbox_limits WHERE scope = 'general' OR scope IN (SELECT 'network:' || id FROM networks WHERE terminus_repo_id = ?)"
     )
-    .bind(`${lease.namespace}/terminus`)
+    .bind(`${namespace}/terminus`)
     .all<{ scope: string; limits: string }>()
   const parsed = (scope: (value: string) => boolean) => {
     const row = results.find((candidate) => scope(candidate.scope))
     return row ? sandboxLimitsSchema.parse(JSON.parse(row.limits)) : null
   }
-  const limits =
+  return (
     parsed((scope) => scope !== "general") ??
     parsed((scope) => scope === "general") ??
     DEFAULT_SANDBOX_LIMITS
-  return limits[sandboxKind[lease.binding]]
+  )
+}
+
+/** The network's limit for this kind of Sandbox. */
+export async function sandboxLimit(
+  db: D1Database,
+  lease: Pick<SandboxLease, "namespace" | "binding">
+): Promise<number> {
+  return (await sandboxLimits(db, lease.namespace))[sandboxKind[lease.binding]]
 }
 
 /**

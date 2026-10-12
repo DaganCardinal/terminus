@@ -1,3 +1,8 @@
+/** Workflow transport event types cannot contain dots, unlike domain events. */
+export const DISPATCH_EVENTS = {
+  launch: "dispatcher-launch",
+} as const
+
 /** Workflow event types the Train Workflow waits for. */
 export const TRAIN_EVENTS = {
   /** A Station run finished. Payload: StationOutcome. */

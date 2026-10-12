@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test"
 import { describe, expect, it, vi } from "vitest"
-import type { ExecutionSandbox } from "./execution-sandbox"
+import type { ExecutionSandbox, SandboxContainer } from "./execution-sandbox"
 
 function fakeContainer() {
   const fetch = vi
@@ -41,22 +41,27 @@ const saved = {
   remote: "https://account.artifacts.cloudflare.net/git/default/train.git",
 }
 
-// Previews run in the agentless WorkspaceSandbox, so tests default to it.
+// Previews run in agentless Sandboxes, so tests default to one of those
+// containers. Each shares the name of the Sandbox it serves.
 async function withSandbox(
   run: (
-    sandbox: ExecutionSandbox,
-    f: ReturnType<typeof fakeContainer>
+    sandbox: SandboxContainer,
+    f: ReturnType<typeof fakeContainer>,
+    name: string
   ) => Promise<void>,
-  binding: "SANDBOX" | "WORKSPACE_SANDBOX" = "WORKSPACE_SANDBOX"
+  binding:
+    | "SANDBOX_STANDARD_2"
+    | "WORKSPACE_SANDBOX_STANDARD_1" = "WORKSPACE_SANDBOX_STANDARD_1"
 ) {
   await env.DB.prepare(
     "INSERT OR IGNORE INTO repository_provisions VALUES ('default')"
   ).run()
-  const stub = env[binding].getByName(`preview-test-${crypto.randomUUID()}`)
+  const name = `preview-test-${crypto.randomUUID()}`
+  const stub = env[binding].getByName(name)
   await runInDurableObject(stub, async (instance, state) => {
     // The test environment adds TEST_MIGRATIONS to Env; the bound production
     // class uses the generated Env without that test-only field.
-    const sandbox = instance as unknown as ExecutionSandbox
+    const sandbox = instance as unknown as SandboxContainer
     await state.storage.put("trainPreview", saved)
     const f = fakeContainer()
     // Keep native Durable Object storage/context; replace only its container transport.
@@ -64,7 +69,7 @@ async function withSandbox(
       .spyOn(sandbox as unknown as { container(): Container }, "container")
       .mockReturnValue(f.container as unknown as Container)
     try {
-      await run(sandbox, f)
+      await run(sandbox, f, name)
     } finally {
       mock.mockRestore()
     }
@@ -83,7 +88,7 @@ describe("Sandbox capacity", () => {
       .bind(objectId)
       .first<number>("COUNT(*)")
   // The protected entry the preview path uses, which never waits for capacity.
-  const start = (sandbox: ExecutionSandbox) =>
+  const start = (sandbox: SandboxContainer) =>
     (
       sandbox as unknown as {
         applyNetwork(network: unknown, waitMs: number): Promise<void>
@@ -159,15 +164,25 @@ describe("Sandbox namespaces", () => {
       .bind(binding)
       .first<number>("COUNT(*)")
 
-  it("registers each Sandbox under the binding its object id resolves in", async () => {
-    for (const binding of ["SANDBOX", "WORKSPACE_SANDBOX"] as const) {
+  it("registers the Sandbox each container serves, by that Sandbox's id and binding", async () => {
+    for (const [binding, container] of [
+      ["SANDBOX", "SANDBOX_STANDARD_2"],
+      ["WORKSPACE_SANDBOX", "WORKSPACE_SANDBOX_STANDARD_1"],
+    ] as const) {
       const before = (await registered(binding)) ?? 0
-      await withSandbox(async (sandbox) => {
+      await withSandbox(async (sandbox, _f, name) => {
         await sandbox.configure({
           repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
           allowModel: false,
         })
-      }, binding)
+        expect(
+          await env.DB.prepare(
+            "SELECT binding FROM network_sandboxes WHERE object_id = ?"
+          )
+            .bind(env[binding].idFromName(name).toString())
+            .first("binding")
+        ).toBe(binding)
+      }, container)
       expect(await registered(binding)).toBe(before + 1)
     }
   })
@@ -182,7 +197,7 @@ describe("Sandbox namespaces", () => {
     await withSandbox(async (sandbox, f) => {
       await sandbox.configure({ repositories: [], allowModel: true })
       expect(f.container.interceptAllOutboundHttp).toHaveBeenCalledOnce()
-    }, "SANDBOX")
+    }, "SANDBOX_STANDARD_2")
   })
 })
 
@@ -313,6 +328,139 @@ describe("Sandbox preview routing", () => {
       ).toBe(false)
       expect(response.headers.get("cache-control")).toBe("no-store")
       expect(response.headers.get("referrer-policy")).toBe("no-referrer")
+    })
+  })
+})
+
+describe("Sandbox sizes", () => {
+  const network = {
+    repositories: [
+      { remote: saved.remote, token: "t", scope: "read" as const },
+    ],
+    allowModel: false,
+  }
+  const useSizes = (agentless: string) =>
+    env.DB.prepare(
+      "INSERT INTO sandbox_limits VALUES ('general', NULL, ?, ?) ON CONFLICT(scope) DO UPDATE SET limits = excluded.limits"
+    )
+      .bind(
+        JSON.stringify({
+          agent: 10,
+          agentless: 10,
+          sizes: { agent: "standard-2", agentless },
+        }),
+        new Date().toISOString()
+      )
+      .run()
+
+  /** Runs inside a Sandbox, with a fake container stub per size. */
+  async function withRouter(
+    run: (
+      sandbox: ExecutionSandbox,
+      containers: Record<string, ReturnType<typeof fakeStub>>,
+      state: DurableObjectState,
+      names: Set<string>
+    ) => Promise<void>
+  ) {
+    const stub = env.WORKSPACE_SANDBOX.getByName(`sized-${crypto.randomUUID()}`)
+    await runInDurableObject(stub, async (instance, state) => {
+      const sandbox = instance as unknown as ExecutionSandbox
+      const containers: Record<string, ReturnType<typeof fakeStub>> = {}
+      const names = new Set<string>()
+      const mock = vi
+        .spyOn(
+          sandbox as unknown as {
+            container(size: string, name: string): unknown
+          },
+          "container"
+        )
+        .mockImplementation((size, name) => {
+          names.add(name)
+          return (containers[size] ??= fakeStub())
+        })
+      try {
+        await run(sandbox, containers, state, names)
+      } finally {
+        mock.mockRestore()
+      }
+    })
+  }
+  function fakeStub() {
+    const stub = {
+      isRunning: false,
+      running: vi.fn(async () => stub.isRunning),
+      configure: vi.fn(async () => {
+        stub.isRunning = true
+      }),
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+        outputTruncated: false,
+      })),
+      fetchTrainPreview: vi.fn(async () => new Response("preview")),
+      close: vi.fn(async () => {
+        stub.isRunning = false
+      }),
+      purge: vi.fn(async () => {}),
+    }
+    return stub
+  }
+
+  it("starts at the network's size, and changes size only once no container runs", async () => {
+    await useSizes("standard-3")
+    try {
+      await withRouter(async (sandbox, containers) => {
+        await sandbox.configure(network)
+        expect(containers["standard-3"]!.configure).toHaveBeenCalledOnce()
+
+        // A running container keeps its size, so its workspace survives.
+        await useSizes("standard-2")
+        await sandbox.configure(network)
+        await sandbox.run(["true"])
+        expect(containers["standard-3"]!.configure).toHaveBeenCalledTimes(2)
+        expect(containers["standard-3"]!.run).toHaveBeenCalledOnce()
+        expect(containers["standard-2"]).toBeUndefined()
+
+        await sandbox.close()
+        expect(containers["standard-3"]!.close).toHaveBeenCalledOnce()
+        await sandbox.configure(network)
+        await sandbox.run(["true"])
+        expect(containers["standard-2"]!.configure).toHaveBeenCalledOnce()
+        expect(containers["standard-2"]!.run).toHaveBeenCalledOnce()
+      })
+    } finally {
+      await env.DB.prepare("DELETE FROM sandbox_limits").run()
+    }
+  })
+
+  it("refuses work and previews before any container has started", async () => {
+    await withRouter(async (sandbox, containers) => {
+      await expect(sandbox.run(["true"])).rejects.toThrow(
+        "Sandbox network capabilities have not been configured"
+      )
+      const response = await sandbox.fetchTrainPreview(
+        new Request("https://preview.test/"),
+        saved.token
+      )
+      expect(response.status).toBe(404)
+      await sandbox.close()
+      expect(Object.keys(containers)).toEqual([])
+    })
+  })
+
+  it("names every size's container after the Sandbox, and purges them all with its storage", async () => {
+    await withRouter(async (sandbox, containers, state, names) => {
+      await sandbox.configure(network)
+      const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+      expect([...names]).toEqual([id.name])
+      await sandbox.purge()
+      for (const size of ["standard-1", "standard-2", "standard-3"])
+        expect(containers[size]!.purge).toHaveBeenCalledOnce()
+      expect(await state.storage.list()).toEqual(new Map())
+      await expect(sandbox.configure(network)).rejects.toThrow(
+        "Sandbox was deleted"
+      )
     })
   })
 })

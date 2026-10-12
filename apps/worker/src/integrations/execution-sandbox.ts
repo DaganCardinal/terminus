@@ -9,6 +9,8 @@ import {
   previewTokenSchema,
   type SandboxPreviewRequest,
   type SandboxPreviewResult,
+  SANDBOX_SIZES,
+  type SandboxSize,
 } from "@terminus/protocol"
 import { DurableObject } from "cloudflare:workers"
 import { installDependencies, npmCacheDirectory } from "./dependency-cache"
@@ -18,6 +20,7 @@ import {
   renewSandboxLease,
   sandboxKind,
   sandboxLimit,
+  sandboxLimits,
   SANDBOX_CAPACITY_MESSAGE,
 } from "./sandbox-capacity"
 
@@ -40,12 +43,173 @@ const leaseRenewalMs = 60_000
  * step, which then retries; previews, behind a person, never wait. */
 const capacityWaitMs = 10 * 60_000
 
-/** The Durable Object bindings that hold Sandboxes, as recorded for deletion. */
+/** The Durable Object bindings callers address Sandboxes by, one per kind,
+ * as recorded for deletion. */
 export type SandboxBinding = "SANDBOX" | "WORKSPACE_SANDBOX"
 
-/** The required Sandbox container adapter. No Train or Station lifecycle lives here. */
+/** The container class bindings behind each Sandbox binding, one per size.
+ * Each holds the kind's image at that size (`wrangler.jsonc`). */
+const containerBindings = {
+  SANDBOX: {
+    "standard-1": "SANDBOX_STANDARD_1",
+    "standard-2": "SANDBOX_STANDARD_2",
+    "standard-3": "SANDBOX_STANDARD_3",
+  },
+  WORKSPACE_SANDBOX: {
+    "standard-1": "WORKSPACE_SANDBOX_STANDARD_1",
+    "standard-2": "WORKSPACE_SANDBOX_STANDARD_2",
+    "standard-3": "WORKSPACE_SANDBOX_STANDARD_3",
+  },
+} as const satisfies Record<SandboxBinding, Record<SandboxSize, keyof Env>>
+
+/** A remote's Artifacts namespace, or null when it isn't an Artifacts remote. */
+function artifactsNamespace(remote: string): string | null {
+  const match = /^\/git\/([^/]+)\/[^/]+$/.exec(new URL(remote).pathname)
+  return match ? decodeURIComponent(match[1]!) : null
+}
+
+/**
+ * A Sandbox's address. Callers name Sandboxes here, and each routes to a
+ * container class of its network's chosen size. It changes size only while
+ * no container runs, so a new setting never strands running work; it
+ * applies from the next start.
+ */
 export class ExecutionSandbox extends DurableObject<Env> {
-  /** Object ids only resolve in their own namespace, so registration records it. */
+  protected readonly binding: SandboxBinding = "SANDBOX"
+  #purged = false
+  /** Serializes size choices, so concurrent starts agree on one container. */
+  #choosing: Promise<unknown> = Promise.resolve()
+
+  async configure(network: SandboxNetwork): Promise<void> {
+    const remotes = sandboxNetworkSchema
+      .parse(network)
+      .repositories.map((repo) => repo.remote)
+    await (await this.choose(remotes)).configure(network)
+  }
+
+  async prepareTrainPreview(
+    input: SandboxPreviewRequest
+  ): Promise<SandboxPreviewResult> {
+    const parsed = sandboxPreviewRequestSchema.parse(input)
+    return (await this.choose([parsed.remote])).prepareTrainPreview(parsed)
+  }
+
+  async fetchTrainPreview(request: Request, token: string): Promise<Response> {
+    const container = await this.current()
+    if (!container) return new Response("Not found", { status: 404 })
+    return container.fetchTrainPreview(request, token)
+  }
+
+  async stopTrainPreview(): Promise<void> {
+    await (await this.current())?.stopTrainPreview()
+  }
+
+  async run(
+    command: string[],
+    cwd?: string,
+    env?: Record<string, string>,
+    timeoutMs?: number
+  ): Promise<CommandResult> {
+    return (await this.configured()).run(command, cwd, env, timeoutMs)
+  }
+
+  async installDependencies(cwd: string): Promise<CommandResult> {
+    return (await this.configured()).installDependencies(cwd)
+  }
+
+  async write(path: string, contents: string): Promise<void> {
+    await (await this.configured()).write(path, contents)
+  }
+
+  async close(): Promise<void> {
+    await (await this.current())?.close()
+  }
+
+  /** Permanent deletion purges every size's container, since earlier starts
+   * may have used another size, and then this address's own storage. */
+  async purge(): Promise<void> {
+    this.#purged = true
+    await this.#choosing.catch(() => {})
+    const name = await this.name()
+    // Without a name, no container was ever started from here.
+    if (name)
+      for (const size of SANDBOX_SIZES) await this.container(size, name).purge()
+    await this.ctx.storage.deleteAll()
+  }
+
+  /** The container to start work in: the one already running, else one of
+   * the network's current size. */
+  private choose(
+    remotes: string[]
+  ): Promise<DurableObjectStub<SandboxContainer>> {
+    const chosen = this.#choosing
+      .catch(() => {})
+      .then(async () => {
+        if (this.#purged) throw new Error("Sandbox was deleted")
+        const name = this.ctx.id.name
+        if (!name) throw new Error("Sandboxes are started by name")
+        await this.ctx.storage.put("name", name)
+        const current = await this.current()
+        if (current && (await current.running())) return current
+        let namespace = await this.ctx.storage.get<string>("namespace")
+        if (!namespace) {
+          namespace = remotes.map(artifactsNamespace).find(Boolean) ?? ""
+          if (namespace) await this.ctx.storage.put("namespace", namespace)
+        }
+        const size = (await sandboxLimits(this.env.DB, namespace)).sizes[
+          sandboxKind[this.binding]
+        ]
+        await this.ctx.storage.put("size", size)
+        return this.container(size, name)
+      })
+    this.#choosing = chosen
+    return chosen
+  }
+
+  private async current(): Promise<DurableObjectStub<SandboxContainer> | null> {
+    const size = await this.ctx.storage.get<SandboxSize>("size")
+    const name = await this.name()
+    return size && name ? this.container(size, name) : null
+  }
+
+  /** This Sandbox's name. Deletion reaches registered Sandboxes by id,
+   * which carries no name, so the first start stores it. */
+  private async name(): Promise<string | undefined> {
+    return this.ctx.id.name ?? (await this.ctx.storage.get<string>("name"))
+  }
+
+  private async configured(): Promise<DurableObjectStub<SandboxContainer>> {
+    const container = await this.current()
+    if (!container)
+      throw new Error("Sandbox network capabilities have not been configured")
+    return container
+  }
+
+  /** Each size's container shares this Sandbox's name, which is what the
+   * Containers dashboard shows (such as `station-<runId>`). */
+  private container(
+    size: SandboxSize,
+    name: string
+  ): DurableObjectStub<SandboxContainer> {
+    const namespace = this.env[
+      containerBindings[this.binding][size]
+    ] as DurableObjectNamespace<SandboxContainer>
+    return namespace.getByName(name)
+  }
+}
+
+/** The agentless Sandbox: Git workspaces, integration validation and previews. */
+export class WorkspaceSandbox extends ExecutionSandbox {
+  protected override readonly binding: SandboxBinding = "WORKSPACE_SANDBOX"
+}
+
+/**
+ * The required Sandbox container adapter, reached only through its Sandbox
+ * address. No Train or Station lifecycle lives here.
+ */
+export class SandboxContainer extends DurableObject<Env> {
+  /** The Sandbox binding this container serves: its kind for capacity, and
+   * the namespace its address resolves in for deletion. */
   protected readonly binding: SandboxBinding = "SANDBOX"
   #network: SandboxNetwork | null = null
   #setup: Promise<void> | null = null
@@ -62,10 +226,9 @@ export class ExecutionSandbox extends DurableObject<Env> {
   private async register(remote?: string): Promise<void> {
     if (this.#purged) throw new Error("Sandbox was deleted")
     const previous = await this.ctx.storage.get<string>("namespace")
-    const match =
-      remote && /^\/git\/([^/]+)\/[^/]+$/.exec(new URL(remote).pathname)
-    const namespace = match ? decodeURIComponent(match[1]!) : previous
-    if (remote && !match) throw new Error("Invalid Artifacts remote")
+    const remoteNamespace = remote ? artifactsNamespace(remote) : null
+    if (remote && !remoteNamespace) throw new Error("Invalid Artifacts remote")
+    const namespace = remoteNamespace ?? previous
     if (!namespace) return
     this.#namespace = namespace
     if (previous && previous !== namespace)
@@ -78,10 +241,19 @@ export class ExecutionSandbox extends DurableObject<Env> {
     if (!permitted) throw new Error("Network is deleting or no longer exists")
     if (this.#purged) throw new Error("Sandbox was deleted")
     if (previous) return
+    // Record the Sandbox this container serves, which shares its name:
+    // deletion purges that Sandbox, which purges every size.
+    const name = this.ctx.id.name
+    if (!name)
+      throw new Error("Sandbox containers are reached through their Sandbox")
     await this.env.DB.prepare(
       "INSERT OR IGNORE INTO network_sandboxes (object_id, namespace, binding) VALUES (?, ?, ?)"
     )
-      .bind(this.ctx.id.toString(), namespace, this.binding)
+      .bind(
+        this.env[this.binding].idFromName(name).toString(),
+        namespace,
+        this.binding
+      )
       .run()
     if (this.#purged) throw new Error("Sandbox was deleted")
     await this.ctx.storage.put("namespace", namespace)
@@ -242,6 +414,11 @@ export class ExecutionSandbox extends DurableObject<Env> {
 
   async configure(network: SandboxNetwork): Promise<void> {
     await this.applyNetwork(network, capacityWaitMs)
+  }
+
+  /** Whether a container is running, so its Sandbox keeps using this size. */
+  async running(): Promise<boolean> {
+    return this.container().running
   }
 
   /** Configures capabilities and starts the container, waiting up to
@@ -455,12 +632,16 @@ export class ExecutionSandbox extends DurableObject<Env> {
   }
 }
 
+export class ExecutionSandboxStandard1 extends SandboxContainer {}
+export class ExecutionSandboxStandard2 extends SandboxContainer {}
+export class ExecutionSandboxStandard3 extends SandboxContainer {}
+
 /**
- * The agentless Sandbox: Git workspaces, integration validation and previews.
- * Its image has no harness, and it refuses model access outright, so work
- * routed here can never reach a model even if a caller asks.
+ * The agentless container. Its image has no harness, and it refuses model
+ * access outright, so work routed here can never reach a model even if a
+ * caller asks.
  */
-export class WorkspaceSandbox extends ExecutionSandbox {
+export class WorkspaceSandboxContainer extends SandboxContainer {
   protected override readonly binding: SandboxBinding = "WORKSPACE_SANDBOX"
 
   protected override async applyNetwork(
@@ -472,6 +653,10 @@ export class WorkspaceSandbox extends ExecutionSandbox {
     await super.applyNetwork(network, waitMs)
   }
 }
+
+export class WorkspaceSandboxStandard1 extends WorkspaceSandboxContainer {}
+export class WorkspaceSandboxStandard2 extends WorkspaceSandboxContainer {}
+export class WorkspaceSandboxStandard3 extends WorkspaceSandboxContainer {}
 
 async function capture(
   stream: ReadableStream | null

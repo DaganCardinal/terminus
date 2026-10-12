@@ -17,6 +17,12 @@ export default defineConfig(async () => {
           durableObjects: {
             SANDBOX: "ExecutionSandbox",
             WORKSPACE_SANDBOX: "WorkspaceSandbox",
+            SANDBOX_STANDARD_1: "ExecutionSandboxStandard1",
+            SANDBOX_STANDARD_2: "ExecutionSandboxStandard2",
+            SANDBOX_STANDARD_3: "ExecutionSandboxStandard3",
+            WORKSPACE_SANDBOX_STANDARD_1: "WorkspaceSandboxStandard1",
+            WORKSPACE_SANDBOX_STANDARD_2: "WorkspaceSandboxStandard2",
+            WORKSPACE_SANDBOX_STANDARD_3: "WorkspaceSandboxStandard3",
           },
           bindings: {
             TEST_MIGRATIONS: migrations,

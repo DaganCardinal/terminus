@@ -77,34 +77,110 @@
     },
   ],
   // Agent roles run harnesses in ExecutionSandbox. Git, validation and
-  // previews run in the agentless WorkspaceSandbox, which has its own image,
-  // size and instance budget, and can never be granted model access.
+  // previews run in the agentless WorkspaceSandbox, which has its own image
+  // and instance budget, and can never be granted model access. Both are
+  // container-less addresses: each routes to a container class of the size
+  // chosen in Settings → Sandboxes, one class per size, all built from the
+  // kind's image. Keep sizes in step with SANDBOX_SIZES in
+  // packages/protocol/src/sandbox.ts.
   // max_instances is only the platform ceiling, and must equal
   // MAX_SANDBOX_INSTANCES in packages/protocol/src/sandbox.ts. Each network's
   // real limit is a setting (Settings → Sandboxes), enforced by Sandbox leases.
   "containers": [
     {
-      "class_name": "ExecutionSandbox",
+      "class_name": "ExecutionSandboxStandard1",
+      "image": "./Dockerfile",
+      "max_instances": 100,
+      "instance_type": "standard-1",
+    },
+    {
+      "class_name": "ExecutionSandboxStandard2",
       "image": "./Dockerfile",
       "max_instances": 100,
       "instance_type": "standard-2",
     },
     {
-      "class_name": "WorkspaceSandbox",
+      "class_name": "ExecutionSandboxStandard3",
+      "image": "./Dockerfile",
+      "max_instances": 100,
+      "instance_type": "standard-3",
+    },
+    {
+      "class_name": "WorkspaceSandboxStandard1",
       "image": "./Dockerfile.workspace",
       "max_instances": 100,
       "instance_type": "standard-1",
+    },
+    {
+      "class_name": "WorkspaceSandboxStandard2",
+      "image": "./Dockerfile.workspace",
+      "max_instances": 100,
+      "instance_type": "standard-2",
+    },
+    {
+      "class_name": "WorkspaceSandboxStandard3",
+      "image": "./Dockerfile.workspace",
+      "max_instances": 100,
+      "instance_type": "standard-3",
     },
   ],
   "durable_objects": {
     "bindings": [
       { "name": "SANDBOX", "class_name": "ExecutionSandbox" },
       { "name": "WORKSPACE_SANDBOX", "class_name": "WorkspaceSandbox" },
+      {
+        "name": "SANDBOX_STANDARD_1",
+        "class_name": "ExecutionSandboxStandard1",
+      },
+      {
+        "name": "SANDBOX_STANDARD_2",
+        "class_name": "ExecutionSandboxStandard2",
+      },
+      {
+        "name": "SANDBOX_STANDARD_3",
+        "class_name": "ExecutionSandboxStandard3",
+      },
+      {
+        "name": "WORKSPACE_SANDBOX_STANDARD_1",
+        "class_name": "WorkspaceSandboxStandard1",
+      },
+      {
+        "name": "WORKSPACE_SANDBOX_STANDARD_2",
+        "class_name": "WorkspaceSandboxStandard2",
+      },
+      {
+        "name": "WORKSPACE_SANDBOX_STANDARD_3",
+        "class_name": "WorkspaceSandboxStandard3",
+      },
     ],
   },
   "exports": {
     "ExecutionSandbox": { "type": "durable-object", "storage": "sqlite" },
     "WorkspaceSandbox": { "type": "durable-object", "storage": "sqlite" },
+    "ExecutionSandboxStandard1": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "ExecutionSandboxStandard2": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "ExecutionSandboxStandard3": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "WorkspaceSandboxStandard1": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "WorkspaceSandboxStandard2": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+    "WorkspaceSandboxStandard3": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
   },
   // ARTIFACTS_API_TOKEN is a Cloudflare API token with Artifacts edit access.
   // Each Project gets its own Artifacts namespace, which the Workers binding
@@ -164,6 +240,30 @@
         "bindings": [
           { "name": "SANDBOX", "class_name": "ExecutionSandbox" },
           { "name": "WORKSPACE_SANDBOX", "class_name": "WorkspaceSandbox" },
+          {
+            "name": "SANDBOX_STANDARD_1",
+            "class_name": "ExecutionSandboxStandard1",
+          },
+          {
+            "name": "SANDBOX_STANDARD_2",
+            "class_name": "ExecutionSandboxStandard2",
+          },
+          {
+            "name": "SANDBOX_STANDARD_3",
+            "class_name": "ExecutionSandboxStandard3",
+          },
+          {
+            "name": "WORKSPACE_SANDBOX_STANDARD_1",
+            "class_name": "WorkspaceSandboxStandard1",
+          },
+          {
+            "name": "WORKSPACE_SANDBOX_STANDARD_2",
+            "class_name": "WorkspaceSandboxStandard2",
+          },
+          {
+            "name": "WORKSPACE_SANDBOX_STANDARD_3",
+            "class_name": "WorkspaceSandboxStandard3",
+          },
         ],
       },
       "d1_databases": [

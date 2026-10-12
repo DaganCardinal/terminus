@@ -8,7 +8,13 @@ export { IntegrationWorkflow } from "./workflows/integration-workflow"
 export { DispatchWorkflow } from "./workflows/dispatch-workflow"
 export {
   ExecutionSandbox,
+  ExecutionSandboxStandard1,
+  ExecutionSandboxStandard2,
+  ExecutionSandboxStandard3,
   WorkspaceSandbox,
+  WorkspaceSandboxStandard1,
+  WorkspaceSandboxStandard2,
+  WorkspaceSandboxStandard3,
 } from "./integrations/execution-sandbox"
 export { SandboxOutbound } from "./integrations/sandbox-outbound"
 

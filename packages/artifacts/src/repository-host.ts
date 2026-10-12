@@ -59,6 +59,15 @@ export interface RepositoryHost {
     repairPaths: string[]
     repairDiff: string
   }>
+  /**
+   * Confirms an inspected repair's repositories still hold its exact source
+   * Train commit and candidate. Everything `inspectRepair` derived follows
+   * from those commit IDs, so it need not be derived again.
+   */
+  confirmRepair(
+    input: import("./technician-git").RepairGitInput,
+    candidate: RepoRef
+  ): Promise<void>
   /** A commit's file inventory and leading documents, for people browsing. */
   readOverview(repoId: RepoId, commit: CommitId): Promise<RepositoryOverview>
   /** One committed file, or null when the commit has none at `path`. */
