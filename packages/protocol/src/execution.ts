@@ -63,6 +63,12 @@ export const sandboxNetworkSchema = z.object({
   ),
   allowModel: z.boolean(),
   /**
+   * Lets the Sandbox drive a Browser Run browser over CDP, and lets that
+   * browser load the Sandbox's own application port. Refused unless
+   * `BROWSER_RUN_ENABLED` is on. See `docs/browser-run.md`.
+   */
+  allowBrowser: z.boolean().optional(),
+  /**
    * The one role model this Sandbox's harness may call, resolved by
    * orchestration. Its `utilityModel` from the same provider is also allowed,
    * for the harness's own housekeeping calls.

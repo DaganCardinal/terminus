@@ -1,7 +1,9 @@
 import { layJunction } from "../agents/junctions"
 import { readPerfLogs } from "./perf-logs"
+import { browserRunEnabled, proveBrowserRun } from "../integrations/browser-run"
 import { emergencyBrake } from "../agents/emergency-brake"
 import { deleteNetwork } from "../agents/delete-network"
+import { publishTerminus } from "../agents/publish"
 import { NetworkStore } from "../integrations/network-store"
 import { DispatchActivityStore } from "../integrations/dispatch-activity"
 import {
@@ -25,6 +27,8 @@ import {
   junctionRepairRequestSchema,
   terminusPreviewRequestSchema,
   stopPreviewRequestSchema,
+  publishTerminusRequestSchema,
+  setPublishedSiteRequestSchema,
   stopStationSandboxRequestSchema,
   emergencyBrakeRequestSchema,
   deleteNetworkRequestSchema,
@@ -524,6 +528,30 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     },
   ],
   [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/publish" }),
+    async (request, env, { networkId }) => {
+      const { commit } = await parse(request, publishTerminusRequestSchema)
+      return json(
+        await publishTerminus(dispatcherPorts(env), networkId!, commit)
+      )
+    },
+  ],
+  [
+    "PUT",
+    new URLPattern({ pathname: "/api/networks/:networkId/publish/site" }),
+    async (request, env, { networkId }) => {
+      const { siteUrl } = await parse(request, setPublishedSiteRequestSchema)
+      const store = new NetworkStore(env.DB)
+      const network = await store.network(networkId!)
+      if (!network) return notFound("Unknown network")
+      if (!network.publication)
+        return error(409, "Publish Terminus before adding its live site URL")
+      await store.setPublishedSite(networkId!, siteUrl)
+      return new Response(null, { status: 204 })
+    },
+  ],
+  [
     "PUT",
     new URLPattern({ pathname: "/api/trains/:trainId/unload-mode" }),
     async (request, env, { trainId }) =>
@@ -739,6 +767,15 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     "GET",
     new URLPattern({ pathname: "/api/networks" }),
     async (_, env) => json(await dispatcherPorts(env).store.networkListings()),
+  ],
+  [
+    // The Browser Run transport proof; see docs/browser-run.md.
+    "POST",
+    new URLPattern({ pathname: "/api/browser-run/proof" }),
+    async (_, env) =>
+      browserRunEnabled(env)
+        ? json(await proveBrowserRun(env))
+        : notFound("Browser Run is disabled"),
   ],
   [
     // TEMPORARY benchmark instrumentation; see perf-logs.ts.

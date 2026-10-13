@@ -115,7 +115,9 @@ describe("Harness agent configuration", () => {
       // `--auto` approves anything not denied, so every limit is a deny rule.
       for (const tool of ["edit", "bash", "webfetch", "skill", "task"])
         expect(explore.permission[tool]).toBe("deny")
-      expect(explore.model).toBeUndefined()
+      // Read-only exploration runs on the faster utility model, which the
+      // provider block defines and the Sandbox outbound handler grants.
+      expect(explore.model).toBe("terminus/@cf/zai-org/glm-5.3-flash")
     }
   )
 

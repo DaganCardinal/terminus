@@ -285,5 +285,9 @@ export type DomainEvent =
       trainId: TrainId
       mergeCommit: CommitId
     }
+  | {
+      type: "terminus.published"
+      commit: CommitId
+    }
 
 export type DomainEventType = DomainEvent["type"]

@@ -1303,85 +1303,71 @@
 }
 
 /* ── Settings ────────────────────────────────────────── */
-.settings-page {
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: 40px 32px 0;
-  display: grid;
-  grid-template-columns: 200px minmax(0, 720px);
-  gap: 48px;
-}
-.settings-nav {
-  position: sticky;
-  top: 24px;
-  align-self: start;
-}
-.settings-nav .eyebrow {
-  padding: 0 12px;
-  margin-bottom: 8px;
-}
-.settings-nav ul {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 24px;
-}
-.settings-nav a,
-.settings-nav-soon {
-  display: flex;
-  flex-direction: column;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--muted-foreground);
+.settings-dialog {
+  width: min(840px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: 0;
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.settings-nav small {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-soft);
-}
-.settings-nav a:hover {
-  background: var(--muted);
-  color: var(--foreground);
-}
-.settings-nav a[aria-current="page"] {
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--panel);
   color: var(--foreground);
-  font-weight: 600;
-  box-shadow:
-    0 0 0 1px var(--border),
-    var(--panel-shadow);
+  box-shadow: var(--float-shadow);
 }
-.settings-nav-soon {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-soft);
-  cursor: default;
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
 }
-.settings-nav-soon small {
-  margin-left: auto;
+.settings-dialog::backdrop {
+  background: oklch(0.15 0 0 / 50%);
 }
-
-.settings-main {
+.settings-dialog-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px 32px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-dialog-header > div {
+  flex: 1;
   min-width: 0;
 }
-.settings-header {
-  margin-bottom: 32px;
+.settings-dialog-header .eyebrow {
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
 }
-.settings-header h1 {
+.settings-dialog-header h2 {
   font-size: 20px;
   line-height: 1.3;
   font-weight: 650;
   letter-spacing: -0.3px;
 }
+.settings-dialog-header .theme-button {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+.settings-dialog-body {
+  min-height: 0;
+  padding: 24px 32px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.settings-group + .settings-group {
+  margin-top: 32px;
+}
+.settings-header {
+  margin-bottom: 24px;
+}
+.settings-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.settings-dialog-header p:not(.eyebrow),
 .settings-header p,
 .settings-section-heading p {
-  max-width: 60ch;
+  max-width: 65ch;
   margin-top: 4px;
   font-size: 13px;
   line-height: 1.5;
@@ -1392,11 +1378,11 @@
   flex-direction: column;
   gap: 32px;
 }
-.settings-form h2 {
+.settings-form h4 {
   font-size: 13px;
   font-weight: 600;
 }
-.settings-form section > h2,
+.settings-form section > h4,
 .settings-section-heading {
   margin-bottom: 12px;
 }
@@ -1479,18 +1465,6 @@
   color: var(--muted-foreground);
   background: var(--muted);
 }
-.settings-option-link {
-  flex-shrink: 0;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted-foreground);
-}
-.settings-option-link:hover {
-  color: var(--foreground);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
 /* Role, harness and model assignments */
 .settings-roles {
   width: 100%;
@@ -1507,6 +1481,10 @@
   padding: 12px 16px;
   text-align: left;
   vertical-align: middle;
+}
+/* Align controls independently of the supporting text beneath them. */
+.settings-roles tbody td {
+  vertical-align: top;
 }
 .settings-roles th {
   font-weight: 400;
@@ -1600,9 +1578,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 16px 0 32px;
+  padding: 16px 0 24px;
   border-top: 1px solid var(--border);
-  background: var(--page);
+  background: var(--panel);
 }
 /* Unsaved changes keep Save reachable while the form scrolls. */
 .settings-footer.is-dirty {
@@ -1637,33 +1615,15 @@
 }
 
 @media (max-width: 760px) {
-  .settings-page {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
+  .settings-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+  .settings-dialog-header {
+    padding: 20px 16px;
+  }
+  .settings-dialog-body {
     padding: 24px 16px 0;
-  }
-  .settings-nav {
-    position: static;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 8px;
-  }
-  /* Scope switching stays one tap away, under each section's name; the
-     external Providers link waits for room. */
-  .settings-nav .eyebrow {
-    flex-basis: 100%;
-    margin: 4px 0 0;
-  }
-  .settings-nav .eyebrow:last-of-type,
-  .settings-nav ul:last-child {
-    display: none;
-  }
-  .settings-nav ul {
-    flex-direction: row;
-    margin: 0;
-  }
-  .settings-header {
-    margin-bottom: 24px;
   }
   .settings-roles tr {
     display: block;
@@ -1693,7 +1653,11 @@
     border-top: none;
   }
   .settings-footer {
+    flex-wrap: wrap;
     padding-bottom: 16px;
+  }
+  .settings-footer p {
+    flex-basis: 100%;
   }
 }
 

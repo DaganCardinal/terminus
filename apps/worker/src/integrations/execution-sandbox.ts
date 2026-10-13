@@ -14,6 +14,11 @@ import {
   type SandboxSize,
 } from "@terminus/protocol"
 import { DurableObject } from "cloudflare:workers"
+import {
+  browserApplicationPort,
+  browserCandidateHost,
+  browserRunEnabled,
+} from "./browser-run"
 import { installDependencies, npmCacheDirectory } from "./dependency-cache"
 import {
   acquireSandboxLease,
@@ -36,6 +41,11 @@ const trustEnv = {
 const commandTimeoutMs = 20 * 60_000
 const idleTimeoutMs = 30 * 60_000
 const previewIdleTimeoutMs = 5 * 60_000
+/** The Browser Run proof closes its container when done; this bounds a crash. */
+const browserProofIdleTimeoutMs = 5 * 60_000
+const browserProofTimeoutMs = 2 * 60_000
+/** Browser Run closes a session idle this long, such as after a crash. */
+const browserKeepAliveMs = 60_000
 /** A lease outlives its container's idle timeout by a margin, so it lapses
  * on its own only after the container has certainly stopped. */
 const leaseMarginMs = 60_000
@@ -62,6 +72,7 @@ const containerBindings = {
     "standard-3": "WORKSPACE_SANDBOX_STANDARD_3",
   },
 } as const satisfies Record<SandboxBinding, Record<SandboxSize, keyof Env>>
+type ContainerBinding = (typeof containerBindings)[SandboxBinding][SandboxSize]
 
 /** A remote's Artifacts namespace, or null when it isn't an Artifacts remote. */
 function artifactsNamespace(remote: string): string | null {
@@ -133,6 +144,16 @@ export class ExecutionSandbox extends DurableObject<Env> {
 
   async close(): Promise<void> {
     await (await this.current())?.close()
+  }
+
+  /** Runs the Browser Run transport proof, then deletes this Sandbox, which
+   * exists only for the proof. */
+  async proveBrowserRun(scope: string): Promise<CommandResult> {
+    try {
+      return await (await this.choose([])).proveBrowserRun(scope)
+    } finally {
+      await this.purge()
+    }
   }
 
   /** Permanent deletion purges every size's container, since earlier starts
@@ -221,10 +242,12 @@ export class WorkspaceSandbox extends ExecutionSandbox {
  * The required Sandbox container adapter, reached only through its Sandbox
  * address. No Train or Station lifecycle lives here.
  */
-export class SandboxContainer extends DurableObject<Env> {
+export abstract class SandboxContainer extends DurableObject<Env> {
   /** The Sandbox binding this container serves: its kind for capacity, and
    * the namespace its address resolves in for deletion. */
   protected readonly binding: SandboxBinding = "SANDBOX"
+  /** This container's own class binding, for routes back to it. */
+  protected abstract readonly self: ContainerBinding
   #network: SandboxNetwork | null = null
   #setup: Promise<void> | null = null
   #previewSetup: Promise<SandboxPreviewResult> | null = null
@@ -236,6 +259,7 @@ export class SandboxContainer extends DurableObject<Env> {
   #leaseGeneration = 0
   /** TEMPORARY benchmark instrumentation: marks the first command after a cold start. */
   #coldStartedAt: number | null = null
+  #browserSession: string | null = null
 
   /** Register ownership before a container can start. Random sessions and
    * preview snapshots must be discoverable even after their Workflow exits. */
@@ -300,7 +324,7 @@ export class SandboxContainer extends DurableObject<Env> {
       if (saved.commit !== input.commit || saved.remote !== input.remote)
         throw new Error("Preview belongs to a different repository snapshot")
       try {
-        await this.waitForPreview()
+        await this.waitForPort(8080, "The preview server")
         return { token: previewTokenSchema.parse(saved.token) }
       } catch {
         // A crashed server is rebuilt on the next explicit preview request.
@@ -354,7 +378,7 @@ export class SandboxContainer extends DurableObject<Env> {
           stderr: "ignore",
         }
       )
-      await this.waitForPreview()
+      await this.waitForPort(8080, "The preview server")
       const token = crypto.randomUUID().replaceAll("-", "").slice(0, 24)
       await this.ctx.storage.put("trainPreview", {
         token,
@@ -368,13 +392,13 @@ export class SandboxContainer extends DurableObject<Env> {
     }
   }
 
-  private async waitForPreview(): Promise<void> {
+  private async waitForPort(port: number, server: string): Promise<void> {
     const deadline = Date.now() + 30_000
     while (Date.now() < deadline) {
       try {
         const response = await this.container()
-          .getTcpPort(8080)
-          .fetch("http://localhost:8080/", {
+          .getTcpPort(port)
+          .fetch(`http://localhost:${port}/`, {
             signal: AbortSignal.timeout(1000),
           })
         await response.body?.cancel()
@@ -384,7 +408,7 @@ export class SandboxContainer extends DurableObject<Env> {
       }
       await scheduler.wait(250)
     }
-    throw new Error("The preview server did not become ready")
+    throw new Error(`${server} did not become ready`)
   }
 
   async fetchTrainPreview(request: Request, token: string): Promise<Response> {
@@ -430,6 +454,147 @@ export class SandboxContainer extends DurableObject<Env> {
 
   async configure(network: SandboxNetwork): Promise<void> {
     await this.applyNetwork(network, capacityWaitMs)
+  }
+
+  /**
+   * The Browser Run transport proof (`docs/browser-run.md`): a candidate
+   * application on the fixed port, then the proof client, which drives a
+   * remote browser against it through this container's own routes.
+   */
+  async proveBrowserRun(scope: string): Promise<CommandResult> {
+    if (!browserRunEnabled(this.env) || !this.env.BROWSER)
+      throw new Error("Browser Run is disabled")
+    if (this.binding !== "SANDBOX")
+      throw new Error("The Browser Run proof runs in agent Sandboxes")
+    try {
+      await this.applyNetwork(
+        { repositories: [], allowModel: false, allowBrowser: true },
+        0
+      )
+      await this.container().setInactivityTimeout(browserProofIdleTimeoutMs)
+      this.#leaseTtlMs = browserProofIdleTimeoutMs + leaseMarginMs
+      await this.renewLease(true)
+      const app = await this.container().exec(
+        ["node", "/opt/browser-run/app.mjs"],
+        {
+          env: { PROOF_SCOPE: scope },
+          stdin: new ReadableStream({
+            start: (controller) => controller.close(),
+          }),
+          stdout: "ignore",
+        }
+      )
+      // Kept so a failed start can say why; read only once the app exits.
+      const appExit = app.exitCode.catch(() => -1)
+      const appErrors = capture(app.stderr).catch(() => ({ text: "" }))
+      try {
+        await this.waitForPort(browserApplicationPort, "The proof application")
+      } catch (error) {
+        const exited = await Promise.race([appExit, scheduler.wait(0)])
+        const listing = await this.run(
+          ["sh", "-c", "ls -la /opt/browser-run 2>&1"],
+          "/",
+          {},
+          10_000
+        ).catch((failure: unknown) => ({ stdout: String(failure) }))
+        throw new Error(
+          [
+            error instanceof Error ? error.message : String(error),
+            typeof exited === "number"
+              ? `It exited with code ${exited}: ${(await appErrors).text.slice(-1500)}`
+              : "It is still running",
+            `/opt/browser-run: ${listing.stdout.slice(0, 1000)}`,
+          ].join(". "),
+          { cause: error }
+        )
+      }
+      return await this.run(
+        ["node", "/opt/browser-run/proof.mjs"],
+        "/opt/browser-run",
+        { PROOF_SCOPE: scope },
+        browserProofTimeoutMs
+      )
+    } finally {
+      await this.close()
+    }
+  }
+
+  /**
+   * Browser control, reached only from this container's outbound
+   * interception (`browserControlRequest`). It must be native `fetch()`:
+   * RPC cannot return a WebSocket.
+   */
+  override async fetch(request: Request): Promise<Response> {
+    const browser = this.env.BROWSER
+    if (
+      !browser ||
+      !browserRunEnabled(this.env) ||
+      !this.#network?.allowBrowser
+    )
+      return new Response("Browser Run is not available", { status: 403 })
+    const path = new URL(request.url).pathname
+    if (path === "/echo") {
+      const [client, server] = Object.values(new WebSocketPair())
+      server!.accept()
+      server!.addEventListener("message", (event) => server!.send(event.data))
+      return new Response(null, { status: 101, webSocket: client })
+    }
+    // One browser per Sandbox: a new connection replaces the last session.
+    await this.closeBrowser()
+    // The candidate Fetcher and the launch share one invocation, since Browser
+    // Run does not keep Fetchers between invocations.
+    const connection = await browser.launch({
+      keepAlive: browserKeepAliveMs,
+      guardrails: { allowedDomains: [browserCandidateHost] },
+      ...(path === "/cdp"
+        ? {
+            outboundByHost: {
+              [browserCandidateHost]: this.ctx.exports.BrowserCandidateOutbound(
+                {
+                  props: {
+                    binding: this.self,
+                    sandbox: this.ctx.id.toString(),
+                  },
+                }
+              ),
+            },
+          }
+        : {}),
+    })
+    this.#browserSession = connection.sessionId
+    const upgraded = await connection.webSocket.fetch(
+      "https://browser-run.invalid/",
+      { headers: { Upgrade: "websocket" } }
+    )
+    if (upgraded.status !== 101 || !upgraded.webSocket) {
+      const detail = (await upgraded.text().catch(() => "")).slice(0, 500)
+      return new Response(
+        `Browser Run refused the CDP upgrade (${upgraded.status}): ${detail}`,
+        { status: 502 }
+      )
+    }
+    // Pass on only the socket. Sandbox interception writes its own handshake
+    // headers, and Browser Run's would duplicate them (`Upgrade: websocket,
+    // websocket`), which WebSocket clients reject.
+    return new Response(null, { status: 101, webSocket: upgraded.webSocket })
+  }
+
+  /** The remote browser's requests to this Sandbox's application, from the
+   * `BrowserCandidateOutbound` this container scoped to itself. */
+  async browserApplication(request: Request): Promise<Response> {
+    if (
+      !browserRunEnabled(this.env) ||
+      !this.#network?.allowBrowser ||
+      !this.container().running
+    )
+      return new Response("Not found", { status: 404 })
+    return this.container().getTcpPort(browserApplicationPort).fetch(request)
+  }
+
+  private async closeBrowser(): Promise<void> {
+    const session = this.#browserSession
+    this.#browserSession = null
+    if (session) await this.env.BROWSER?.closeSession(session).catch(() => {})
   }
 
   /** Whether a container is running, so its Sandbox keeps using this size. */
@@ -614,6 +779,7 @@ export class SandboxContainer extends DurableObject<Env> {
   async close(): Promise<void> {
     const started = Date.now()
     const running = this.container().running
+    await this.closeBrowser()
     this.#network = null
     this.#setup = null
     await this.ctx.storage.delete("trainPreview")
@@ -667,6 +833,14 @@ export class SandboxContainer extends DurableObject<Env> {
           props: {
             ...network,
             sessionAffinity: `ses_${this.ctx.id.toString()}`,
+            ...(network.allowBrowser
+              ? {
+                  browserSandbox: {
+                    binding: this.self,
+                    sandbox: this.ctx.id.toString(),
+                  },
+                }
+              : {}),
           },
         })
         await container.interceptAllOutboundHttp(outbound)
@@ -781,16 +955,22 @@ export class SandboxContainer extends DurableObject<Env> {
   }
 }
 
-export class ExecutionSandboxStandard1 extends SandboxContainer {}
-export class ExecutionSandboxStandard2 extends SandboxContainer {}
-export class ExecutionSandboxStandard3 extends SandboxContainer {}
+export class ExecutionSandboxStandard1 extends SandboxContainer {
+  protected readonly self = "SANDBOX_STANDARD_1"
+}
+export class ExecutionSandboxStandard2 extends SandboxContainer {
+  protected readonly self = "SANDBOX_STANDARD_2"
+}
+export class ExecutionSandboxStandard3 extends SandboxContainer {
+  protected readonly self = "SANDBOX_STANDARD_3"
+}
 
 /**
  * The agentless container. Its image has no harness, and it refuses model
  * access outright, so work routed here can never reach a model even if a
  * caller asks.
  */
-export class WorkspaceSandboxContainer extends SandboxContainer {
+export abstract class WorkspaceSandboxContainer extends SandboxContainer {
   protected override readonly binding: SandboxBinding = "WORKSPACE_SANDBOX"
 
   protected override async applyNetwork(
@@ -803,9 +983,15 @@ export class WorkspaceSandboxContainer extends SandboxContainer {
   }
 }
 
-export class WorkspaceSandboxStandard1 extends WorkspaceSandboxContainer {}
-export class WorkspaceSandboxStandard2 extends WorkspaceSandboxContainer {}
-export class WorkspaceSandboxStandard3 extends WorkspaceSandboxContainer {}
+export class WorkspaceSandboxStandard1 extends WorkspaceSandboxContainer {
+  protected readonly self = "WORKSPACE_SANDBOX_STANDARD_1"
+}
+export class WorkspaceSandboxStandard2 extends WorkspaceSandboxContainer {
+  protected readonly self = "WORKSPACE_SANDBOX_STANDARD_2"
+}
+export class WorkspaceSandboxStandard3 extends WorkspaceSandboxContainer {
+  protected readonly self = "WORKSPACE_SANDBOX_STANDARD_3"
+}
 
 async function capture(
   stream: ReadableStream | null

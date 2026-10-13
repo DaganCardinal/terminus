@@ -1,14 +1,9 @@
 import { useEffect, useState } from "react"
 
-/** Settings pages: agent harnesses and models, or Sandbox limits. */
-export type SettingsSection = "agents" | "sandboxes"
-
 /** Where the app is, as encoded in the location hash. */
 export type Route =
   | { page: "networks" }
   | { page: "map"; networkId: string }
-  /** General settings when networkId is null, else one network's overrides. */
-  | { page: "settings"; networkId: string | null; section: SettingsSection }
   | {
       page: "overview"
       networkId: string
@@ -16,17 +11,7 @@ export type Route =
       view: { kind: "docs" | "files"; path: string } | null
     }
 
-const settingsSection = (rest?: string): SettingsSection =>
-  rest === "sandboxes" ? "sandboxes" : "agents"
-
 export function parseRoute(hash: string): Route {
-  const general = /^#\/settings(?:\/(sandboxes))?$/.exec(hash)
-  if (general)
-    return {
-      page: "settings",
-      networkId: null,
-      section: settingsSection(general[1]),
-    }
   const match =
     /^#\/networks\/([^/]+)(?:\/(map|settings|docs|files)(?:\/(.*))?)?$/.exec(
       hash
@@ -35,8 +20,7 @@ export function parseRoute(hash: string): Route {
   const networkId = decodeURIComponent(match[1]!)
   const section = match[2]
   if (section === "map") return { page: "map", networkId }
-  if (section === "settings")
-    return { page: "settings", networkId, section: settingsSection(match[3]) }
+  // Old network Settings bookmarks land on the overview; Settings is a modal.
   const path = match[3] ? decodeURIComponent(match[3]) : ""
   return {
     page: "overview",
@@ -54,10 +38,6 @@ export const routes = {
   overview: (networkId: string) =>
     `#/networks/${encodeURIComponent(networkId)}`,
   map: (networkId: string) => `#/networks/${encodeURIComponent(networkId)}/map`,
-  settings: (section: SettingsSection = "agents") =>
-    section === "agents" ? "#/settings" : `#/settings/${section}`,
-  networkSettings: (networkId: string, section: SettingsSection = "agents") =>
-    `#/networks/${encodeURIComponent(networkId)}/settings${section === "agents" ? "" : `/${section}`}`,
   docs: (networkId: string, path: string) =>
     `#/networks/${encodeURIComponent(networkId)}/docs/${encodePath(path)}`,
   files: (networkId: string, path: string) =>

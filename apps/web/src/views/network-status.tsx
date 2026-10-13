@@ -242,10 +242,7 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
           <Radio size={16} />
           <span className="overlay-button-label">Activity</span>
         </button>
-        <AppMenu
-          variant="map"
-          settingsHref={routes.networkSettings(networkId)}
-        />
+        <AppMenu variant="map" settingsNetworkId={networkId} />
       </div>
 
       {(error || commandError) && (

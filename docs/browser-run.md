@@ -1,10 +1,10 @@
 # Browser Run transport gate
 
-## Status: waiting on a deployed transport proof
+## Status: deployed transport proof passed
 
 The approved design uses Cloudflare-hosted Chromium, Playwright over CDP, and a trusted local MCP adapter for Station Agents, Technicians, and Conductors. Its first release requirement is an actual Sandbox → outbound interception → Browser Run → private candidate application proof, including a click, later requests on the same connection, and a screenshot.
 
-That proof did **not** pass on October 8, 2026. Browser support is unavailable in production; no project configuration, MCP tools, browser checks, or model capability changes have been enabled. The existing harnesses and alternative-harness release gate are unchanged. The implementation must remain disabled until the transport requirement passes.
+That proof did **not** pass locally on October 8, 2026. A deployed proof endpoint now exists behind `BROWSER_RUN_ENABLED=false` (see [Run the deployed proof](#run-the-deployed-proof)). It **passed** in production on October 12, 2026 (run 3 below), which satisfies the first release requirement. Browser support is otherwise unavailable in production; no project configuration, MCP tools, browser checks, or model capability changes have been enabled. The existing harnesses and alternative-harness release gate are unchanged. Keep `BROWSER_RUN_ENABLED` off outside proof runs until the remaining implementation below lands.
 
 The repeatable development probes are in [`scripts/browser-run-transport`](../scripts/browser-run-transport). They are one-off diagnostics, not production infrastructure, and must not be deployed. They do not import the application's Worker, use D1, access Artifacts, call models, or change any managed repository. Their Sandbox class exists only in local Wrangler storage. The remote Browser binding can incur browser usage.
 
@@ -66,17 +66,71 @@ The saved diagnostic returns a bounded JSON error with the failed stage and entr
 
 ## Run the deployed proof
 
-The local results above are limits of the development setups, so the transport question needs a real deployment. It will run inside the long-lived Terminus deployment described in [Deploying a private beta](private-beta-deployment.md), not as a separate Worker. That deployment's Cloudflare Access and in-Worker JWT verification protect it. The proof will use the existing `ExecutionSandbox`, behind `BROWSER_RUN_ENABLED=false` by default.
+The local results above are limits of the development setups, so the transport question needs a real deployment. The proof runs inside the long-lived Terminus deployment described in [Deploying a private beta](private-beta-deployment.md), not as a separate Worker. That deployment's Cloudflare Access and in-Worker JWT verification protect it. It uses the existing `ExecutionSandbox`, without a new Durable Object or storage service, behind `BROWSER_RUN_ENABLED`, which is `false` by default.
 
-Worker-level Access refuses WebSocket upgrades. That does not affect this design: the CDP WebSocket travels between the Sandbox, its Durable Object and the Browser binding, never through a public route.
+Worker-level Access refuses WebSocket upgrades. That does not affect this design: the CDP WebSocket travels between the Sandbox, its container Durable Object and the Browser binding, never through a public route.
+
+### How it works
+
+`POST /api/browser-run/proof` starts a fresh agent Sandbox named `browser-proof-<uuid>` and runs two files from `/opt/browser-run` in its image (`apps/worker/browser-run`):
+
+1. `app.mjs` serves the candidate application on fixed port 3000.
+2. `proof.mjs` runs the same three stages as the local probe, all through the Sandbox's ordinary outbound interception (`SandboxOutbound`), which handles `browser.terminus.test` only when the network grants `allowBrowser`:
+   - `sandbox_websocket_interception`: `wss://browser.terminus.test/echo` reaches the container Durable Object's native `fetch()` and echoes a message.
+   - `remote_browser_cdp`: Playwright connects to `/unrouted`, which launches a Browser Run session without a candidate route and returns its CDP WebSocket.
+   - `private_application`: Playwright connects to `/cdp`. The same invocation creates a scoped `ctx.exports.BrowserCandidateOutbound` for `candidate.terminus.test` and launches the session with it in `outboundByHost`. The browser loads the candidate, clicks, fetches `/state` twice two seconds apart, checks the per-run identity and takes a screenshot.
+
+Only stage results and screenshot metadata (path, dimensions, bytes, SHA-256) leave the container. The browser is limited to `candidate.terminus.test` by guardrails. Sessions use a 60-second keep-alive. Closing the Sandbox closes its session, and the throwaway Sandbox is then deleted. The proof is bounded at two minutes, and a crashed proof container idles out after five.
+
+The Worker code is in `apps/worker/src/integrations/browser-run.ts` and `execution-sandbox.ts`. Both routes refuse unless the flag is on and the container's current network grants a browser. The image change adds only `playwright-core` 1.64.0, without browser binaries.
+
+### Deployed runs
+
+| Run (October 12, 2026) | Result |
+| --- | --- |
+| 1 | Did not reach the stages: the proof application never became ready. The agent container classes were still `provisioning` the new image during the run, so the container most likely started from the old image. Readiness failures now report the application's exit and the contents of `/opt/browser-run`. |
+| 2 | `sandbox_websocket_interception` **passed**: a Sandbox WebSocket reaches its container Durable Object's native `fetch()` through outbound interception in production. Both CDP stages failed in Playwright with `Invalid Upgrade header` after the 101 response, so Browser Run accepted the upgrade. The likely cause is that Browser Run's handshake headers duplicated the ones interception writes. The container now returns only the socket in a bare 101 response, as the passing echo does, and reports a refused upgrade as a 502 with Browser Run's status. |
+| 3 | **Passed**, exit 0, 13.5 s from request to result (Sandbox `browser-proof-40c2857b-…`, `standard-2`, cold start). Remote Chromium 128.0.6613.137 loaded the private candidate through the scoped `BrowserCandidateOutbound`, clicked, and fetched `/state` twice about two seconds apart with the per-run identity intact, so the Fetcher created with the launch kept serving later requests on the same CDP connection. Screenshot: 780×493, 3,316 bytes, SHA-256 `0f2cf75cc4629b273c3aab207664d196ce4e32dcedacea6e417b886693570d11`. The proof Sandbox was closed and purged afterwards. `wrangler tail` showed several CDP, candidate and `browserApplication` invocations as `Canceled`. They appear to end when the browser or Playwright closes its connection; none affected the result. |
+
+### Running it
+
+1. Deploy with the flag on, without changing the committed default:
+
+   ```sh
+   npm run deploy -- --var BROWSER_RUN_ENABLED:true
+   ```
+
+   The agent image rebuilds because the Dockerfile changed.
+
+2. In another terminal, from `apps/worker`, stream the logs:
+
+   ```sh
+   npx wrangler tail terminus --format pretty
+   ```
+
+3. Open the app, signed in through Access, and run this in the browser console:
+
+   ```js
+   await (await fetch("/api/browser-run/proof", { method: "POST" })).json()
+   ```
+
+   A cold Sandbox can take a minute or two. The response is `{ passed, sandbox, durationMs, stages, error?, exitCode?, stderr? }`. Only `passed: true` with all three stages passing is the transport proof. The Worker also logs `Browser Run proof finished` with each stage's result.
+
+4. Deploy again without the flag to turn it off:
+
+   ```sh
+   npm run deploy
+   ```
+
+With the flag off, the endpoint returns 404 and both browser routes refuse.
 
 ## Resuming implementation
 
-First establish the full hosted proof using the existing Worker and `ExecutionSandbox`, without a new Durable Object or storage service. Keep control endpoints private to Sandbox outbound interception. Confirm that the scoped outbound Fetcher survives later application requests for the entire CDP connection. Reconnection must create a new session and Fetcher in one invocation. Cloudflare documents that Fetchers are not persisted between invocations.
+The full hosted proof passed (run 3 above), including later application requests through the scoped outbound Fetcher on the same CDP connection. Reconnection must still create a new session and Fetcher in one invocation. Cloudflare documents that Fetchers are not persisted between invocations.
 
 Once that passes, the remaining approved implementation is:
 
-1. Add the Worker Browser binding behind `BROWSER_RUN_ENABLED=false`, scoped Sandbox/operation/generation grants, fixed application-port routing, lazy app/browser lifecycle, session cleanup and a 30-minute absolute deadline.
+1. Build on the proof's Browser binding, `BROWSER_RUN_ENABLED` gate, `allowBrowser` grant and fixed application port: add operation/generation-scoped grants, fixed application-port routing, lazy app/browser lifecycle, session cleanup and a 30-minute absolute deadline.
 2. Add Zod-defined project server/preparation/readiness/browser-check configuration, network API/settings, atomic D1 updates/events, and immutable execution snapshots through plans, Trains, revisions, Junctions, repairs and integration attempts. Historical missing configuration means disabled. Reject collisions with ordinary check names.
 3. Bundle a trusted stdio Playwright Core MCP server into the Sandbox image. Enable it only for implementation, repair and review profiles across all three pinned harnesses; planning and `explore` receive no browser tools. Preserve repository isolation, filesystem restrictions and Conductor seals.
 4. Resolve and freeze curated image-input capabilities. Return screenshots as MCP image content only for image-capable models, along with generated `/tmp` paths and dimensions. Enforce the 2 MiB inline limit, avoid caller-selected paths/uploads/local reads, and keep pixels out of Worker logs and Workflow results.

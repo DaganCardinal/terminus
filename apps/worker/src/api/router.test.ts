@@ -421,6 +421,14 @@ describe("API validation", () => {
     expect((await api("/nowhere")).status).toBe(404)
   })
 
+  it("refuses the Browser Run proof while BROWSER_RUN_ENABLED is off", async () => {
+    const response = await post("/browser-run/proof")
+    expect(response.status).toBe(404)
+    expect(await response.json()).toMatchObject({
+      error: "Browser Run is disabled",
+    })
+  })
+
   it("refuses to clear a Train that is not blocked", async () => {
     const network = await createNetwork()
     await post(`/networks/${network.id}/demo`)
@@ -490,6 +498,96 @@ describe("API validation", () => {
     }
     expect((await stop("/networks/missing/preview", commit)).status).toBe(404)
     expect((await stop("/trains/missing/preview", commit)).status).toBe(404)
+  })
+})
+
+describe("publishing", () => {
+  const put = (path: string, body: unknown) =>
+    api(path, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+
+  it("publishes the current Terminus commit once, records it with an event, and refuses stale commits", async () => {
+    const network = await createNetwork()
+    for (const body of [{}, { commit: "" }, { commit: "a", extra: 1 }])
+      expect((await post(`/networks/${network.id}/publish`, body)).status).toBe(
+        400
+      )
+    expect(
+      (
+        await post(`/networks/${network.id}/publish`, {
+          commit: "a".repeat(40),
+        })
+      ).status
+    ).toBe(409)
+    expect(
+      (
+        await post("/networks/missing/publish", {
+          commit: network.terminusCommit,
+        })
+      ).status
+    ).toBe(404)
+
+    const first = await post(`/networks/${network.id}/publish`, {
+      commit: network.terminusCommit,
+    })
+    expect(first.status).toBe(200)
+    const publication = await first.json()
+    expect(publication).toMatchObject({
+      repoId: `${network.terminusRepoId.split("/")[0]}/publish`,
+      commit: network.terminusCommit,
+    })
+    expect((await snapshot(network.id)).network.publication).toEqual(
+      publication
+    )
+
+    // Publishing the commit already published changes nothing.
+    const again = await post(`/networks/${network.id}/publish`, {
+      commit: network.terminusCommit,
+    })
+    expect(await again.json()).toEqual(publication)
+    const { events } = eventsResponseSchema.parse(
+      await (await api(`/networks/${network.id}/events?after=0`)).json()
+    )
+    expect(
+      events
+        .map(({ event }) => event)
+        .filter((event) => event.type === "terminus.published")
+    ).toEqual([{ type: "terminus.published", commit: network.terminusCommit }])
+  })
+
+  it("records a live site URL only after publishing", async () => {
+    const network = await createNetwork()
+    const site = { siteUrl: "https://demo.example.workers.dev/" }
+    expect(
+      (await put(`/networks/${network.id}/publish/site`, site)).status
+    ).toBe(409)
+    await post(`/networks/${network.id}/publish`, {
+      commit: network.terminusCommit,
+    })
+    for (const body of [
+      {},
+      { siteUrl: "http://insecure.example" },
+      { siteUrl: "not a url" },
+    ])
+      expect(
+        (await put(`/networks/${network.id}/publish/site`, body)).status
+      ).toBe(400)
+    expect(
+      (await put(`/networks/${network.id}/publish/site`, site)).status
+    ).toBe(204)
+    expect((await snapshot(network.id)).network.publication?.siteUrl).toBe(
+      site.siteUrl
+    )
+    expect(
+      (await put(`/networks/${network.id}/publish/site`, { siteUrl: null }))
+        .status
+    ).toBe(204)
+    expect((await snapshot(network.id)).network.publication).not.toHaveProperty(
+      "siteUrl"
+    )
   })
 })
 

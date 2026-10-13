@@ -5,6 +5,7 @@ import { useEffect, useState } from "react"
 import {
   ChevronDown,
   FolderTree,
+  CloudUpload,
   GitCommitHorizontal,
   Map as MapIcon,
   RotateCw,
@@ -165,7 +166,7 @@ export function NetworkOverview({
             { label: "Networks", href: routes.networks() },
             { label: "…" },
           ]}
-          settingsHref={routes.networkSettings(networkId)}
+          settingsNetworkId={networkId}
         />
         <div className="overview-page">
           {summaryError ? (
@@ -206,7 +207,7 @@ export function NetworkOverview({
           { label: "Networks", href: routes.networks() },
           { label: summary.name },
         ]}
-        settingsHref={routes.networkSettings(networkId)}
+        settingsNetworkId={networkId}
       />
       <div className="overview-page">
         <header className="overview-header">
@@ -240,6 +241,26 @@ export function NetworkOverview({
                 <li>
                   Last merge{" "}
                   {relativeTime(summary.activity.lastPromotion.at, now)}
+                </li>
+              )}
+              {summary.publication && (
+                <li title={summary.publication.commit}>
+                  <CloudUpload size={14} aria-hidden="true" />
+                  {summary.publication.siteUrl ? (
+                    <a
+                      href={summary.publication.siteUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Live at{" "}
+                      <code>{shortCommit(summary.publication.commit)}</code>
+                    </a>
+                  ) : (
+                    <>
+                      Published{" "}
+                      <code>{shortCommit(summary.publication.commit)}</code>
+                    </>
+                  )}
                 </li>
               )}
               {license && (

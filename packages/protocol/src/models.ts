@@ -154,8 +154,9 @@ export function compatibleModel(harness: Harness, model: string): boolean {
 }
 /**
  * The model a harness uses for its own housekeeping, such as naming its
- * session, never for a role's planning, code or reviews: the lowest-cost text
- * model from the role model's provider, so one provider grant covers both.
+ * session, and for OpenCode's read-only `explore` subagent, never for a
+ * role's own planning, code or reviews: the lowest-cost text model from the
+ * role model's provider, so one provider grant covers both.
  */
 export function utilityModel(model: string): string {
   const { provider } = catalogModel(model)

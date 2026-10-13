@@ -12,11 +12,11 @@ The protocol catalog owns native API model IDs, provider identities, compatible 
 
 ## Gateway and provider setup
 
-All supported providers route through the configured AI Gateway. Terminus has no provider-key input, key storage, alias selector, billing switch or gateway-management API.
+All supported providers route through the configured AI Gateway. Anthropic and OpenAI calls are paid with [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/): prepaid Cloudflare credits, with provider pricing passed through. Terminus has no provider-key input, key storage, alias selector, billing switch or gateway-management API.
 
-For your own Anthropic/OpenAI account, enable an [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/) and store the provider key with the **default** alias in [Cloudflare's Provider Keys dashboard](https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/). The Worker uses the existing account-scoped `AI_GATEWAY_TOKEN` secret; it needs AI Gateway Run for provider-native routes and Workers AI Read for the existing Workers AI endpoint. Gateway configuration controls billing. Verify your intended routing in Cloudflare before enabling paid work.
+Gateway setup: enable an [Authenticated Gateway](https://developers.cloudflare.com/ai-gateway/configuration/authentication/), load Unified Billing credits, leave **Require provider credentials** off, and keep no Anthropic or OpenAI key under the **default** alias in Provider Keys. Cloudflare resolves a request's credentials in order: a provider key on the request, then a stored `default` BYOK key, then Unified Billing. The Worker never sends a provider key, so a stored `default` key would silently take over billing. Set [spend limits](https://developers.cloudflare.com/ai-gateway/features/unified-billing/) on the gateway to cap paid work. The Worker uses the existing account-scoped `AI_GATEWAY_TOKEN` secret; it needs AI Gateway Run for provider-native routes and Workers AI Read for the existing Workers AI endpoint.
 
-The Sandbox receives only a placeholder key (where required by its harness). The outbound Worker authorizes one exact provider and endpoint, the role's native model, and that model's utility model: the lowest-cost catalog model from the same provider, which harnesses use only for housekeeping such as session titles (OpenCode `small_model`, Claude Code `ANTHROPIC_DEFAULT_HAIKU_MODEL`). It discards Sandbox-supplied credentials and all `cf-aig-*` routing/billing headers before injecting trusted authentication. It passes streams through and refuses redirects and hosted tools that would execute outside the Sandbox's restrictions. No provider credential enters Sandbox configuration, environment or event capture. Provider-native BYOK lookup relies on omitting provider authentication, as Cloudflare documents.
+The Sandbox receives only a placeholder key (where required by its harness). The outbound Worker authorizes one exact provider and endpoint, the role's native model, and that model's utility model: the lowest-cost catalog model from the same provider, which harnesses use only for housekeeping such as session titles (OpenCode `small_model`, Claude Code `ANTHROPIC_DEFAULT_HAIKU_MODEL`) and for OpenCode's read-only `explore` subagent. It discards Sandbox-supplied credentials and all `cf-aig-*` routing/billing headers before injecting trusted authentication. It passes streams through and refuses redirects and hosted tools that would execute outside the Sandbox's restrictions. No provider credential enters Sandbox configuration, environment or event capture. Unified Billing relies on omitting provider authentication, as Cloudflare documents.
 
 ## Ownership and durability
 
@@ -45,18 +45,18 @@ Integration references: [Cloudflare Claude Code](https://developers.cloudflare.c
 
 ## Release verification
 
-`ALTERNATIVE_HARNESSES_ENABLED` defaults to `false`. Real settings expose the release gate and disable alternatives until enabled; the API rejects bypass attempts, and preparation checks again before execution. External-provider models under OpenCode are also gated. Fake mode accepts every combination without starting CLIs or calling a provider.
+`ALTERNATIVE_HARNESSES_ENABLED` is `true` in the real deployment and `false` in fake mode, where it is not consulted. When `false`, real settings disable alternatives; the API rejects bypass attempts, and preparation checks again before execution. External-provider models under OpenCode are also gated. Fake mode accepts every combination without starting CLIs or calling a provider.
 
 The automated suite is credential-free. It covers catalog compatibility, legacy settings, all twelve role/harness command and continuation fixtures, outcome failures, event filtering, immutable D1 configuration, checkpoint mismatches, offline execution, exact routing, header replacement, streaming and upstream failure handling.
 
-Before enabling alternatives, the maintainer must:
+Live verification checklist (still outstanding):
 
 1. Apply migration 0014 and deploy the pinned image with the gate off. Drain active legacy Trains, Stations, plans, integrations, Junctions and repairs before changing providers.
 2. Explicitly authorize new-provider calls; the repository's GLM-only testing instruction continues to apply.
 3. In real Cloudflare Sandboxes, verify each pinned CLI starts with its restrictive profile, cannot activate repository instructions/hooks/plugins/skills/MCP, and cannot modify a planning checkout or an accepted review candidate. Confirm exact installed versions.
 4. For each harness run planning, implementation, every Conductor review kind (Station, Crossing, Junction input/feature, repair), and Technician repair. Exercise at least one correction in the same native session, streaming, malformed/failing outcomes and infrastructure recovery without replaying a completed checkpoint.
 5. Change settings between Stations, revisions, reviews and retries; verify the original snapshots and provenance remain in use. Verify provider credentials never appear in Sandbox files, environment, events or logs.
-6. Verify default dashboard BYOK and the intended Cloudflare billing configuration without passing provider credentials through Terminus. Check upstream failures and invalid keys do not cause runtime fallback.
-7. Only after those checks pass, set `ALTERNATIVE_HARNESSES_ENABLED=true` in the real deployment. Keep fake mode offline.
+6. Verify calls are charged to Unified Billing credits (no `default` provider key stored) without passing provider credentials through Terminus. Check upstream failures and exhausted credits do not cause runtime fallback.
+7. Keep fake mode offline.
 
-These live checks have not been performed by this implementation. Local fixtures cannot prove native Linux enforcement, pinned-binary continuation, streaming transport or dashboard billing behavior inside Cloudflare.
+The maintainer enabled `ALTERNATIVE_HARNESSES_ENABLED=true` in the real deployment before these live checks were performed. Local fixtures cannot prove native Linux enforcement, pinned-binary continuation, streaming transport or dashboard billing behavior inside Cloudflare.

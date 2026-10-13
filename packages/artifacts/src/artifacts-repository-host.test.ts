@@ -79,6 +79,9 @@ async function fixture(
   let afterPause: (() => void) | null = null
   let beforeFork: (() => Promise<void>) | null = null
   let beforePush: (() => Promise<void>) | null = null
+  let beforeToken: (() => Promise<void>) | null = null
+  let lookups = 0
+  const commands: string[][] = []
   let serial = 0
   // Repos are keyed by their `<namespace>/<name>` id.
   async function create(id: string, description: string, source?: string) {
@@ -98,6 +101,7 @@ async function fixture(
       info: async () => ({ name, description, remote, defaultBranch: "main" }),
       [Symbol.dispose]: () => {},
       createToken: async () => {
+        await beforeToken?.()
         const id = issue()
         return { id, plaintext: id }
       },
@@ -120,6 +124,7 @@ async function fixture(
     },
     namespace: (namespace) => ({
       get: async (name) => {
+        lookups++
         if (lookupError) throw lookupError
         const id = `${namespace}/${name}`
         const repo = repos.get(id)
@@ -134,6 +139,7 @@ async function fixture(
           },
         }
       },
+      revokeToken: async (id) => tokens.delete(id),
       create: (name, options) =>
         create(`${namespace}/${name}`, options.description),
       import: (input) =>
@@ -159,6 +165,7 @@ async function fixture(
           : value
       const workspace: GitWorkspace = {
         run: async (command, cwd = "/workspace", env = {}) => {
+          commands.push(command)
           if (command[0] === "git" && command.includes("push") && beforePush) {
             const callback = beforePush
             beforePush = null
@@ -263,6 +270,8 @@ async function fixture(
     workspaces,
     artifacts,
     namespaces,
+    commands,
+    lookups: () => lookups,
     setLookupError: (error: unknown) => {
       lookupError = error
     },
@@ -275,6 +284,9 @@ async function fixture(
     },
     setBeforeFork: (callback: () => Promise<void>) => {
       beforeFork = callback
+    },
+    setBeforeToken: (callback: (() => Promise<void>) | null) => {
+      beforeToken = callback
     },
   }
 }
@@ -486,6 +498,15 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.tokens.size).toBe(0)
   })
 
+  it("reads a head with one repository lookup, revoking its token without another", async () => {
+    const f = await fixture({ readHeadDirectly: true })
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const before = f.lookups()
+    expect(await f.host.head("p/terminus")).toBe(terminus.headCommit)
+    expect(f.lookups() - before).toBe(1)
+    expect(f.tokens.size).toBe(0)
+  })
+
   it("confirms a reviewed repair from repository heads alone, and refuses moved ones", async () => {
     const f = await fixture({ readHeadDirectly: true })
     const terminus = await f.host.createTerminus({ namespace: "p" })
@@ -686,34 +707,112 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.tokens.size).toBe(0)
   })
 
-  it("refuses to overwrite a Train that has moved", async () => {
-    const f = await fixture()
-    const terminus = await f.host.createTerminus({ namespace: "p" })
-    await f.host.fork({
-      sourceRepoId: "p/terminus",
-      commit: terminus.headCommit,
-      name: "train",
-    })
-    await f.host.fork({
-      sourceRepoId: "p/train",
-      commit: terminus.headCommit,
-      name: "station",
-    })
-    const proposed = await f.change("p/station", "proposal.md")
-    const other = await f.change("p/train", "technician.md")
-    await expect(
-      f.host.fastForward({
-        sourceRepoId: "p/station",
-        targetRepoId: "p/train",
-        fromCommit: terminus.headCommit,
-        toCommit: proposed.commit,
+  it.each([false, true])(
+    "refuses to overwrite a Train that has moved (Worker head reads: %s)",
+    async (readHeadDirectly) => {
+      const f = await fixture({ readHeadDirectly })
+      const terminus = await f.host.createTerminus({ namespace: "p" })
+      await f.host.fork({
+        sourceRepoId: "p/terminus",
+        commit: terminus.headCommit,
+        name: "train",
       })
-    ).rejects.toBeInstanceOf(RepositoryMovedError)
-    expect(await f.head("p/train")).toBe(other.commit)
+      await f.host.fork({
+        sourceRepoId: "p/train",
+        commit: terminus.headCommit,
+        name: "station",
+      })
+      const proposed = await f.change("p/station", "proposal.md")
+      const other = await f.change("p/train", "technician.md")
+      await expect(
+        f.host.fastForward({
+          sourceRepoId: "p/station",
+          targetRepoId: "p/train",
+          fromCommit: terminus.headCommit,
+          toCommit: proposed.commit,
+        })
+      ).rejects.toBeInstanceOf(RepositoryMovedError)
+      expect(await f.head("p/train")).toBe(other.commit)
+      expect(f.tokens.size).toBe(0)
+    }
+  )
+
+  it.each([false, true])(
+    "rejects a Train advancing to an ancestor of the proposal between preflight and push (Worker head reads: %s)",
+    async (readHeadDirectly) => {
+      const f = await fixture({ readHeadDirectly })
+      const baseline = await f.host.createTerminus({ namespace: "p" })
+      await f.host.fork({
+        sourceRepoId: "p/terminus",
+        commit: baseline.headCommit,
+        name: "train",
+      })
+      await f.host.fork({
+        sourceRepoId: "p/train",
+        commit: baseline.headCommit,
+        name: "station",
+      })
+      const first = await f.change("p/station", "one.md")
+      const second = await f.change("p/station", "two.md")
+      f.setBeforePush(async () =>
+        f.host.fastForward({
+          targetRepoId: "p/train",
+          sourceRepoId: "p/station",
+          fromCommit: baseline.headCommit,
+          toCommit: first.commit,
+        })
+      )
+      await expect(
+        f.host.fastForward({
+          targetRepoId: "p/train",
+          sourceRepoId: "p/station",
+          fromCommit: baseline.headCommit,
+          toCommit: second.commit,
+        })
+      ).rejects.toBeInstanceOf(RepositoryMovedError)
+      expect(await f.head("p/train")).toBe(first.commit)
+      expect(f.tokens.size).toBe(0)
+    }
+  )
+
+  it("fast-forwards with Worker head reads and a shell-installed guard, running neither ls-remote nor Node", async () => {
+    const f = await fixture({ readHeadDirectly: true })
+    const baseline = await f.host.createTerminus({ namespace: "p" })
+    for (const [name, source] of [
+      ["train", "p/terminus"],
+      ["station", "p/train"],
+    ] as const)
+      await f.host.fork({
+        sourceRepoId: source,
+        commit: baseline.headCommit,
+        name,
+      })
+    const proposed = await f.change("p/station", "proposal.md")
+    const input = {
+      sourceRepoId: "p/station",
+      targetRepoId: "p/train",
+      fromCommit: baseline.headCommit,
+      toCommit: proposed.commit,
+    }
+    const ran = f.commands.length
+    await f.host.fastForward(input)
+    expect(await f.head("p/train")).toBe(proposed.commit)
+    expect(
+      f.commands
+        .slice(ran)
+        .map(([program, subcommand]) =>
+          program === "git" ? `git ${subcommand}` : program
+        )
+    ).toEqual(["git clone", "git merge-base", "sh", "git push"])
+    // A retry after a lost response finds the Train already there.
+    const retried = f.commands.length
+    await f.host.fastForward(input)
+    expect(f.commands).toHaveLength(retried)
     expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
   })
 
-  it("rejects a Train advancing to an ancestor of the proposal between preflight and push", async () => {
+  it("mints a workspace's credentials together, and revokes them when one is refused", async () => {
     const f = await fixture()
     const baseline = await f.host.createTerminus({ namespace: "p" })
     await f.host.fork({
@@ -721,30 +820,34 @@ describe("Artifacts repository transport with real Git", () => {
       commit: baseline.headCommit,
       name: "train",
     })
-    await f.host.fork({
-      sourceRepoId: "p/train",
-      commit: baseline.headCommit,
-      name: "station",
+    const advanced = (await f.change("p/terminus", "next.md")).commit
+    let minting = 0
+    let most = 0
+    f.setBeforeToken(async () => {
+      most = Math.max(most, ++minting)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      minting--
     })
-    const first = await f.change("p/station", "one.md")
-    const second = await f.change("p/station", "two.md")
-    f.setBeforePush(async () =>
-      f.host.fastForward({
-        targetRepoId: "p/train",
-        sourceRepoId: "p/station",
-        fromCommit: baseline.headCommit,
-        toCommit: first.commit,
-      })
-    )
+    await f.host.fastForward({
+      sourceRepoId: "p/terminus",
+      targetRepoId: "p/train",
+      fromCommit: baseline.headCommit,
+      toCommit: advanced,
+    })
+    expect(most).toBe(2)
+    f.setBeforeToken(null)
+    expect(await f.head("p/train")).toBe(advanced)
+
+    const grants = f.grants.length
     await expect(
       f.host.fastForward({
+        sourceRepoId: "p/missing",
         targetRepoId: "p/train",
-        sourceRepoId: "p/station",
-        fromCommit: baseline.headCommit,
-        toCommit: second.commit,
+        fromCommit: advanced,
+        toCommit: advanced,
       })
-    ).rejects.toBeInstanceOf(RepositoryMovedError)
-    expect(await f.head("p/train")).toBe(first.commit)
+    ).rejects.toThrow("missing")
+    expect(f.grants).toHaveLength(grants)
     expect(f.tokens.size).toBe(0)
   })
 

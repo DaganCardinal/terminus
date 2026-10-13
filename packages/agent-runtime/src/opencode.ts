@@ -170,8 +170,9 @@ export const maxRejectedSubmissions = 3
 /**
  * The only OpenCode configuration a harness loads. The role runs as its own
  * primary agent; OpenCode's built-in agents are disabled except the read-only
- * \`explore\` subagent, which inherits the role's model as the Sandbox
- * outbound handler requires. Skills are denied because none are trusted.
+ * \`explore\` subagent. Exploration is reading and searching, so it runs on the
+ * role's utility model, which is faster and which the Sandbox outbound handler
+ * already grants. Skills are denied because none are trusted.
  */
 export function opencodeConfig(
   accountId: string,
@@ -203,6 +204,7 @@ export function opencodeConfig(
       build: { disable: true },
       plan: { disable: true },
       explore: {
+        model: `terminus/${utilityModel(model)}`,
         permission: {
           ...readOnly,
           task: "deny",

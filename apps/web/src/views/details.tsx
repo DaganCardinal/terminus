@@ -1,5 +1,5 @@
-import type { Car, Line, NetworkSnapshot, Station } from "@terminus/protocol"
-import type { CSSProperties, ReactNode } from "react"
+import type { Line, NetworkSnapshot, Station } from "@terminus/protocol"
+import type { ReactNode } from "react"
 import { useId, useState } from "react"
 import {
   ArrowUpRight,
@@ -27,11 +27,12 @@ import {
   manifestFacts,
   shortCommit,
 } from "./detail-parts"
-import { describeLocation, namesFor } from "./describe"
+import { describeLocation, namesFor, trainDisplayStatus } from "./describe"
 import { JunctionDetails } from "./junctions"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
+import { TrainCars } from "./train-cars"
 
 type Run = (command: () => Promise<unknown>) => Promise<void>
 
@@ -334,73 +335,6 @@ export function StationDetails({
   )
 }
 
-const MAX_CONSIST = 12
-const loading = new Set([
-  "signaled",
-  "active",
-  "ready_for_pickup",
-  "in_review",
-  "revising",
-])
-
-/** The Train drawn as a locomotive and its Cars: accepted Cars filled, the
- * Car being worked on pulsing, and the Line's remaining Stations as outlines. */
-function Consist({
-  color,
-  cars,
-  stations,
-}: {
-  color: string
-  cars: Car[]
-  stations: Station[]
-}) {
-  const open = stations.filter(
-    (s) => s.state.status !== "complete" && s.state.status !== "cancelled"
-  )
-  const slots = [
-    ...cars.map((car) => ({
-      key: car.id,
-      kind: "accepted",
-    })),
-    ...open.map((s) => ({
-      key: s.id,
-      kind: loading.has(s.state.status)
-        ? "loading"
-        : s.state.status === "blocked"
-          ? "blocked"
-          : "planned",
-    })),
-  ]
-  const shown = slots.slice(0, MAX_CONSIST)
-  const loadingCount = open.filter((s) => loading.has(s.state.status)).length
-  return (
-    <div className="consist-wrap">
-      <div
-        className="consist"
-        style={{ "--line": color } as CSSProperties}
-        role="img"
-        aria-label={`${cars.length} accepted ${cars.length === 1 ? "Car" : "Cars"}, ${open.length} Stations to go`}
-      >
-        <span className="consist-loco">
-          <TrainFront size={13} />
-        </span>
-        {shown.map((slot) => (
-          <span key={slot.key} className={`consist-car consist-${slot.kind}`} />
-        ))}
-        {slots.length > shown.length && (
-          <span className="consist-more">+{slots.length - shown.length}</span>
-        )}
-      </div>
-      <p className="detail-note">
-        {cars.length} accepted
-        {loadingCount > 0 && ` · ${loadingCount} loading`}
-        {open.length - loadingCount > 0 &&
-          ` · ${open.length - loadingCount} to go`}
-      </p>
-    </div>
-  )
-}
-
 export function TrainDetails({
   snapshot,
   line,
@@ -463,13 +397,21 @@ export function TrainDetails({
         return (
           <div key={train.id} className="detail-train">
             <div className="detail-status">
-              <StatusBadge status={train.state.status} dot />
+              <StatusBadge
+                status={trainDisplayStatus(train.state, snapshot.stations)}
+                dot
+              />
               <span className={`detail-signal signal-${signal ?? "none"}`}>
                 {signal ? `Signal ${signal}` : "No current Engineer decision"}
               </span>
             </div>
             <p className="detail-lead">
-              {describeLocation(train.state, name, train.destination)}
+              {describeLocation(
+                train.state,
+                name,
+                train.destination,
+                snapshot.stations
+              )}
             </p>
             <TrainPreviewButton trainId={train.id} commit={train.headCommit} />
             {train.destination?.kind !== "junction" && (
@@ -569,61 +511,14 @@ export function TrainDetails({
               onSource={(lineId, stationId) => onSelect({ lineId, stationId })}
             />
             <Section title="Cars">
-              <Consist color={color} cars={cars} stations={stations} />
-              {cars.map((car) => (
-                <details key={car.id}>
-                  <summary>
-                    {car.position}. {name(car.stationId)}
-                  </summary>
-                  <p>{car.manifest.goal}</p>
-                  {car.originCarId && (
-                    <p>
-                      Picked up from{" "}
-                      <button
-                        className="dmsg-link"
-                        onClick={() => {
-                          const origin = snapshot.cars.find(
-                            (c) => c.id === car.originCarId
-                          )
-                          const t = snapshot.trains.find(
-                            (t) => t.train.id === origin?.trainId
-                          )
-                          if (t)
-                            onSelect({
-                              lineId: t.train.lineId,
-                              stationId: car.stationId,
-                            })
-                        }}
-                      >
-                        original Car {car.originCarId}
-                      </button>
-                      . Original acceptance and review are preserved.
-                    </p>
-                  )}
-                  <p>
-                    <strong>Conductor review:</strong> {car.review.summary}
-                  </p>
-                  <List items={car.review.findings} />
-                  <CheckRow checks={car.evidence.checks} />
-                  <ManifestView manifest={car.manifest} name={name} met />
-                  <TechnicalDetails
-                    facts={[
-                      { label: "Accepted commit", value: car.acceptedCommit },
-                      { label: "Changed files", value: car.changedPaths },
-                    ]}
-                  />
-                  <details>
-                    <summary>Accepted changes</summary>
-                    {car.diff !== undefined ? (
-                      <pre className="unload-diff">
-                        {car.diff || "No file changes."}
-                      </pre>
-                    ) : (
-                      <p>A diff was not recorded for this Car.</p>
-                    )}
-                  </details>
-                </details>
-              ))}
+              <TrainCars
+                key={train.id}
+                color={color}
+                cars={cars}
+                stations={stations}
+                snapshot={snapshot}
+                onSelect={onSelect}
+              />
             </Section>
           </div>
         )

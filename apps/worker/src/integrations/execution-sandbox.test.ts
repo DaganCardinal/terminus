@@ -531,3 +531,205 @@ describe("Sandbox sizes", () => {
     })
   })
 })
+
+describe("Browser Run", () => {
+  const granted = { repositories: [], allowModel: false, allowBrowser: true }
+  const start = (sandbox: SandboxContainer, network: unknown = granted) =>
+    (
+      sandbox as unknown as {
+        applyNetwork(network: unknown, waitMs: number): Promise<void>
+      }
+    ).applyNetwork(network, 0)
+  const upgrade = (path: string) =>
+    new Request(`https://browser.terminus.test${path}`, {
+      headers: { Upgrade: "websocket" },
+    })
+
+  /** Turns the flag on and gives the container a fake Browser binding. */
+  function enable(sandbox: SandboxContainer) {
+    const browser = {
+      launch: vi.fn(async (options: BrowserRunAcquireOptions) => ({
+        sessionId: `session-${browser.launch.mock.calls.length}`,
+        options,
+        webSocket: {
+          fetch: vi.fn(
+            async (): Promise<Response> =>
+              new Response(null, {
+                status: 101,
+                webSocket: new WebSocketPair()[0],
+                headers: { Upgrade: "websocket" },
+              })
+          ),
+        },
+      })),
+      closeSession: vi.fn(async () => ({})),
+    }
+    Object.assign(sandbox, {
+      env: { ...env, BROWSER_RUN_ENABLED: "true", BROWSER: browser },
+    })
+    return browser
+  }
+
+  it("refuses browser routes unless the flag is on and the network grants a browser", async () => {
+    await withSandbox(async (sandbox) => {
+      await start(sandbox)
+      expect((await sandbox.fetch(upgrade("/echo"))).status).toBe(403)
+      const browser = enable(sandbox)
+      await start(sandbox, { repositories: [], allowModel: false })
+      expect((await sandbox.fetch(upgrade("/cdp"))).status).toBe(403)
+      expect(
+        (
+          await sandbox.browserApplication(
+            new Request("http://candidate.terminus.test/")
+          )
+        ).status
+      ).toBe(404)
+      expect(browser.launch).not.toHaveBeenCalled()
+      await sandbox.close()
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("echoes WebSockets through its own native fetch", async () => {
+    await withSandbox(async (sandbox) => {
+      enable(sandbox)
+      await start(sandbox)
+      const response = await sandbox.fetch(upgrade("/echo"))
+      expect(response.status).toBe(101)
+      expect(response.webSocket).toBeTruthy()
+      await sandbox.close()
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("launches one guarded session at a time, routing the candidate host back to itself", async () => {
+    await withSandbox(async (sandbox) => {
+      const browser = enable(sandbox)
+      await start(sandbox)
+      const cdp = await sandbox.fetch(upgrade("/cdp"))
+      expect(cdp.status).toBe(101)
+      expect(cdp.webSocket).toBeTruthy()
+      // Interception writes the handshake; Browser Run's headers would duplicate it.
+      expect([...cdp.headers]).toEqual([])
+      const [routed] = browser.launch.mock.calls[0]!
+      expect(routed).toMatchObject({
+        keepAlive: 60_000,
+        guardrails: { allowedDomains: ["candidate.terminus.test"] },
+      })
+      expect(Object.keys(routed.outboundByHost ?? {})).toEqual([
+        "candidate.terminus.test",
+      ])
+
+      await sandbox.fetch(upgrade("/unrouted"))
+      expect(browser.closeSession).toHaveBeenCalledWith("session-1")
+      expect(browser.launch.mock.calls[1]![0].outboundByHost).toBeUndefined()
+
+      await sandbox.close()
+      expect(browser.closeSession).toHaveBeenLastCalledWith("session-2")
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("reports a refused CDP upgrade instead of passing it on", async () => {
+    await withSandbox(async (sandbox) => {
+      const browser = enable(sandbox)
+      browser.launch.mockImplementationOnce(async (options) => ({
+        sessionId: "session-1",
+        options,
+        webSocket: {
+          fetch: vi.fn(
+            async (): Promise<Response> =>
+              new Response("Too many sessions", { status: 429 })
+          ),
+        },
+      }))
+      await start(sandbox)
+      const response = await sandbox.fetch(upgrade("/cdp"))
+      expect(response.status).toBe(502)
+      expect(await response.text()).toBe(
+        "Browser Run refused the CDP upgrade (429): Too many sessions"
+      )
+      await sandbox.close()
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("serves the browser only the fixed application port", async () => {
+    await withSandbox(async (sandbox, f) => {
+      enable(sandbox)
+      await start(sandbox)
+      const response = await sandbox.browserApplication(
+        new Request("http://candidate.terminus.test/state")
+      )
+      expect(await response.text()).toBe("demo app")
+      expect(f.container.getTcpPort).toHaveBeenLastCalledWith(3000)
+      await sandbox.close()
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("runs the proof application and client, then closes the container", async () => {
+    await withSandbox(async (sandbox, f) => {
+      enable(sandbox)
+      f.container.running = false
+      const report = JSON.stringify({ passed: true, results: [] })
+      f.container.exec.mockImplementation(async () => ({
+        stdout: new Response(`${report}\n`).body!,
+        exitCode: Promise.resolve(0),
+      }))
+      const result = await sandbox.proveBrowserRun("scope-1")
+      expect(result).toMatchObject({ exitCode: 0, stdout: `${report}\n` })
+      expect(f.container.exec.mock.calls.map(([command]) => command)).toEqual([
+        ["node", "/opt/browser-run/app.mjs"],
+        ["node", "/opt/browser-run/proof.mjs"],
+      ])
+      for (const [, options] of f.container.exec.mock.calls)
+        expect(options).toMatchObject({ env: { PROOF_SCOPE: "scope-1" } })
+      expect(f.container.destroy).toHaveBeenCalled()
+      const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) FROM sandbox_leases WHERE object_id = ?"
+        )
+          .bind(id.toString())
+          .first("COUNT(*)")
+      ).toBe(0)
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("explains an application that never became ready", async () => {
+    await withSandbox(async (sandbox, f) => {
+      enable(sandbox)
+      const text = (value: string) => new Response(value).body!
+      f.container.exec
+        .mockResolvedValueOnce({
+          stdout: text(""),
+          stderr: text("Error: Cannot find module '/opt/browser-run/app.mjs'"),
+          exitCode: Promise.resolve(1),
+        } as never)
+        .mockResolvedValueOnce({
+          stdout: text("ls: cannot access '/opt/browser-run'"),
+          exitCode: Promise.resolve(2),
+        })
+      vi.spyOn(
+        sandbox as unknown as { waitForPort(): Promise<void> },
+        "waitForPort"
+      ).mockRejectedValue(
+        new Error("The proof application did not become ready")
+      )
+      await expect(sandbox.proveBrowserRun("scope")).rejects.toThrow(
+        "The proof application did not become ready. It exited with code 1: Error: Cannot find module '/opt/browser-run/app.mjs'. /opt/browser-run: ls: cannot access '/opt/browser-run'"
+      )
+      expect(f.container.destroy).toHaveBeenCalled()
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("refuses the proof while disabled, and in agentless Sandboxes", async () => {
+    await withSandbox(async (sandbox) => {
+      await expect(sandbox.proveBrowserRun("scope")).rejects.toThrow(
+        "Browser Run is disabled"
+      )
+    }, "SANDBOX_STANDARD_2")
+    await withSandbox(async (sandbox) => {
+      enable(sandbox)
+      await expect(sandbox.proveBrowserRun("scope")).rejects.toThrow(
+        "The Browser Run proof runs in agent Sandboxes"
+      )
+    })
+  })
+})

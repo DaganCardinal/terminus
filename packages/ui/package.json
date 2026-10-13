@@ -10,6 +10,7 @@
     "./hooks/*": "./src/hooks/*.ts"
   },
   "scripts": {
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

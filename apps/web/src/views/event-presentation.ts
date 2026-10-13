@@ -12,6 +12,7 @@ import {
   CircleStop,
   CircleX,
   ClipboardList,
+  CloudUpload,
   FolderGit2,
   GitCommitVertical,
   GitMerge,
@@ -198,6 +199,8 @@ export function presentEvent(event: DomainEvent): EventPresentation {
       return success(GitCommitVertical)
     case "terminus.integration_completed":
       return success(GitMerge)
+    case "terminus.published":
+      return success(CloudUpload)
 
     case "junction.created":
     case "junction.candidate_prepared":

@@ -117,18 +117,18 @@ describe("Artifacts REST client", () => {
       id: "tok-1",
       plaintext: "art_v1_y",
     })
+    // info() answers from the lookup get() already made.
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
-      "GET /tn-1/repos/terminus",
       "GET /tn-1/repos/terminus",
       "POST /tn-1/repos/terminus/fork",
       "POST /tn-1/tokens",
     ])
-    expect(calls[2]!.body).toEqual({
+    expect(calls[1]!.body).toEqual({
       name: "train-1",
       description: "Terminus fork: tn-1/terminus@abc",
       default_branch_only: true,
     })
-    expect(calls[3]!.body).toEqual({
+    expect(calls[2]!.body).toEqual({
       repo: "terminus",
       scope: "read",
       ttl: 3600,
@@ -273,6 +273,22 @@ describe("Artifacts REST client", () => {
       path: "/tn-1/tokens/initial",
     })
     expect(await handle.revokeToken("art_v1_secret?expires=1")).toBe(false)
+  })
+
+  it("revokes a token by id without looking up its repository, and treats a missing one as done", async () => {
+    let revoked = false
+    const { rest, calls } = client(() => {
+      if (revoked)
+        return { status: 404, errors: [{ code: 10200, message: "Gone" }] }
+      revoked = true
+      return { result: { id: "tok-1" } }
+    })
+    expect(await rest.namespace("tn-1").revokeToken("tok-1")).toBe(true)
+    expect(await rest.namespace("tn-1").revokeToken("tok-1")).toBe(false)
+    expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "DELETE /tn-1/tokens/tok-1",
+      "DELETE /tn-1/tokens/tok-1",
+    ])
   })
 
   it("imports a public URL into the namespace under the target name", async () => {

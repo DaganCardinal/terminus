@@ -10,6 +10,7 @@ import {
   dispatchActivityResponseSchema,
   trainPreviewSchema,
   terminusPreviewSchema,
+  terminusPublicationSchema,
   emergencyBrakeResultSchema,
   trainUnloadPolicySchema,
   type UnloadMode,
@@ -289,6 +290,18 @@ export const api = {
     request<void>(`/networks/${networkId}/preview`, {
       method: "DELETE",
       body: { commit },
+    }),
+  publishTerminus: async (networkId: string, commit: string) =>
+    terminusPublicationSchema.parse(
+      await request(`/networks/${networkId}/publish`, {
+        method: "POST",
+        body: { commit },
+      })
+    ),
+  setPublishedSite: (networkId: string, siteUrl: string | null) =>
+    request<void>(`/networks/${networkId}/publish/site`, {
+      method: "PUT",
+      body: { siteUrl },
     }),
 }
 

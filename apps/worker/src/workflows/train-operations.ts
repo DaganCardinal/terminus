@@ -37,6 +37,7 @@ import {
   retryStationRun,
   returnToStation,
   startReview,
+  type Crossing,
   type DepartureContext,
   type DomainEvent,
   type GateDecision,
@@ -115,6 +116,18 @@ export interface RecordedStationOutcome {
 }
 
 /**
+ * What an advance's checks consult, read once and together rather than by
+ * each check in turn, since each read is a D1 round trip. Every check read
+ * them before writing anything, so its decisions are unchanged.
+ */
+export interface AdvanceReads {
+  line: Line | null
+  /** Every Station in the Network. */
+  stations: Loaded<Station>[]
+  crossings: Crossing[]
+}
+
+/**
  * Makes the Train's next move from its persisted state: one transition, or
  * the event to wait for. Safe to repeat, because it always starts from what
  * is stored.
@@ -123,8 +136,10 @@ export async function advanceTrain(
   ports: TrainPorts,
   trainId: TrainId
 ): Promise<TrainMove> {
-  const loaded = await loadTrain(ports, trainId)
-  const siding = await ports.store.sidingRequest(trainId)
+  const [loaded, siding] = await Promise.all([
+    loadTrain(ports, trainId),
+    ports.store.sidingRequest(trainId),
+  ])
   if (siding !== null) {
     const active = (await ports.store.integrations(loaded.networkId)).some(
       (a) =>
@@ -142,18 +157,28 @@ export async function advanceTrain(
     await wakeHeldTrains(ports, loaded.networkId)
     return { kind: "finished", status: "siding" }
   }
-  if (await applyStationRemoval(ports, loaded)) return { kind: "moved" }
-  if (await applyStationStop(ports, loaded)) return { kind: "moved" }
+  const [line, stations, crossings] = await Promise.all([
+    ports.store.line(loaded.value.lineId),
+    ports.store.stations(loaded.networkId),
+    ports.store.crossings(loaded.networkId),
+  ])
+  const reads: AdvanceReads = { line, stations, crossings }
+  if (await applyStationRemoval(ports, loaded, reads)) return { kind: "moved" }
+  if (await applyStationStop(ports, loaded, reads)) return { kind: "moved" }
   const junctionMove = await advanceJunctionTrain(ports, loaded)
   if (junctionMove) return junctionMove
-  const crossingMove = await advanceCrossing(ports, loaded)
+  const crossingMove = await advanceCrossing(ports, loaded, reads)
   if (crossingMove) return crossingMove
   const { state } = loaded.value
   switch (state.status) {
     case "ready":
-      return departOrReturn(ports, loaded)
+      return departOrReturn(ports, loaded, reads)
     case "in_transit":
-      return awaitStation(ports, trainId, state.toward)
+      return awaitStation(
+        ports,
+        trainId,
+        await stationIn(ports, reads, state.toward)
+      )
     case "approaching": {
       const arrived = applied(arrive(loaded.value))
       await ports.store.commit(
@@ -164,9 +189,9 @@ export async function advanceTrain(
       return { kind: "moved" }
     }
     case "docked": {
-      const station = await loadStation(ports, state.at)
+      const station = await stationIn(ports, reads, state.at)
       if (station.value.state.status === "revising") {
-        return awaitStation(ports, trainId, state.at)
+        return awaitStation(ports, trainId, station)
       }
       const started = applied(
         startReview({ train: loaded.value, station: station.value })
@@ -182,9 +207,9 @@ export async function advanceTrain(
       return { kind: "moved" }
     }
     case "reviewing":
-      return review(ports, loaded, await loadStation(ports, state.at))
+      return review(ports, loaded, await stationIn(ports, reads, state.at))
     case "held":
-      return reconsiderHold(ports, loaded)
+      return reconsiderHold(ports, loaded, reads)
     case "blocked": {
       const repair = await ports.store.approvedRepair(trainId)
       const network = repair && (await ports.store.network(loaded.networkId))
@@ -231,14 +256,13 @@ export async function advanceTrain(
 /** Commands are durable Station metadata, revalidated against current network state. */
 async function applyStationRemoval(
   ports: TrainPorts,
-  train: Loaded<Train>
+  train: Loaded<Train>,
+  { line, stations, crossings }: AdvanceReads
 ): Promise<boolean> {
-  const stations = await ports.store.stations(train.networkId)
   const requested = stations.find(
     (s) => s.value.lineId === train.value.lineId && s.value.removalRequest
   )
   if (!requested) return false
-  const line = await ports.store.line(train.value.lineId)
   if (!line) throw new Error("Train has no Line")
   const { removalRequest, ...station } = requested.value
   const sidedLines = new Set(
@@ -251,9 +275,7 @@ async function applyStationRemoval(
     line,
     station,
     stations: stations.map((s) => s.value),
-    crossings: (await ports.store.crossings(train.networkId)).filter(
-      (c) => !sidedLines.has(c.lineId)
-    ),
+    crossings: crossings.filter((c) => !sidedLines.has(c.lineId)),
     reason: removalRequest!.reason,
   })
   if (!result.ok) {
@@ -288,21 +310,7 @@ async function returnToTerminus(
   if (train.value.state.status !== "returning")
     throw new Error("Train is not returning")
   if (train.value.state.phase === "awaiting_clearance") {
-    const repair = await ports.store.approvedRepair(train.value.id)
-    const network = await ports.store.network(train.networkId)
-    const context = {
-      unloadPolicy: (await ports.store.unloadPolicy(train.value.id))?.value,
-      holds: await ports.store.holds(train.networkId),
-      conflicts: conflictsForRepair(
-        await ports.store.conflicts(train.networkId),
-        repair,
-        {
-          trainCommit: train.value.headCommit,
-          terminusCommit: network!.terminusCommit,
-        }
-      ),
-      trainChecks: [],
-    }
+    const context = await terminusEntryContext(ports, train)
     const decision = evaluateTerminusEntry(train.value, context)
     if (decision.kind !== "clear") return stopAtGate(ports, train, decision)
     const clearance = await requestTerminusClearance(ports, train.value.id)
@@ -326,6 +334,26 @@ async function returnToTerminus(
   }
   await ports.startIntegration(attempt.input.id)
   return { kind: "await_integration", integrationId: attempt.input.id }
+}
+
+/** What the Terminus entry gate weighs for a returning Train, read at once. */
+async function terminusEntryContext(ports: TrainPorts, train: Loaded<Train>) {
+  const [repair, network, unloadPolicy, holds, conflicts] = await Promise.all([
+    ports.store.approvedRepair(train.value.id),
+    ports.store.network(train.networkId),
+    ports.store.unloadPolicy(train.value.id),
+    ports.store.holds(train.networkId),
+    ports.store.conflicts(train.networkId),
+  ])
+  return {
+    unloadPolicy: unloadPolicy?.value,
+    holds,
+    conflicts: conflictsForRepair(conflicts, repair, {
+      trainCommit: train.value.headCommit,
+      terminusCommit: network!.terminusCommit,
+    }),
+    trainChecks: [],
+  }
 }
 
 /** Only this Train Workflow applies an integration result to Train state. */
@@ -522,12 +550,13 @@ export async function clearTrain(
 
 async function departOrReturn(
   ports: TrainPorts,
-  loaded: Loaded<Train>
+  loaded: Loaded<Train>,
+  reads: AdvanceReads
 ): Promise<TrainMove> {
   const train = loaded.value
-  const { line, stations } = await loadLine(ports, train.lineId)
+  const { line, stations } = lineIn(reads, train.lineId)
   const ordered = stations.map((station) => station.value)
-  const crossings = await ports.store.crossings(loaded.networkId)
+  const { crossings } = reads
   const next = nextStation(ordered)
 
   if (!next) {
@@ -570,30 +599,20 @@ async function departOrReturn(
 
 async function reconsiderHold(
   ports: TrainPorts,
-  loaded: Loaded<Train>
+  loaded: Loaded<Train>,
+  reads: AdvanceReads
 ): Promise<TrainMove> {
   const train = loaded.value
   if (train.state.status !== "held") throw new Error("Train is not held")
 
   let decision: GateDecision
   if (train.state.resume.status === "returning") {
-    const repair = await ports.store.approvedRepair(train.id)
-    const network = await ports.store.network(loaded.networkId)
-    decision = evaluateTerminusEntry(train, {
-      unloadPolicy: (await ports.store.unloadPolicy(train.id))?.value,
-      holds: await ports.store.holds(loaded.networkId),
-      conflicts: conflictsForRepair(
-        await ports.store.conflicts(loaded.networkId),
-        repair,
-        {
-          trainCommit: train.headCommit,
-          terminusCommit: network!.terminusCommit,
-        }
-      ),
-      trainChecks: [],
-    })
+    decision = evaluateTerminusEntry(
+      train,
+      await terminusEntryContext(ports, loaded)
+    )
   } else {
-    const { stations } = await loadLine(ports, train.lineId)
+    const { stations } = lineIn(reads, train.lineId)
     const next = nextStation(stations.map((station) => station.value))
     decision = next
       ? evaluateDeparture(
@@ -943,7 +962,8 @@ async function returnWork(
 /** Stop requests are hard user decisions, never Engineer model choices. */
 async function applyStationStop(
   ports: TrainPorts,
-  train: Loaded<Train>
+  train: Loaded<Train>,
+  reads?: AdvanceReads
 ): Promise<boolean> {
   const state = train.value.state
   const stationId =
@@ -953,7 +973,9 @@ async function applyStationStop(
         ? state.at
         : null
   if (!stationId) return false
-  const station = await loadStation(ports, stationId)
+  const station = reads
+    ? await stationIn(ports, reads, stationId)
+    : await loadStation(ports, stationId)
   if (
     !station.value.stopRequest ||
     ["blocked", "complete", "cancelled"].includes(station.value.state.status)
@@ -1006,9 +1028,9 @@ async function blockTrainAndStation(
 async function awaitStation(
   ports: TrainPorts,
   trainId: TrainId,
-  stationId: StationId
+  station: Loaded<Station>
 ): Promise<TrainMove> {
-  const station = await loadStation(ports, stationId)
+  const stationId = station.value.id
   if (station.value.stopRequest) {
     await applyStationStop(ports, await loadTrain(ports, trainId))
     return { kind: "moved" }
@@ -1071,18 +1093,48 @@ async function loadStation(
   return station
 }
 
+/** A Station from an advance's reads, or read directly if they lack it. */
+async function stationIn(
+  ports: TrainPorts,
+  reads: AdvanceReads,
+  stationId: StationId
+): Promise<Loaded<Station>> {
+  return (
+    reads.stations.find((s) => s.value.id === stationId) ??
+    loadStation(ports, stationId)
+  )
+}
+
 async function loadLine(
   ports: TrainPorts,
   lineId: string
 ): Promise<{ line: Line; stations: Loaded<Station>[] }> {
   const line = await ports.store.line(lineId)
   if (!line) throw new Error(`Line ${lineId} does not exist`)
-  const byId = new Map(
-    (await ports.store.lineStations(lineId)).map((s) => [s.value.id, s])
+  return orderLine(line, await ports.store.lineStations(lineId))
+}
+
+/** `loadLine` for the Train's own Line, from an advance's reads. */
+function lineIn(
+  reads: AdvanceReads,
+  lineId: string
+): { line: Line; stations: Loaded<Station>[] } {
+  if (reads.line?.id !== lineId)
+    throw new Error(`Line ${lineId} does not exist`)
+  return orderLine(
+    reads.line,
+    reads.stations.filter((s) => s.value.lineId === lineId)
   )
+}
+
+function orderLine(
+  line: Line,
+  lineStations: Loaded<Station>[]
+): { line: Line; stations: Loaded<Station>[] } {
+  const byId = new Map(lineStations.map((s) => [s.value.id, s]))
   const stations = line.stationIds.map((id) => {
     const station = byId.get(id)
-    if (!station) throw new Error(`Station ${id} on Line ${lineId} is missing`)
+    if (!station) throw new Error(`Station ${id} on Line ${line.id} is missing`)
     return station
   })
   return { line, stations }

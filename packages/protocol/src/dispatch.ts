@@ -33,7 +33,7 @@ const area = z
     "Use a repository-relative file or directory, without globs or traversal"
   )
   .describe(
-    "Only a plain repository-relative file or directory, e.g. src/index.css or src/components/. No prose, parenthetical explanations, globs, CSS tokens, or lists of concepts. Put explanatory restrictions in scope or invariants instead; avoidAreas can be empty."
+    "Only a plain repository-relative file or directory, e.g. src/index.css or src/components/. No prose, parenthetical explanations, globs, CSS tokens, or lists of concepts. Put explanatory restrictions in scope or invariants instead; avoidAreas is usually empty."
   )
 const evidenceNames = z.array(z.string().trim().min(1).max(100))
 const manifest = workManifestSchema

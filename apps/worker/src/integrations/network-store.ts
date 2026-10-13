@@ -78,6 +78,7 @@ import type {
   NetworkActivity,
   NetworkListing,
   NetworkSummary,
+  TerminusPublication,
 } from "@terminus/protocol"
 
 const GENERAL_SCOPE = "general"
@@ -106,6 +107,10 @@ export type Write =
     }
   | { kind: "dispatch_plan"; plan: DispatchPlan; version: number | null }
   | { kind: "network"; network: NetworkSummary; projectSource?: string }
+  | {
+      kind: "publication"
+      publication: Omit<TerminusPublication, "siteUrl">
+    }
   | { kind: "line"; line: Line }
   | { kind: "station"; station: Station; version: number | null }
   | { kind: "train"; train: Train; version: number | null }
@@ -140,6 +145,10 @@ interface NetworkRow {
   created_at: string
   validation: string
   source_url: string | null
+  publish_repo_id: string | null
+  published_commit: string | null
+  published_at: string | null
+  site_url: string | null
 }
 
 interface NetworkListingRow extends NetworkRow {
@@ -1169,6 +1178,18 @@ export class NetworkStore {
     return row ? toNetwork(row) : null
   }
 
+  /** The live site URL is information the user enters; it changes no state. */
+  async setPublishedSite(
+    networkId: NetworkId,
+    siteUrl: string | null
+  ): Promise<void> {
+    await this.assertActive(networkId)
+    await this.#db
+      .prepare("UPDATE networks SET site_url = ? WHERE id = ?")
+      .bind(siteUrl, networkId)
+      .run()
+  }
+
   async assertActive(networkId: string): Promise<void> {
     const row = await this.#db
       .prepare("SELECT deleting FROM networks WHERE id = ?")
@@ -1820,6 +1841,19 @@ export class NetworkStore {
             write.projectSource ?? null
           )
       }
+      case "publication": {
+        const { publication } = write
+        return db
+          .prepare(
+            "UPDATE networks SET publish_repo_id = ?, published_commit = ?, published_at = ? WHERE id = ?"
+          )
+          .bind(
+            publication.repoId,
+            publication.commit,
+            publication.publishedAt,
+            networkId
+          )
+      }
       case "line":
         return db
           .prepare(
@@ -1943,6 +1977,16 @@ function toNetwork(row: NetworkRow): NetworkSummary {
     ...(row.deleting ? { deleting: true } : {}),
     validation: validationCommandsSchema.parse(JSON.parse(row.validation)),
     ...(row.source_url ? { sourceUrl: row.source_url } : {}),
+    ...(row.publish_repo_id && row.published_commit && row.published_at
+      ? {
+          publication: {
+            repoId: row.publish_repo_id,
+            commit: row.published_commit,
+            publishedAt: row.published_at,
+            ...(row.site_url ? { siteUrl: row.site_url } : {}),
+          },
+        }
+      : {}),
   }
 }
 

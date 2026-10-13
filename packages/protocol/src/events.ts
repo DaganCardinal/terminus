@@ -281,4 +281,5 @@ export const domainEventSchema = z.discriminatedUnion("type", [
   trainEvent("terminus.integration_completed").extend({
     mergeCommit: z.string(),
   }),
+  z.object({ type: z.literal("terminus.published"), commit: z.string() }),
 ])

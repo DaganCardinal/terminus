@@ -25,18 +25,17 @@ import {
 import { Button, buttonVariants } from "@terminus/ui/components/button"
 import { cn } from "@terminus/ui/lib/utils"
 import {
-  Fragment,
   useEffect,
+  useId,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
 } from "react"
-import { RotateCw } from "lucide-react"
-import { AppNav } from "@/components/app-nav"
+import { RotateCw, X } from "lucide-react"
 import { api } from "@/state/api"
-import { routes, type SettingsSection } from "@/state/route"
 
-/** "general" follows the General settings; only a network offers it. */
+/** "general" follows the global settings; only a network offers it. */
 type Choice = "general" | FixedModelPreset | "custom"
 
 const presets: {
@@ -143,12 +142,14 @@ function toSaved(
   }
 }
 
-type Loaded =
-  | { section: "agents"; saved: Saved }
-  | { section: "sandboxes"; saved: SavedLimits }
+interface Loaded {
+  agents: Saved
+  containers: SavedLimits
+  networkName: string | null
+}
 
-const loadAgents = (networkId: string | null): Promise<Loaded> =>
-  (networkId
+const loadAgents = (networkId: string | null): Promise<Saved> =>
+  networkId
     ? api
         .networkModelSettings(networkId)
         .then((settings) =>
@@ -169,183 +170,180 @@ const loadAgents = (networkId: string | null): Promise<Loaded> =>
             general.alternativeHarnessesEnabled
           )
         )
-  ).then((saved) => ({ section: "agents", saved }))
 
-const loadSandboxes = (networkId: string | null): Promise<Loaded> =>
-  (networkId
+const loadContainers = (networkId: string | null): Promise<SavedLimits> =>
+  networkId
     ? api.networkSandboxLimits(networkId)
     : api.sandboxLimits().then((general) => ({
         override: general.limits,
         general: general.limits,
         updatedAt: general.updatedAt,
       }))
-  ).then((saved) => ({ section: "sandboxes", saved }))
 
-const sections: { id: SettingsSection; name: string }[] = [
-  { id: "agents", name: "Agents" },
-  { id: "sandboxes", name: "Sandboxes" },
-]
-
-/**
- * Which models the agents run, and how big and how many Sandboxes a network
- * may run at once. General settings apply to every network; a network's own settings
- * override them.
- */
-export function SettingsPage({
+/** Settings for the current page's scope, over the page without navigating. */
+export function SettingsDialog({
   networkId,
-  section,
+  onClose,
 }: {
   networkId: string | null
-  section: SettingsSection
+  onClose: () => void
 }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const titleId = useId()
+  const descriptionId = useId()
   const [loaded, setLoaded] = useState<Loaded | null>(null)
-  const [networkName, setNetworkName] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
+    const element = dialog.current!
+    const overflow = document.body.style.overflow
+    element.showModal()
+    document.body.style.overflow = "hidden"
+    return () => {
+      element.close()
+      document.body.style.overflow = overflow
+    }
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     Promise.all([
-      section === "agents" ? loadAgents(networkId) : loadSandboxes(networkId),
+      loadAgents(networkId),
+      loadContainers(networkId),
       networkId ? api.networkSummary(networkId) : null,
     ])
-      .then(([settings, summary]) => {
+      .then(([agents, containers, summary]) => {
         if (cancelled) return
-        setNetworkName(summary?.name ?? null)
-        setLoaded(settings)
+        setLoaded({ agents, containers, networkName: summary?.name ?? null })
       })
       .catch((caught) => !cancelled && setLoadError(String(caught)))
     return () => {
       cancelled = true
     }
-  }, [networkId, section, attempt])
-
-  const trail = networkId
-    ? [
-        { label: "Networks", href: routes.networks() },
-        { label: networkName ?? "…", href: routes.overview(networkId) },
-        { label: "Settings" },
-      ]
-    : [{ label: "Networks", href: routes.networks() }, { label: "Settings" }]
-  const here = networkId
-    ? routes.networkSettings(networkId, section)
-    : routes.settings(section)
-  const scopeName = networkName ?? "this network"
+  }, [networkId, attempt])
 
   return (
-    <>
-      <AppNav trail={trail} settingsHref={here} />
-      <div className="settings-page">
-        <nav className="settings-nav" aria-label="Settings">
-          {sections.map((item) => (
-            <Fragment key={item.id}>
-              <p className="eyebrow">{item.name}</p>
-              <ul>
-                <li>
-                  <a
-                    href={routes.settings(item.id)}
-                    aria-current={
-                      !networkId && section === item.id ? "page" : undefined
-                    }
-                  >
-                    General
-                    <small>All networks</small>
-                  </a>
-                </li>
-                {networkId && (
-                  <li>
-                    <a
-                      href={routes.networkSettings(networkId, item.id)}
-                      aria-current={section === item.id ? "page" : undefined}
-                    >
-                      {networkName ?? "This network"}
-                      <small>This network</small>
-                    </a>
-                  </li>
-                )}
-              </ul>
-            </Fragment>
-          ))}
-          <p className="eyebrow">Providers</p>
-          <ul>
-            <li>
-              <a
-                href="https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Provider setup<small>Cloudflare AI Gateway</small>
-              </a>
-            </li>
-          </ul>
-        </nav>
-
-        <main className="settings-main">
-          {section === "agents" ? (
-            <header className="settings-header">
-              <h1>{networkId ? `Agents for ${scopeName}` : "Agents"}</h1>
-              <p>
-                {networkId
-                  ? "Follow the General settings, or choose harnesses and models for this network only."
-                  : "The default for every network. A network can override these in its own settings."}{" "}
-                Changes apply to new Trains, plans and repairs; work already
-                running keeps its harnesses and models.
-              </p>
-            </header>
-          ) : (
-            <header className="settings-header">
-              <h1>{networkId ? `Sandboxes for ${scopeName}` : "Sandboxes"}</h1>
-              <p>
-                {networkId
-                  ? "Follow the General limits, or set how big this network’s Sandboxes are and how many it may run at once."
-                  : "How big each network’s Sandboxes are, and how many it may run at once. A network can override these in its own settings."}{" "}
-                At its limit, a network’s work waits for a running Sandbox to
-                finish; a preview reports the limit instead of waiting.
-              </p>
-            </header>
-          )}
-
-          {loaded?.section === "agents" ? (
-            <ModelSettingsForm
-              key={JSON.stringify(loaded.saved)}
-              networkId={networkId}
-              saved={loaded.saved}
-              onSaved={(saved) => setLoaded({ section: "agents", saved })}
-            />
-          ) : loaded?.section === "sandboxes" ? (
-            <SandboxLimitsForm
-              key={JSON.stringify(loaded.saved)}
-              networkId={networkId}
-              saved={loaded.saved}
-              onSaved={(saved) => setLoaded({ section: "sandboxes", saved })}
-            />
-          ) : loadError ? (
-            <div className="reader-state" role="alert">
-              <strong>Couldn't load settings</strong>
-              <span>{loadError}</span>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setLoadError(null)
-                  setAttempt((value) => value + 1)
-                }}
-              >
-                <RotateCw size={14} /> Try again
-              </Button>
-            </div>
-          ) : (
-            <div
-              className="settings-skeleton"
-              aria-busy="true"
-              aria-label="Loading settings"
+    <dialog
+      ref={dialog}
+      className="settings-dialog"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      onClose={() => {
+        if (!dialog.current?.open) onClose()
+      }}
+      onClick={(event) => {
+        if (event.target !== event.currentTarget) return
+        const bounds = event.currentTarget.getBoundingClientRect()
+        if (
+          event.clientX < bounds.left ||
+          event.clientX > bounds.right ||
+          event.clientY < bounds.top ||
+          event.clientY > bounds.bottom
+        )
+          dialog.current?.close()
+      }}
+    >
+      <header className="settings-dialog-header">
+        <div>
+          <p className="eyebrow">
+            {networkId
+              ? (loaded?.networkName ?? "This network")
+              : "All networks"}
+          </p>
+          <h2 id={titleId}>
+            {networkId ? "Network settings" : "Global settings"}
+          </h2>
+          <p id={descriptionId}>
+            {networkId
+              ? "Configure this network, or follow the global defaults."
+              : "Default settings for every network. Networks can override these settings."}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="theme-button"
+          aria-label="Close settings"
+          autoFocus
+          onClick={() => dialog.current?.close()}
+        >
+          <X size={18} aria-hidden="true" />
+        </button>
+      </header>
+      <div className="settings-dialog-body">
+        {loaded ? (
+          <>
+            <section
+              className="settings-group"
+              aria-labelledby="settings-agents-heading"
             >
-              <i />
-              <i />
-            </div>
-          )}
-        </main>
+              <header className="settings-header">
+                <h3 id="settings-agents-heading">Roles &amp; Models</h3>
+                <p>
+                  {networkId
+                    ? "Choose harnesses and models for this network."
+                    : "Choose default harnesses and models for every network."}{" "}
+                  Changes apply to new Trains, plans and repairs; work already
+                  running keeps its harnesses and models.
+                </p>
+              </header>
+              <ModelSettingsForm
+                key={JSON.stringify(loaded.agents)}
+                networkId={networkId}
+                saved={loaded.agents}
+                onSaved={(agents) =>
+                  setLoaded((current) => current && { ...current, agents })
+                }
+              />
+            </section>
+            <section
+              className="settings-group"
+              aria-labelledby="settings-containers-heading"
+            >
+              <header className="settings-header">
+                <h3 id="settings-containers-heading">Containers</h3>
+                <p>
+                  Set Sandbox sizes and how many each network may run at once.
+                  At its limit, work waits for a running Sandbox to finish; a
+                  preview reports the limit instead of waiting.
+                </p>
+              </header>
+              <SandboxLimitsForm
+                key={JSON.stringify(loaded.containers)}
+                networkId={networkId}
+                saved={loaded.containers}
+                onSaved={(containers) =>
+                  setLoaded((current) => current && { ...current, containers })
+                }
+              />
+            </section>
+          </>
+        ) : loadError ? (
+          <div className="reader-state" role="alert">
+            <strong>Couldn't load settings</strong>
+            <span>{loadError}</span>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLoadError(null)
+                setAttempt((value) => value + 1)
+              }}
+            >
+              <RotateCw size={14} /> Try again
+            </Button>
+          </div>
+        ) : (
+          <div
+            className="settings-skeleton"
+            aria-busy="true"
+            aria-label="Loading settings"
+          >
+            <i />
+            <i />
+          </div>
+        )}
       </div>
-    </>
+    </dialog>
   )
 }
 
@@ -445,16 +443,15 @@ function ModelSettingsForm({
   return (
     <form className="settings-form" onSubmit={submit}>
       <p className="settings-help">
-        All providers run through Cloudflare AI Gateway. To use your own
-        Anthropic or OpenAI account, add its API key in your gateway’s Provider
-        Keys settings. Gateway configuration controls billing; Terminus never
-        stores your provider keys.{" "}
+        All providers run through Cloudflare AI Gateway. Anthropic and OpenAI
+        models are paid from your gateway’s Unified Billing credits; Terminus
+        never handles provider keys.{" "}
         <a
-          href="https://developers.cloudflare.com/ai-gateway/configuration/bring-your-own-keys/"
+          href="https://developers.cloudflare.com/ai-gateway/features/unified-billing/"
           target="_blank"
           rel="noreferrer"
         >
-          Set up providers
+          Set up Unified Billing
         </a>
         .
       </p>
@@ -465,7 +462,7 @@ function ModelSettingsForm({
         </p>
       )}
       <section aria-labelledby="settings-preset">
-        <h2 id="settings-preset">Preset</h2>
+        <h4 id="settings-preset">Preset</h4>
         <div
           className="settings-options panel"
           role="radiogroup"
@@ -474,15 +471,10 @@ function ModelSettingsForm({
           {networkId && (
             <PresetOption
               id="general"
-              name="Use General settings"
-              detail={`Currently ${presetName(saved.general)}. Follows any change to General.`}
+              name="Use global settings"
+              detail={`Currently ${presetName(saved.general)}. Follows changes to global settings.`}
               checked={choice === "general"}
               onChange={choose}
-              aside={
-                <a className="settings-option-link" href={routes.settings()}>
-                  Edit General
-                </a>
-              }
             />
           )}
           {presets.map((preset) => (
@@ -508,7 +500,7 @@ function ModelSettingsForm({
       {modelChange && <p role="status">{modelChange}</p>}
       <section aria-labelledby="settings-roles">
         <div className="settings-section-heading">
-          <h2 id="settings-roles">Role agents</h2>
+          <h4 id="settings-roles">Role agents</h4>
           <p>
             {choice === "custom"
               ? "Choose a harness and compatible model for each role. The Engineer uses a Clef decision model."
@@ -650,7 +642,7 @@ function ModelSettingsForm({
           Discard
         </button>
         <Button type="submit" disabled={!dirty || saving}>
-          {saving ? "Saving…" : "Save changes"}
+          {saving ? "Saving…" : "Save roles & models"}
         </Button>
       </footer>
     </form>
@@ -700,7 +692,7 @@ function PresetOption({
   )
 }
 
-/** The limits a scope shows. For General, its own limits are also `general`. */
+/** The limits a scope shows. For global settings, its own limits are also `general`. */
 type SavedLimits = Pick<
   NetworkSandboxLimits,
   "override" | "general" | "updatedAt"
@@ -800,28 +792,20 @@ function SandboxLimitsForm({
     <form className="settings-form" onSubmit={submit}>
       {networkId && (
         <section aria-labelledby="settings-limits-scope">
-          <h2 id="settings-limits-scope">Limits</h2>
+          <h4 id="settings-limits-scope">Limits</h4>
           <div
             className="settings-options panel"
             role="radiogroup"
             aria-labelledby="settings-limits-scope"
           >
             <ScopeOption
-              name="Use General limits"
-              detail={`Currently ${saved.general.agent} agent at ${saved.general.sizes.agent} and ${saved.general.agentless} agentless at ${saved.general.sizes.agentless}. Follows any change to General.`}
+              name="Use global limits"
+              detail={`Currently ${saved.general.agent} agent at ${saved.general.sizes.agent} and ${saved.general.agentless} agentless at ${saved.general.sizes.agentless}. Follows changes to global settings.`}
               checked={follow}
               onChange={() => {
                 setFollow(true)
                 setError(null)
               }}
-              aside={
-                <a
-                  className="settings-option-link"
-                  href={routes.settings("sandboxes")}
-                >
-                  Edit General
-                </a>
-              }
             />
             <ScopeOption
               name="Custom limits"
@@ -838,7 +822,7 @@ function SandboxLimitsForm({
 
       <section aria-labelledby="settings-limits">
         <div className="settings-section-heading">
-          <h2 id="settings-limits">Sandbox sizes and limits</h2>
+          <h4 id="settings-limits">Sandbox sizes and limits</h4>
           <p>
             Each kind counts separately, from 1 to {MAX_SANDBOX_INSTANCES}.
             Changing a size or lowering a limit never stops running Sandboxes;
@@ -949,7 +933,7 @@ function SandboxLimitsForm({
           Discard
         </button>
         <Button type="submit" disabled={!dirty || invalid || saving}>
-          {saving ? "Saving…" : "Save changes"}
+          {saving ? "Saving…" : "Save containers"}
         </Button>
       </footer>
     </form>
@@ -961,13 +945,11 @@ function ScopeOption({
   detail,
   checked,
   onChange,
-  aside,
 }: {
   name: string
   detail: string
   checked: boolean
   onChange: () => void
-  aside?: ReactNode
 }) {
   return (
     <div className={cn("settings-option", checked && "is-checked")}>
@@ -983,7 +965,6 @@ function ScopeOption({
           <small>{detail}</small>
         </span>
       </label>
-      {aside}
     </div>
   )
 }

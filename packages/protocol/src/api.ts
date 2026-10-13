@@ -95,6 +95,8 @@ export interface NetworkSummary {
   sourceUrl?: string
   /** Cleanup is incomplete; only permanent deletion may be retried. */
   deleting?: boolean
+  /** What the publish repository serves, once Terminus has been published. */
+  publication?: import("./publish").TerminusPublication
 }
 
 /** What the networks list shows about each network, without its full snapshot. */

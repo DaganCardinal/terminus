@@ -51,6 +51,9 @@
     // GET /api/perf-logs.
     { "binding": "PERF_LOGS", "bucket_name": "terminus-perf-logs" },
   ],
+  // Browser Run, used only by the deployed transport proof until it passes
+  // (docs/browser-run.md). BROWSER_RUN_ENABLED below gates every use.
+  "browser": { "binding": "BROWSER" },
   "workflows": [
     {
       "name": "terminus-junction",
@@ -202,8 +205,12 @@
   },
   "vars": {
     "REPOSITORY_MODE": "artifacts",
-    // Enable only after the documented Cloudflare harness acceptance checks.
-    "ALTERNATIVE_HARNESSES_ENABLED": "false",
+    // Claude Code, Codex and Anthropic/OpenAI models, billed through AI
+    // Gateway Unified Billing. See docs/harness-selection.md.
+    "ALTERNATIVE_HARNESSES_ENABLED": "true",
+    // Enables only the Browser Run transport proof (POST /api/browser-run/proof).
+    // Keep it off except while running that proof; see docs/browser-run.md.
+    "BROWSER_RUN_ENABLED": "false",
     // Exact public app origin, e.g. https://terminus.YOUR_SUBDOMAIN.workers.dev.
     // An empty value permits local development only; Access protects live traffic.
     "APP_ORIGIN": "https://terminus.dagan-1c4.workers.dev/",
@@ -324,6 +331,8 @@
       "vars": {
         "REPOSITORY_MODE": "fake",
         "ALTERNATIVE_HARNESSES_ENABLED": "false",
+        // The fake environment has no Browser binding.
+        "BROWSER_RUN_ENABLED": "false",
         "APP_ORIGIN": "",
         // The fake environment is local-only and calls no models.
         "ACCESS_REQUIRED": "false",

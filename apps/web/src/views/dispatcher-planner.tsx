@@ -22,7 +22,8 @@ import { crossingScope } from "./crossing-scope"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { api } from "@/state/api"
 import { useDispatchActivity } from "@/state/use-dispatch-activity"
-import { activityLabel, DispatchActivity } from "./dispatch-activity"
+import { activityLabel } from "@/state/dispatch-activity"
+import { DispatchActivity } from "./dispatch-activity"
 import {
   ManifestView,
   Prose,

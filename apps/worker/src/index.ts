@@ -17,6 +17,7 @@ export {
   WorkspaceSandboxStandard3,
 } from "./integrations/execution-sandbox"
 export { SandboxOutbound } from "./integrations/sandbox-outbound"
+export { BrowserCandidateOutbound } from "./integrations/browser-run"
 
 export default {
   fetch: handleApplication,

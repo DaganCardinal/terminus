@@ -12,6 +12,12 @@ RUN npm install --global --ignore-scripts opencode-linux-x64-baseline@1.18.32 \
 RUN npm install --global @anthropic-ai/claude-code@2.1.280 \
     && npm install --global --ignore-scripts @openai/codex@0.156.1
 
+# The Browser Run transport proof (docs/browser-run.md): Playwright Core only,
+# with no browser binaries, since Chromium runs in Browser Run.
+COPY browser-run/package.json browser-run/package-lock.json /opt/browser-run/
+RUN cd /opt/browser-run && npm ci --ignore-scripts --omit=dev
+COPY browser-run/app.mjs browser-run/proof.mjs /opt/browser-run/
+
 COPY --from=docker.io/cloudflare/sandbox:1.0.0 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 WORKDIR /workspace
 # Wrangler's local container runner uses this port for Train previews.

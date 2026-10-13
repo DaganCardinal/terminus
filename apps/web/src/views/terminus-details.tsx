@@ -2,6 +2,7 @@ import { ArrowUpRight, CircleCheck } from "lucide-react"
 import type { NetworkSnapshot } from "@terminus/protocol"
 import { shortCommit, TechnicalDetails } from "./detail-parts"
 import { TerminusPreviewButton } from "./terminus-preview-button"
+import { TerminusPublish } from "./terminus-publish"
 import { EmergencyBrakeButton } from "./emergency-brake-button"
 
 export function TerminusDetails({
@@ -38,6 +39,17 @@ export function TerminusDetails({
       <TerminusPreviewButton
         networkId={network.id}
         commit={network.terminusCommit}
+      />
+      <TerminusPublish
+        network={network}
+        newerTrains={
+          network.publication
+            ? unloaded.filter(
+                ({ stateEnteredAt }) =>
+                  stateEnteredAt > network.publication!.publishedAt
+              ).length
+            : 0
+        }
       />
       <section className="detail-section">
         <h3>Integrated work</h3>

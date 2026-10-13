@@ -177,9 +177,24 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
   namespace(namespace: string): ArtifactsService {
     const at = `/${encodeURIComponent(namespace)}`
     const repo = (name: string) => `${at}/repos/${encodeURIComponent(name)}`
-    const handle = (name: string): ArtifactsRepository => ({
+    // Tokens are addressed by id within the namespace, not the repository.
+    const revokeById = async (id: string) => {
+      try {
+        await this.request("DELETE", `${at}/tokens/${encodeURIComponent(id)}`)
+        return true
+      } catch (error) {
+        if (error instanceof ArtifactsApiError && error.code === "NOT_FOUND")
+          return false
+        throw error
+      }
+    }
+    const handle = (
+      name: string,
+      fetched: ArtifactsRepositoryInfo
+    ): ArtifactsRepository => ({
       [Symbol.dispose]: () => {},
-      info: async () => info(await this.request("GET", repo(name))),
+      // `get` just read the repository; reading it again costs a round trip.
+      info: async () => fetched,
       createToken: async (scope, ttl) => {
         const token = await this.request<{ id: string; plaintext: string }>(
           "POST",
@@ -192,15 +207,7 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
         const id = isPlaintext(tokenOrId)
           ? await this.initialTokenId(repo(name), tokenOrId)
           : tokenOrId
-        if (!id) return false
-        try {
-          await this.request("DELETE", `${at}/tokens/${encodeURIComponent(id)}`)
-          return true
-        } catch (error) {
-          if (error instanceof ArtifactsApiError && error.code === "NOT_FOUND")
-            return false
-          throw error
-        }
+        return id ? revokeById(id) : false
       },
       delete: async () => {
         try {
@@ -230,9 +237,9 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
       get: async (name) => {
         // Resolve now so missing or still-importing repos fail here, as the
         // binding's get() does.
-        await this.request("GET", repo(name))
-        return handle(name)
+        return handle(name, info(await this.request("GET", repo(name))))
       },
+      revokeToken: revokeById,
       create: async (name, options) => {
         const created = await this.request<{ token: string }>(
           "POST",

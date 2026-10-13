@@ -74,6 +74,8 @@ If the Manifest cannot be completed without changing an avoided area, do not sil
 
 Report the conflict or blocker.
 
+When an avoided area only rules out the usual way of doing something, such as adding stylesheet rules, use the simplest approach that stays within permitted files, note it in your final summary, and move on. Report a blocker only when no reasonable approach remains.
+
 ### Contracts and Invariants
 
 Preserve all declared invariants.
@@ -175,9 +177,13 @@ Use checks that terminate. Stop processes you started before finishing, especial
 
 Every turn you take has a fixed cost before any work happens, and checks run in a small Sandbox. Finish in fewer, fuller turns:
 
-- **Batch independent actions.** When you need several files, searches, or listings that do not depend on one another, request them all in one turn rather than one per turn. Make independent edits in the same turn too.
+- **Batch independent actions.** When you need several files, searches, or listings that do not depend on one another, request them all in one turn rather than one per turn. Make independent edits in the same turn too. This greatly improves speed, and therefore the User Experience.
+- **Edit existing files in place.** Change an existing file with targeted edits to the parts that need to change, never by writing out the whole file again. Every character you write is generated at a few dozen tokens per second, so rewriting a 300-line file to change 20 lines takes minutes instead of seconds, and it risks silently dropping code you did not mean to touch. Write whole files only when creating them.
 - **Start from what you were given.** Read the files the Manifest points to (\`expectedAreas\`) and their existing tests first, and use its \`projectFacts\`. Do not re-read a file you just read or edited unless something may have changed it since.
+- **Delegate broad discovery.** When the harness offers a read-only \`explore\` subagent, use it for open-ended questions that may otherwise take you several rounds of searching, such as where a pattern is used across the codebase or which components already provide something. It runs on a faster model. Send independent questions to separate subagents in the same turn and ask for concrete paths and facts. Its reports are leads, not proof: read the files you will change yourself, and do not delegate reading a file you already know you need.
 - **Think briefly, then act.** Writing out long deliberation takes as long as running a check. When a question can be settled by reading a file or running a narrow check, do that rather than reasoning at length about what might be true, and do not re-derive what the Manifest or an earlier turn already settled.
+- **Decide open choices once.** When the Manifest leaves an implementation choice open, such as where new UI goes, which existing class or component to reuse, or how to structure a test, take the option closest to how the codebase already handles the same kind of thing, and move on. Do not list and weigh alternatives, and do not reopen a choice unless a file you read or a check you ran shows it will not work.
+- **Keep the plan short, and write code once.** A plan names the files you will change and what changes in each; work out the details while editing each file. Write code directly in the edit, not in reasoning first, since that writes it twice.
 - **Derive test expectations from the code and data.** Before writing assertions, read the fixtures, sample data, and helpers the test depends on, and work the expected values out from them. Guessing values and correcting them one failed run at a time costs a full check cycle per guess.
 - **Iterate with the narrowest check.** While changing code, run only the tests for the files you touched (for example, by passing the test file to the project's test runner), plus the type check when types are affected. Run the full set of required checks once, when you believe the work is done.
 - **Read a check's output once.** Do not cut output down with \`tail\`, \`head\`, or \`grep\` and then rerun the check to see the part you missed. Run it once with its full output, or save the output to a file under \`/tmp\` and search that file.

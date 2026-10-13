@@ -3,6 +3,7 @@ import type {
   HoldReason,
   Issue,
   NetworkSnapshot,
+  Station,
   TrainState,
 } from "@terminus/protocol"
 
@@ -10,6 +11,21 @@ import type {
  * which is how it looks on the map. */
 export const statusWords = (status: string) =>
   status === "returning" ? "approaching" : status.replaceAll("_", " ")
+
+/** Show what a docked Train is waiting on, using its Station's current state. */
+export function trainDisplayStatus(
+  state: TrainState,
+  stations: readonly Pick<Station, "id" | "state">[]
+): TrainState["status"] | "revising" {
+  return state.status === "docked" &&
+    !state.crossingId &&
+    stations.some(
+      (station) =>
+        station.id === state.at && station.state.status === "revising"
+    )
+    ? "revising"
+    : state.status
+}
 
 /** Display names for the ids in a snapshot. */
 export function namesFor(snapshot: NetworkSnapshot): (id: string) => string {
@@ -26,7 +42,8 @@ export function namesFor(snapshot: NetworkSnapshot): (id: string) => string {
 export function describeLocation(
   state: TrainState,
   name: (id: string) => string,
-  destination?: import("@terminus/protocol").Train["destination"]
+  destination?: import("@terminus/protocol").Train["destination"],
+  stations: readonly Pick<Station, "id" | "state">[] = []
 ): string {
   switch (state.status) {
     case "ready":
@@ -40,7 +57,7 @@ export function describeLocation(
     case "approaching":
       return `Approaching ${name(state.toward)}`
     case "docked":
-      return `Docked at ${name(state.at)}`
+      return `${trainDisplayStatus(state, stations) === "revising" ? "Revising work" : "Docked"} at ${name(state.at)}`
     case "reviewing":
       return `Reviewing work at ${name(state.at)}`
     case "held":
@@ -205,6 +222,8 @@ export function describeEvent(
       return `${name(event.trainId)} integration stopped: ${describeIssues(event.issues)}`
     case "terminus.integration_completed":
       return `${name(event.trainId)} integrated into Terminus`
+    case "terminus.published":
+      return `Terminus ${event.commit.slice(0, 7)} published for deployment`
   }
 }
 

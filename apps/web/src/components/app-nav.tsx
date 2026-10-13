@@ -8,13 +8,13 @@ import logomarkWhite from "@/assets/terminus-logomark-white.svg"
 /** The app bar for pages outside the map, with a breadcrumb trail. */
 export function AppNav({
   trail = [],
-  settingsHref = routes.settings(),
+  settingsNetworkId = null,
   children,
 }: {
   /** Ancestors then the current page; the last item is not a link. */
   trail?: { label: string; href?: string }[]
-  /** Where the menu's Settings item goes; a network page opens its own. */
-  settingsHref?: string
+  /** The current network, or null for global settings. */
+  settingsNetworkId?: string | null
   children?: ReactNode
 }) {
   return (
@@ -60,7 +60,7 @@ export function AppNav({
       )}
       <div className="app-nav-end">
         {children}
-        <AppMenu variant="nav" settingsHref={settingsHref} />
+        <AppMenu variant="nav" settingsNetworkId={settingsNetworkId} />
       </div>
     </nav>
   )

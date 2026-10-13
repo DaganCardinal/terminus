@@ -57,6 +57,7 @@ See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness
 | [Crossings](docs/crossings.md) | Picking up another Line's accepted work |
 | [Junctions](docs/junctions.md) | Multi-Line feature convergence before Terminus |
 | [Previews](docs/previews.md) | Previewing a Train or Terminus, preview hostnames |
+| [Publishing](docs/publishing.md) | Publishing Terminus to a publish repository and deploying it with Workers Builds |
 | [API examples](docs/api.md) | Creating networks, validation commands, snapshots and events |
 | [Harness selection](docs/harness-selection.md) | Per-role harnesses, frozen configuration, release verification |
 | [Browser Run transport gate](docs/browser-run.md) | Browser testing design, reproducible probes, current transport blockers |

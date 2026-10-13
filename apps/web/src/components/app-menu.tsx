@@ -2,6 +2,7 @@ import { EllipsisVertical, Moon, Settings } from "lucide-react"
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react"
 import { cn } from "@terminus/ui/lib/utils"
 import { useTheme } from "@/components/theme-provider"
+import { SettingsDialog } from "@/views/settings"
 import { useMediaQuery } from "@/components/use-media-query"
 
 const DARK_QUERY = "(prefers-color-scheme: dark)"
@@ -12,15 +13,16 @@ const DARK_QUERY = "(prefers-color-scheme: dark)"
  */
 export function AppMenu({
   variant,
-  settingsHref,
+  settingsNetworkId = null,
 }: {
   variant: "map" | "nav"
-  settingsHref: string
+  settingsNetworkId?: string | null
 }) {
   const { theme, setTheme } = useTheme()
   const systemDark = useMediaQuery(DARK_QUERY)
   const dark = theme === "dark" || (theme === "system" && systemDark)
   const [open, setOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const menu = useRef<HTMLDivElement>(null)
@@ -100,16 +102,29 @@ export function AppMenu({
             <i className="app-menu-switch" aria-hidden="true" />
           </button>
           <div role="separator" className="app-menu-separator" />
-          <a
+          <button
+            type="button"
             role="menuitem"
+            aria-haspopup="dialog"
             className="app-menu-item"
-            href={settingsHref}
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              close()
+              setSettingsOpen(true)
+            }}
           >
             <Settings size={15} aria-hidden="true" />
             <span>Settings</span>
-          </a>
+          </button>
         </div>
+      )}
+      {settingsOpen && (
+        <SettingsDialog
+          networkId={settingsNetworkId}
+          onClose={() => {
+            setSettingsOpen(false)
+            trigger.current?.focus({ preventScroll: true })
+          }}
+        />
       )}
     </div>
   )

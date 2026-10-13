@@ -728,3 +728,28 @@ describe("a Train on its Line", () => {
     expect(ports.runs).toHaveLength(1)
   })
 })
+
+describe("advance reads", () => {
+  it("reads the Network's Stations, Line and Crossings once per advance", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const { train } = await seedLine(ports, network.id)
+    const reads = (["stations", "station", "line", "crossings"] as const).map(
+      (method) => [method, vi.spyOn(ports.store, method)] as const
+    )
+    const counts = () =>
+      Object.fromEntries(
+        reads.map(([method, spy]) => [method, spy.mock.calls.length])
+      )
+
+    expect(await advanceTrain(ports.train, train.id)).toEqual({
+      kind: "moved",
+    })
+    expect(counts()).toEqual({ stations: 1, station: 0, line: 1, crossings: 1 })
+    for (const [, spy] of reads) spy.mockClear()
+    expect((await advanceTrain(ports.train, train.id)).kind).toBe(
+      "await_station"
+    )
+    expect(counts()).toEqual({ stations: 1, station: 0, line: 1, crossings: 1 })
+  })
+})

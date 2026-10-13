@@ -25,6 +25,12 @@ export function siblingRepoId(id: RepoId, name: string): RepoId {
 /** Every Project's canonical repository has this name in its namespace. */
 export const TERMINUS_REPO_NAME = "terminus"
 
+/**
+ * A Project's publish repository: the Terminus commit its deployment serves.
+ * It is forked from Terminus on the first publish and only fast-forwarded.
+ */
+export const PUBLISH_REPO_NAME = "publish"
+
 export interface RepoRef {
   repoId: RepoId
   headCommit: CommitId

@@ -19,32 +19,19 @@ describe("routes", () => {
     })
   })
 
-  it("opens General settings or one network's settings", () => {
-    expect(parseRoute(routes.settings())).toEqual({
-      page: "settings",
-      networkId: null,
-      section: "agents",
-    })
-    expect(parseRoute(routes.networkSettings("network 1"))).toEqual({
-      page: "settings",
+  it("lands old Settings bookmarks on the page for their scope", () => {
+    expect(parseRoute("#/settings")).toEqual({ page: "networks" })
+    expect(parseRoute("#/settings/sandboxes")).toEqual({ page: "networks" })
+    expect(parseRoute("#/networks/network%201/settings")).toEqual({
+      page: "overview",
       networkId: "network 1",
-      section: "agents",
+      view: null,
     })
-  })
-
-  it("opens the Sandboxes section at either scope", () => {
-    expect(routes.settings("sandboxes")).toBe("#/settings/sandboxes")
-    expect(parseRoute(routes.settings("sandboxes"))).toEqual({
-      page: "settings",
-      networkId: null,
-      section: "sandboxes",
-    })
-    expect(parseRoute(routes.networkSettings("n", "sandboxes"))).toEqual({
-      page: "settings",
+    expect(parseRoute("#/networks/n/settings/sandboxes")).toEqual({
+      page: "overview",
       networkId: "n",
-      section: "sandboxes",
+      view: null,
     })
-    expect(parseRoute("#/settings/unknown")).toEqual({ page: "networks" })
   })
 
   it("round-trips document and file paths", () => {

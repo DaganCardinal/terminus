@@ -9,6 +9,11 @@ import {
 } from "@terminus/protocol"
 import { proposalAsText, proposalTool } from "@terminus/agent-runtime"
 import { WorkerEntrypoint } from "cloudflare:workers"
+import {
+  browserControlHost,
+  browserControlRequest,
+  type BrowserSandbox,
+} from "./browser-run"
 import { proposalToolResponse } from "./proposal-tool"
 
 /** Each Sandbox receives only the network capabilities for its one operation. */
@@ -256,13 +261,25 @@ export async function outboundRequest(
   return denied()
 }
 
-export class SandboxOutbound extends WorkerEntrypoint<Env, SandboxNetwork> {
-  fetch(request: Request): Promise<Response> {
-    return outboundRequest(
-      request,
-      this.env,
-      sandboxNetworkSchema.parse(this.ctx.props)
+/** The container adds its own identity when its network grants a browser. */
+type SandboxOutboundProps = SandboxNetwork & { browserSandbox?: BrowserSandbox }
+
+export class SandboxOutbound extends WorkerEntrypoint<
+  Env,
+  SandboxOutboundProps
+> {
+  async fetch(request: Request): Promise<Response> {
+    const network = sandboxNetworkSchema.parse(this.ctx.props)
+    if (
+      network.allowBrowser &&
+      new URL(request.url).hostname === browserControlHost
     )
+      return browserControlRequest(
+        request,
+        this.env,
+        this.ctx.props.browserSandbox
+      )
+    return outboundRequest(request, this.env, network)
   }
 }
 

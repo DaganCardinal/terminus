@@ -14,7 +14,7 @@ import {
 } from "@terminus/domain"
 import type { IntegrationOutcome } from "@terminus/protocol"
 import type { Loaded, Write } from "../integrations/network-store"
-import type { TrainMove, TrainPorts } from "./train-operations"
+import type { AdvanceReads, TrainMove, TrainPorts } from "./train-operations"
 import { applied } from "./transitions"
 import { defaultValidation } from "../integrations/execution-config"
 
@@ -45,13 +45,11 @@ async function fail(
 /** Called only by the receiving Train Workflow; it never writes the source Station. */
 export async function advanceCrossing(
   ports: TrainPorts,
-  loaded: Loaded<Train>
+  loaded: Loaded<Train>,
+  { line, stations, crossings }: AdvanceReads
 ): Promise<TrainMove | null> {
   const train = loaded.value
-  const line = await ports.store.line(train.lineId)
   if (!line) throw new Error("Train has no Line")
-  const crossings = await ports.store.crossings(loaded.networkId)
-  const stations = await ports.store.stations(loaded.networkId)
   const stop = nextStop(
     line,
     stations.map((s) => s.value),

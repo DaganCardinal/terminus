@@ -10,7 +10,7 @@ import { Minus, Plus, Scan } from "lucide-react"
 import type { EventEnvelope, NetworkSnapshot } from "@terminus/protocol"
 import logomark from "@/assets/terminus-logomark.svg"
 import logomarkWhite from "@/assets/terminus-logomark-white.svg"
-import { statusWords } from "@/views/describe"
+import { statusWords, trainDisplayStatus } from "@/views/describe"
 import {
   BULLET_OFFSET,
   HUB_RADIUS,
@@ -804,7 +804,12 @@ export function NetworkMap({
                       ? "clearing block"
                       : awaitingApproval(view.train.state)
                         ? "awaiting approval"
-                        : statusWords(status)
+                        : statusWords(
+                            trainDisplayStatus(
+                              view.train.state,
+                              snapshot.stations
+                            )
+                          )
                     // The Train is a dot on the track, tinted by its status,
                     // with its label hung below. Both are drawn around the
                     // Train's track position, which useTrainMotion sets as

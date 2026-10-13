@@ -3,7 +3,6 @@ import "./pages.css"
 import { NetworkList } from "@/views/network-list"
 import { NetworkOverview } from "@/views/network-overview"
 import { NetworkStatus } from "@/views/network-status"
-import { SettingsPage } from "@/views/settings"
 import { useRoute } from "@/state/route"
 
 export function App() {
@@ -13,12 +12,6 @@ export function App() {
     <main className="app-shell">
       {route.page === "map" ? (
         <NetworkStatus key={route.networkId} networkId={route.networkId} />
-      ) : route.page === "settings" ? (
-        <SettingsPage
-          key={`${route.networkId ?? "general"}:${route.section}`}
-          networkId={route.networkId}
-          section={route.section}
-        />
       ) : route.page === "overview" ? (
         <NetworkOverview
           key={route.networkId}

@@ -12,7 +12,7 @@ import {
   TechnicalDetails,
   shortCommit as baseShortCommit,
 } from "./detail-parts"
-import { statusWords } from "./describe"
+import { statusWords, trainDisplayStatus } from "./describe"
 
 const shortCommit = (commit: string) =>
   commit.startsWith("fake-")
@@ -112,7 +112,9 @@ export function JunctionDetails({
                 {j.inputs.some((input) => input.lineId === id)
                   ? "Accepted into Junction"
                   : train
-                    ? statusWords(train.state.status)
+                    ? statusWords(
+                        trainDisplayStatus(train.state, snapshot.stations)
+                      )
                     : "Waiting"}
               </li>
             )

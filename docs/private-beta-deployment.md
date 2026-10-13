@@ -101,6 +101,7 @@ Preview hostnames route only to their preview app, even for `/api/*` and paths t
 - Import the demo repository, lay two concurrent Lines, and confirm both accumulate Cars and integrate.
 - Test human unloading approval and reopen the app while work is running.
 - Open Train and Terminus previews; confirm they show the selected accepted commits.
+- Publish Terminus, connect its publish repository to Workers Builds ([Publishing](publishing.md)), then publish again after another Train unloads and confirm the site redeploys.
 - Watch failures with `npx wrangler tail` from `apps/worker`, and inspect Workflow/container status in the dashboard.
 
 The shared execution container cap is six; previews and Git/validation work share it with Station agents. Start with two concurrent Lines and avoid many simultaneous previews.

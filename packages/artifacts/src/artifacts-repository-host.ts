@@ -40,6 +40,7 @@ export interface ArtifactsRepositoryInfo {
 }
 
 export interface ArtifactsRepository extends Disposable {
+  /** The repository as `get` found it. */
   info(): Promise<ArtifactsRepositoryInfo>
   createToken(
     scope: "read" | "write",
@@ -56,6 +57,8 @@ export interface ArtifactsRepository extends Disposable {
 
 export interface ArtifactsService {
   get(name: string): Promise<ArtifactsRepository>
+  /** Revokes a token by id. Ids are namespace-wide, so no repository lookup is needed. */
+  revokeToken(id: string): Promise<boolean>
   create(
     name: string,
     options: { setDefaultBranch: string; description: string }
@@ -463,14 +466,18 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }): Promise<void> {
     requireCommit(input.fromCommit)
     requireCommit(input.toCommit)
-    return this.withWorkspace(
+    const readHead = this.readHead
+    // From the Worker when it can, so no head check waits on a Sandbox command.
+    const targetHead = (workspace: GitWorkspace, target: RepositoryAccess) =>
+      readHead ? readHead(target) : remoteHead(workspace, target)
+    return this.withWorkspace<void, { head: string | null }>(
       [
         { repoId: input.sourceRepoId, scope: "read" },
         { repoId: input.targetRepoId, scope: "write" },
       ],
-      async (workspace, [source, target]) => {
+      async (workspace, [source, target], early) => {
         if (!source || !target) throw new Error("Missing repository access")
-        const head = await remoteHead(workspace, target)
+        const head = early ? early.head : await remoteHead(workspace, target)
         if (head === input.toCommit) return
         if (head !== input.fromCommit)
           throw new RepositoryMovedError(
@@ -500,20 +507,21 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         // Compare the head advertised for this push, then let Git's server-side
         // old-object check protect the final update. No force push is involved.
         const hook = `#!/bin/sh\nwhile read local_ref local_oid remote_ref remote_oid; do\n  [ "$remote_oid" = "${input.fromCommit}" ] || [ "$remote_oid" = "${input.toCommit}" ] || exit 1\ndone\n`
-        const installed = await workspace.run([
-          "node",
-          "-e",
-          "const fs = require('node:fs'); fs.mkdirSync(process.argv[1], {recursive:true}); fs.writeFileSync(process.argv[1] + '/pre-push', process.argv[2], {mode:0o700})",
-          "/workspace/hooks",
-          hook,
-        ])
-        if (installed.exitCode !== 0)
-          throw new Error("Could not install the repository promotion guard")
-        await git(
-          workspace,
-          ["config", "core.hooksPath", "/workspace/hooks"],
+        // One `sh` command: Node would be this workspace's only Node process,
+        // and its cold start alone takes over a second.
+        const installed = await workspace.run(
+          [
+            "sh",
+            "-c",
+            'mkdir -p "$1" && printf "%s" "$2" > "$1/pre-push" && chmod 700 "$1/pre-push" && git config core.hooksPath "$1"',
+            "sh",
+            "/workspace/hooks",
+            hook,
+          ],
           "/workspace/repo"
         )
+        if (installed.exitCode !== 0)
+          throw new Error("Could not install the repository promotion guard")
         try {
           await git(
             workspace,
@@ -526,7 +534,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
             "/workspace/repo"
           )
         } catch (error) {
-          const current = await remoteHead(workspace, target)
+          const current = await targetHead(workspace, target)
           if (current === input.toCommit) return
           if (current !== input.fromCommit)
             throw new RepositoryMovedError(
@@ -534,11 +542,16 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
             )
           throw error
         }
-        if ((await remoteHead(workspace, target)) !== input.toCommit)
+        if ((await targetHead(workspace, target)) !== input.toCommit)
           throw new RepositoryMovedError(
             "Target did not reach the accepted commit"
           )
-      }
+      },
+      readHead &&
+        (async ([, target]) => {
+          if (!target) throw new Error("Missing repository access")
+          return { head: await readHead(target) }
+        })
     )
   }
 
@@ -577,8 +590,9 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
 
   async revoke(access: RepositoryAccess): Promise<void> {
     const started = Date.now()
-    using repo = await this.ready(access.repoId)
-    await repo.revokeToken(access.tokenId)
+    await this.artifacts
+      .namespace(parseRepoId(access.repoId).namespace)
+      .revokeToken(access.tokenId)
     perf("artifacts.revoke", {
       repo: parseRepoId(access.repoId).name,
       ms: Date.now() - started,
@@ -611,9 +625,19 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     }
   }
 
-  private async withWorkspace<T>(
+  /**
+   * Runs `run` in a workspace holding `specs`' credentials. `check`, when
+   * given, runs from the Worker while the Sandbox starts, and its result is
+   * passed to `run`; a failed check fails the operation before `run`.
+   */
+  private async withWorkspace<T, C = undefined>(
     specs: { repoId: string; scope: "read" | "write" }[],
-    run: (workspace: GitWorkspace, accesses: RepositoryAccess[]) => Promise<T>
+    run: (
+      workspace: GitWorkspace,
+      accesses: RepositoryAccess[],
+      checked: C | undefined
+    ) => Promise<T>,
+    check?: (accesses: RepositoryAccess[]) => Promise<C>
   ): Promise<T> {
     const accesses: RepositoryAccess[] = []
     let workspace: GitWorkspace | undefined
@@ -624,10 +648,26 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     let openedAt = started
     let ranAt = started
     try {
-      for (const spec of specs)
-        accesses.push(await this.access(spec.repoId, spec.scope))
+      // Minted together; whichever succeed are revoked below if another fails.
+      const minted = await Promise.allSettled(
+        specs.map((spec) => this.access(spec.repoId, spec.scope))
+      )
+      for (const outcome of minted)
+        if (outcome.status === "fulfilled") accesses.push(outcome.value)
+      const refused = minted.find(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === "rejected"
+      )
+      if (refused) throw refused.reason
       const accessedAt = Date.now()
-      workspace = await this.workspaces.open(accesses)
+      // Settle both, so a failed check never leaves an opening Sandbox unclosed.
+      const [opened, checked] = await Promise.allSettled([
+        this.workspaces.open(accesses),
+        check?.(accesses),
+      ])
+      if (opened.status === "rejected") throw opened.reason
+      workspace = opened.value
+      if (checked.status === "rejected") throw checked.reason
       openedAt = Date.now()
       perf("artifacts.workspace_opened", {
         repos: specs.map(
@@ -636,7 +676,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         accessMs: accessedAt - started,
         openMs: openedAt - accessedAt,
       })
-      result = await run(workspace, accesses)
+      result = await run(workspace, accesses, checked.value)
       ranAt = Date.now()
     } finally {
       // Cleanup all credentials even if workspace creation or shutdown fails.
