@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import type { NetworkSnapshot, TechnicianRepair } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { Check, Wrench } from "lucide-react"
@@ -109,7 +110,11 @@ export function RepairMessages({
               ))}{" "}
               conflict at Terminus.
             </p>
-            <p className="dmsg-quote">{conflict.description}</p>
+            <Prose
+              text={conflict.description}
+              className="dmsg-quote"
+              format="plain"
+            />
             {conflict.paths.length > 0 && <Tags items={conflict.paths} />}
           </>
         ) : (
@@ -129,15 +134,17 @@ export function RepairMessages({
                 : statusLines[state.status]}
             </p>
             {state.status === "failed" && (
-              <p className="dmsg-quote">{state.detail}</p>
+              <Prose text={state.detail} className="dmsg-quote" />
             )}
             {"review" in state && (
               <div className="dmsg-quote">
-                <p>{state.review.summary}</p>
+                <Prose text={state.review.summary} />
                 {state.review.findings.length > 0 && (
                   <ul>
                     {state.review.findings.map((finding, index) => (
-                      <li key={index}>{finding}</li>
+                      <li key={index}>
+                        <Prose text={finding} />
+                      </li>
                     ))}
                   </ul>
                 )}
@@ -145,7 +152,8 @@ export function RepairMessages({
             )}
             {repair.integrationFailure && (
               <div className="dmsg-quote" role="alert">
-                <p>Integration stopped: {repair.integrationFailure.detail}</p>
+                <p>Integration stopped:</p>
+                <Prose text={repair.integrationFailure.detail} />
                 {repair.integrationFailure.evidence && (
                   <CheckRow
                     checks={repair.integrationFailure.evidence.checks}

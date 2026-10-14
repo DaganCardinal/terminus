@@ -442,7 +442,7 @@ async function converse(
       [
         "Your final message failed verdict validation. Problems, as field paths and error codes:",
         JSON.stringify(problems),
-        ...(parseError ? [jsonParseHint(parseError)] : []),
+        ...(parseError ? [jsonParseHint(parseError, text)] : []),
         "Reply with only the complete verdict JSON as your final message.",
       ].join("\n\n")
     )

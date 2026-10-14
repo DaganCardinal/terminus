@@ -1,5 +1,7 @@
 import {
   createDispatchPlan,
+  cancelDispatchPlan,
+  finishDispatchCancellation,
   requestPlanLaunch,
   selectBaselineFix,
   type BaselineFixSelection,
@@ -28,6 +30,7 @@ export interface DispatchPlanningPorts extends Pick<
   startPlanning(planId: string): Promise<void>
   wakePlan(planId: string): Promise<void>
   retryPlan(planId: string): Promise<void>
+  stopPlan(planId: string): Promise<void>
 }
 
 /** Existing Lines still own unintegrated code, even when individual Stations are complete. */
@@ -191,6 +194,62 @@ export async function launchPlannedLines(
   }
   await ports.wakePlan(planId)
   return requested.value
+}
+
+/** Persist cancellation before stopping resources, so late results and retries cannot revive it. */
+export async function stopDispatchPlan(
+  ports: Pick<DispatchPlanningPorts, "store" | "stopPlan">,
+  networkId: string,
+  planId: string
+): Promise<DispatchPlan> {
+  const loaded = await ports.store.dispatchPlan(planId)
+  if (!loaded || loaded.networkId !== networkId)
+    throw new DispatchError(404, "Unknown plan")
+  const cancelled = cancelDispatchPlan(loaded.value)
+  if (!cancelled.ok) throw new DispatchError(409, cancelled.error.message)
+  if (cancelled.events.length) {
+    try {
+      await ports.store.commit(
+        networkId,
+        [
+          {
+            kind: "dispatch_plan",
+            plan: cancelled.value,
+            version: loaded.version,
+          },
+        ],
+        cancelled.events
+      )
+    } catch (error) {
+      if (error instanceof StaleWriteError)
+        return stopDispatchPlan(ports, networkId, planId)
+      throw error
+    }
+  }
+  // Repeating Stop retries cleanup even when the durable cancellation already succeeded.
+  await ports.stopPlan(planId)
+  const current = (await ports.store.dispatchPlan(planId))!
+  const finished = applied(finishDispatchCancellation(current.value))
+  if (finished.events.length) {
+    try {
+      await ports.store.commit(
+        networkId,
+        [
+          {
+            kind: "dispatch_plan",
+            plan: finished.value,
+            version: current.version,
+          },
+        ],
+        finished.events
+      )
+    } catch (error) {
+      if (error instanceof StaleWriteError)
+        return stopDispatchPlan(ports, networkId, planId)
+      throw error
+    }
+  }
+  return finished.value
 }
 
 export async function retryDispatchPlan(

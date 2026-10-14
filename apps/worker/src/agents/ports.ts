@@ -17,6 +17,10 @@ import {
   HarnessRepairConductor,
   HarnessDispatcher,
   FakeDispatchPlanner,
+  FakeConflictInvestigator,
+  FakeConflictTriage,
+  HarnessConflictInvestigator,
+  ModelConflictTriage,
   type Conductor,
   type EngineerAdvisor,
   type ModelProvider,
@@ -44,6 +48,8 @@ import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { artifactsRepositories } from "../integrations/artifacts-repositories"
 import { SandboxTechnicianRunner } from "../integrations/technician-runner"
 import { SandboxDispatchSessions } from "../integrations/dispatch-session"
+import { SandboxConflictSessions } from "../integrations/conflict-session"
+import type { ConflictWatchPorts } from "../workflows/conflict-watch-operations"
 import { DispatchActivityStore } from "../integrations/dispatch-activity"
 import { SandboxConductorSessions } from "../integrations/conductor-session"
 import type { TechnicianPorts } from "./technician"
@@ -197,7 +203,60 @@ export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
     },
     wakeJunction: (id) => junctionDispatchPorts(env).wakeJunction(id),
     wakeTrain: (trainId) => wakeTrain(env, trainId),
+    startConflictWatch: async (watchId, trainId) => {
+      try {
+        await createWorkflow(
+          env,
+          env.CONFLICT_WATCH_WORKFLOW,
+          "trains",
+          trainId,
+          { id: watchId, params: { watchId, trainId } }
+        )
+      } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
+        await env.CONFLICT_WATCH_WORKFLOW.get(watchId).catch(() => {
+          throw error
+        })
+      }
+    },
     newId,
+    now: () => new Date().toISOString(),
+  }
+}
+
+/**
+ * The Dispatcher's conflict watch: the Engineer's Clef model triages, and
+ * the Dispatcher's harness investigates in a read-only Sandbox.
+ */
+export function conflictWatchPorts(
+  env: Env,
+  models: ConfiguredModels
+): ConflictWatchPorts {
+  return {
+    store: new NetworkStore(env.DB),
+    triage:
+      env.ENGINEER_MODEL === FAKE
+        ? new FakeConflictTriage()
+        : new ModelConflictTriage(models.engineer, {
+            decide: (request) =>
+              new GatewayDecisionModel(
+                directGatewayConfig(env, models.engineer),
+                gatewayTransport
+              ).decide(request),
+          }),
+    investigator:
+      env.DISPATCHER_MODEL === FAKE || env.REPOSITORY_MODE !== "artifacts"
+        ? new FakeConflictInvestigator()
+        : new HarnessConflictInvestigator(
+            models.dispatcher,
+            new SandboxConflictSessions(
+              env,
+              artifactsRepositories(env),
+              undefined,
+              roleExecution(models, "dispatcher")
+            ),
+            roleExecution(models, "dispatcher")
+          ),
     now: () => new Date().toISOString(),
   }
 }
@@ -405,6 +464,34 @@ export function dispatchPlanningPorts(
           error: errorKind(error),
         })
       }
+    },
+    stopPlan: async (planId) => {
+      const results = await Promise.allSettled([
+        ...(env.DISPATCHER_MODEL === FAKE
+          ? []
+          : [env.SANDBOX.getByName(`dispatch-${planId}`).cancel()]),
+        (async () => {
+          try {
+            const instance = await env.DISPATCH_WORKFLOW.get(planId)
+            const { status } = await instance.status()
+            if (!["terminated", "complete", "errored"].includes(status))
+              await instance.terminate()
+          } catch (error) {
+            if (
+              !(error instanceof Error) ||
+              !/(?:instance\.not_found|instance (?:does not exist|not found))/i.test(
+                error.message
+              )
+            )
+              throw error
+          }
+        })(),
+      ])
+      if (results.some((result) => result.status === "rejected"))
+        throw new DispatchError(
+          503,
+          "Planning is cancelled, but cleanup is incomplete. Press Stop again to retry."
+        )
     },
     retryPlan: async (planId) => {
       const instance = await env.DISPATCH_WORKFLOW.get(planId)

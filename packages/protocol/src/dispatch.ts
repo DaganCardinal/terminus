@@ -206,6 +206,112 @@ export const dispatchProposalSubmissionSchema = z
   })
   .strict()
 
+/**
+ * One Line of a plan outline: its identity, route and ordered Station keys.
+ * Each Station's Manifest arrives separately (`planStationSchema`).
+ */
+export const outlineLineSchema = z
+  .object({
+    key,
+    name: plannedLineSchema.shape.name,
+    unloadRecommendation: unloadRecommendationSchema
+      .optional()
+      .describe(
+        "Required on top-level and baseline-fix Lines. On a Junction's outgoing Line, its mode sets how the finished feature unloads. Leave it out on Junction incoming Lines: they always unload into their Junction automatically."
+      ),
+    stations: z
+      .array(key)
+      .max(24)
+      .describe(
+        "This Line's Station keys, in order. Each Station needs its own put_station call. Only a Junction's outgoing Line may have none."
+      ),
+    route: plannedLineSchema.shape.route,
+    shared: lineSharedSchema.optional(),
+  })
+  .strict()
+
+/**
+ * The network layout of a plan, without Station Manifests. Every Line is
+ * listed once under `lines`; Junctions and the baseline fix name their Lines
+ * by key. Terminus assembles the proposal from the outline and the Stations.
+ */
+export const planOutlineSchema = z
+  .object({
+    summary: text,
+    lines: z.array(outlineLineSchema).min(1).max(32),
+    junctions: z
+      .array(
+        z
+          .object({
+            key,
+            name: createJunctionRequestSchema.shape.name,
+            brief: createJunctionRequestSchema.shape.brief,
+            incoming: z
+              .array(key)
+              .min(2)
+              .max(8)
+              .describe("Keys of the Lines that end at this Junction."),
+            outgoing: key.describe(
+              "Key of the Line that leaves this Junction for Terminus."
+            ),
+          })
+          .strict()
+      )
+      .max(4)
+      .optional(),
+    findings: z.array(findingSchema).max(12).optional(),
+    baselineFix: z
+      .object({
+        reason: baselineFixSchema.shape.reason,
+        line: key.describe(
+          "Key of the Line, with exactly one Station and no route, that fixes the failing checks."
+        ),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+export type PlanOutline = z.infer<typeof planOutlineSchema>
+
+/**
+ * One Station as the Dispatcher submits it: flat fields, so no value nests
+ * deeper than a list. `invariants` and `expectedEvidence` may come from the
+ * Line's `shared` values instead.
+ */
+export const planStationSchema = z
+  .object({
+    key,
+    name: plannedLineSchema.shape.stations.element.shape.name,
+    goal: manifest.shape.goal,
+    changeKind: concreteRepositoryChangeSchema.shape.kind.describe(
+      "The primary kind of repository change this Station delivers."
+    ),
+    changeDescription:
+      concreteRepositoryChangeSchema.shape.description.describe(
+        "The concrete repository change this Station delivers."
+      ),
+    scope: manifest.shape.scope,
+    expectedAreas: manifest.shape.expectedAreas,
+    avoidAreas: manifest.shape.avoidAreas.optional(),
+    contracts: manifest.shape.contracts.optional(),
+    invariants: lineSharedSchema.shape.invariants,
+    dependencies: manifest.shape.dependencies.optional(),
+    acceptanceCriteria: manifest.shape.acceptanceCriteria,
+    expectedEvidence: lineSharedSchema.shape.expectedEvidence,
+    projectFacts: manifest.shape.projectFacts,
+  })
+  .strict()
+export type PlanStation = z.infer<typeof planStationSchema>
+
+/** A plan being assembled from tool calls: the outline and Stations saved so far. */
+export const planDraftSchema = z
+  .object({
+    outline: planOutlineSchema.optional(),
+    stations: z.record(key, planStationSchema),
+  })
+  .strict()
+export type PlanDraft = z.infer<typeof planDraftSchema>
+
 export const createDispatchPlanRequestSchema = z
   .object({
     requestId: z.uuid(),
@@ -311,6 +417,11 @@ export const dispatchPlanSchema = z.object({
       lineIds: z.array(z.string()),
       trainIds: z.array(z.string()),
     }),
-    z.object({ status: z.literal("failed"), message: z.string() }),
+    z.object({
+      status: z.literal("failed"),
+      message: z.string(),
+      reason: z.literal("cancelled").optional(),
+      cleanupPending: z.boolean().optional(),
+    }),
   ]),
 })

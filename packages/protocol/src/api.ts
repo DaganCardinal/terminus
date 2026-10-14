@@ -144,6 +144,9 @@ export interface TrainView {
 
 /** Everything needed to draw a network, as of event `lastSeq`. */
 export interface NetworkSnapshot {
+  engineerNotices?: import("@terminus/domain").EngineerNotice[]
+  /** Possible conflicts the Dispatcher is checking or has reported. */
+  conflictConcerns?: import("@terminus/domain").ConflictConcern[]
   junctionApprovals?: { junctionId: string; commit: string }[]
   network: NetworkSummary
   /** In creation order. */

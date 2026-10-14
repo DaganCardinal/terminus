@@ -1201,7 +1201,7 @@ button:disabled {
   font-weight: 650;
   color: color-mix(in oklch, var(--tone) 80%, var(--foreground));
 }
-.drawer-body .detail-callout p,
+.drawer-body .detail-callout p:not(.prose p),
 .drawer-body .detail-callout li {
   color: var(--foreground);
 }
@@ -1231,20 +1231,32 @@ button:disabled {
   font-size: 12px;
   font-weight: 600;
 }
-.drawer-body p,
-.drawer-body li,
+.drawer-body p:not(.prose p),
+.drawer-body li:not(.prose li),
 .drawer-body dd {
   font-size: 13px;
   line-height: 1.6;
   color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
+.drawer-body .prose {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+.drawer-body .prose.detail-lead {
+  font-size: 14px;
+  color: var(--foreground);
+}
+.drawer-body .detail-callout > .prose {
+  color: var(--foreground);
+}
 .drawer-body .detail-lead {
   color: var(--foreground);
 }
-.drawer-body p + p,
-.drawer-body p + ul,
-.drawer-body ul + p {
+.drawer-body p:not(.prose p) + p:not(.prose p),
+.drawer-body p:not(.prose p) + ul:not(.prose ul),
+.drawer-body ul:not(.prose ul) + p:not(.prose p) {
   margin-top: 6px;
 }
 .drawer-body ul {
@@ -1432,7 +1444,7 @@ ul.manifest-route {
   word-break: break-all;
   color: var(--foreground);
 }
-.manifest-cargo code + span {
+.manifest-cargo code + .prose {
   color: var(--muted-foreground);
 }
 /* Builds on: the Stations this one waits for, drawn as stops. */
@@ -1456,24 +1468,6 @@ ul.manifest-route {
   height: 8px;
   border-radius: 50%;
   border: 2px solid var(--muted-foreground);
-}
-/* An agent's written report, kept readable in a narrow drawer. */
-.prose {
-  max-width: 68ch;
-}
-.prose > * + * {
-  margin-top: 8px;
-}
-.prose code {
-  padding: 0 4px;
-  border-radius: 4px;
-  background: var(--muted);
-  font-size: 11.5px;
-  word-break: normal;
-  overflow-wrap: anywhere;
-}
-.prose strong {
-  font-weight: 600;
 }
 /* Validation as one row of named checks. */
 .check-row {
@@ -1660,7 +1654,7 @@ ul.manifest-route {
   background: var(--muted);
   color: var(--foreground);
 }
-.car-details > p + .manifest,
+.car-details > .prose + .manifest,
 .car-details > .check-row + .manifest {
   margin-top: 12px;
 }
@@ -2392,7 +2386,7 @@ ul.manifest-route {
   max-width: 88%;
   margin-left: auto;
 }
-.umsg p {
+.umsg > .prose {
   padding: 9px 14px;
   border-radius: 16px 16px 4px 16px;
   background: color-mix(in oklch, var(--foreground) 7%, transparent);
@@ -2910,6 +2904,13 @@ button.pstop-row:focus-visible {
     background-color 150ms ease,
     transform 120ms ease;
 }
+.composer-stop {
+  width: auto;
+  min-width: 52px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
 .composer-send:not(:disabled):hover {
   transform: translateY(-1px);
 }
@@ -3304,6 +3305,78 @@ button.pstop-row:focus-visible {
   white-space: pre;
   font-size: 12px;
   padding: 12px;
+}
+.changes-list {
+  padding: 8px 0;
+}
+.changes-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.changes-commits {
+  font-family: var(--font-mono, monospace);
+}
+.changes-error button {
+  margin-top: 8px;
+}
+.changes-error,
+.drawer-body .changes-error p {
+  color: var(--danger-ink);
+}
+.drawer-body .changes-warning {
+  color: var(--held-ink);
+}
+.drawer-body .change-file {
+  margin: 8px 0;
+}
+.change-file summary {
+  overflow-wrap: anywhere;
+}
+.change-file summary small {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted-foreground);
+  text-transform: capitalize;
+}
+.change-diff {
+  max-height: 360px;
+  overflow: auto;
+  padding: 8px 0;
+  border-radius: 6px;
+  background: var(--muted);
+  white-space: pre;
+}
+.drawer-body .change-diff code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: normal;
+}
+.diff-header,
+.diff-add,
+.diff-remove,
+.diff-context {
+  display: block;
+  min-width: 100%;
+  padding: 0 12px;
+}
+.diff-hunk {
+  display: block;
+}
+.diff-header {
+  color: var(--muted-foreground);
+}
+.diff-add {
+  background: color-mix(in oklch, var(--brand) 12%, transparent);
+  color: var(--brand);
+}
+.diff-remove {
+  background: color-mix(in oklch, var(--danger-ink) 10%, transparent);
+  color: var(--danger-ink);
 }
 .review-yard {
   max-width: min(360px, 75vw);

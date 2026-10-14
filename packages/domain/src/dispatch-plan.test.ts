@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import {
   assessDispatchProposal,
   createDispatchPlan,
+  cancelDispatchPlan,
+  finishDispatchCancellation,
   failDispatchPlan,
   finishPlanLaunch,
   launchDispatchPlan,
@@ -55,6 +57,43 @@ const plan = () =>
 const ready = () => unwrap(readyDispatchPlan(plan(), proposal(), context))
 
 describe("Dispatcher plan lifecycle", () => {
+  it("cancels planning once and refuses to cancel ready or launching work", () => {
+    const stopped = cancelDispatchPlan(plan())
+    expect(eventTypes(stopped)).toEqual(["dispatcher.plan_cancelled"])
+    const cancelled = unwrap(stopped)
+    expect(cancelled.state).toMatchObject({
+      status: "failed",
+      reason: "cancelled",
+    })
+    expect(eventTypes(cancelDispatchPlan(cancelled))).toEqual([])
+    expectRejected(
+      readyDispatchPlan(cancelled, proposal(), context),
+      "invalid_state"
+    )
+    expectRejected(
+      requestPlanLaunch(cancelled, "base", context),
+      "invalid_state"
+    )
+    expectRejected(cancelDispatchPlan(ready()), "invalid_state")
+    expectRejected(
+      cancelDispatchPlan(unwrap(requestPlanLaunch(ready(), "base", context))),
+      "invalid_state"
+    )
+  })
+  it("records completion of cancellation cleanup once and requires a cancelled plan", () => {
+    const stopped = unwrap(cancelDispatchPlan(plan()))
+    expect(stopped.state).toMatchObject({ cleanupPending: true })
+    const finished = finishDispatchCancellation(stopped)
+    expect(eventTypes(finished)).toEqual(["dispatcher.plan_stopped"])
+    expect(unwrap(finished).state).toMatchObject({ cleanupPending: false })
+    expect(eventTypes(finishDispatchCancellation(unwrap(finished)))).toEqual([])
+    expectRejected(finishDispatchCancellation(plan()), "invalid_state")
+    expectRejected(
+      finishDispatchCancellation(unwrap(failDispatchPlan(plan(), "Failed"))),
+      "invalid_state"
+    )
+  })
+
   it("refuses launch of a plan without concrete changes", () => {
     for (const repositoryChange of [
       undefined,

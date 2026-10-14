@@ -39,6 +39,29 @@ export function dispatcherIndicator(
       tone: "review",
       label: `${awaitingReview} ${awaitingReview === 1 ? "Train awaits" : "Trains await"} approval`,
     }
+  const reported = (snapshot.conflictConcerns ?? []).filter(
+    (concern) => concern.pair.stage === "confirmed"
+  ).length
+  if (reported)
+    return {
+      tone: "attention",
+      label:
+        reported === 1
+          ? "Possible conflict between Lines"
+          : `${reported} possible conflicts`,
+    }
+  if (snapshot.engineerNotices?.length)
+    return {
+      tone: "attention",
+      label:
+        snapshot.engineerNotices.length === 1
+          ? "An Engineer flagged a concern"
+          : `${snapshot.engineerNotices.length} Engineer concerns`,
+    }
+  if (latest?.state.status === "failed" && latest.state.reason === "cancelled")
+    return latest.state.cleanupPending
+      ? { tone: "working", label: "Stopping planning" }
+      : { tone: "idle", label: "Planning stopped" }
   if (latest?.state.status === "failed")
     return { tone: "attention", label: "Plan stopped" }
   if (latest?.state.status === "ready")
@@ -50,5 +73,11 @@ export function dispatcherIndicator(
     latest?.state.status === "starting"
   )
     return { tone: "working", label: "Launching Lines" }
+  if (
+    snapshot.conflictConcerns?.some(
+      (concern) => concern.pair.stage === "investigate"
+    )
+  )
+    return { tone: "working", label: "Checking for conflicts" }
   return { tone: "idle", label: "Dispatcher" }
 }

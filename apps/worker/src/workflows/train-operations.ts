@@ -1,3 +1,5 @@
+import { assessEngineer, currentStation } from "./engineer-operations"
+import { boundEngineerContext, engineerText } from "@terminus/agent-runtime"
 import { advanceJunctionTrain } from "./junction-train-operations"
 import { advanceCrossing, recordCrossingOutcome } from "./crossing-operations"
 import {
@@ -82,6 +84,8 @@ export interface TrainPorts {
   /** Asks a held Train to evaluate its gate again. */
   wakeJunction?(id: string): Promise<void>
   wakeTrain(trainId: TrainId): Promise<void>
+  /** Starts the Dispatcher's conflict check for a watch. Starting one that exists does nothing. */
+  startConflictWatch?(watchId: string, trainId: TrainId): Promise<void>
   newId(prefix: string): string
   now(): string
 }
@@ -429,6 +433,7 @@ export async function recordIntegrationOutcome(
     events.push(...conflict.events)
   }
   await ports.store.commit(train.networkId, writes, events)
+  await wakeHeldTrains(ports, train.networkId)
 }
 
 /**
@@ -453,7 +458,14 @@ export async function recordStationOutcome(
     return { backoff: false }
 
   if (!outcome.result.ok)
-    return retryOrBlock(ports, train, station, outcome.result.issues)
+    return retryOrBlock(
+      ports,
+      train,
+      station,
+      outcome.result.issues,
+      outcome.runId,
+      outcome.result.phase
+    )
   const ready = applied(
     markReadyForPickup({
       train: train.value,
@@ -480,8 +492,32 @@ async function retryOrBlock(
   ports: TrainPorts,
   train: Loaded<Train>,
   station: Loaded<Station>,
-  issues: Issue[]
+  issues: Issue[],
+  runId: string,
+  phase?: string
 ): Promise<RecordedStationOutcome> {
+  const context = await ports.store.engineer.history(
+    train.networkId,
+    station.value.id,
+    runId
+  )
+  const situation = {
+    station: stationBrief(station.value, ports.stationMaxRetries),
+    issues: issues.map((issue) => ({
+      ...issue,
+      detail: engineerText(issue.detail).slice(0, 2_000),
+    })),
+    phase: phase ?? "unknown",
+    context,
+  }
+  const failureEvent: DomainEvent = {
+    type: "station.run_failed",
+    trainId: train.value.id,
+    stationId: station.value.id,
+    runId,
+    issues,
+    ...(phase ? { phase } : {}),
+  }
   const advice =
     evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
     "clear"
@@ -489,15 +525,30 @@ async function retryOrBlock(
           "engineer.station_failure",
           { stationId: station.value.id },
           () =>
-            ports.engineer.stationFailure({
-              station: stationBrief(station.value, ports.stationMaxRetries),
-              issues,
-            }),
+            assessEngineer(
+              ports,
+              train.networkId,
+              train.value.id,
+              "station_failure",
+              runId,
+              situation,
+              () => ports.engineer.stationFailure(situation)
+            ),
           (advice) => ({ advice })
         )
       : null
+  const freshTrain = await loadTrain(ports, train.value.id)
+  const freshStation = await loadStation(ports, station.value.id)
+  if (
+    freshTrain.version !== train.version ||
+    freshStation.version !== station.version ||
+    !currentStation(freshTrain.value, freshStation.value)
+  )
+    throw new Error("Station changed during Engineer assessment; reload")
   if (!advice || advice.value === "escalate") {
-    await blockTrainAndStation(ports, train, station, issues)
+    await blockTrainAndStation(ports, train, station, issues, undefined, [
+      failureEvent,
+    ])
     return { backoff: false }
   }
   const backoff = advice.value === "wait"
@@ -513,7 +564,7 @@ async function retryOrBlock(
   await ports.store.commit(
     train.networkId,
     [stationWrite(station, retried.value)],
-    retried.events
+    [failureEvent, ...retried.events]
   )
   return { backoff }
 }
@@ -673,6 +724,7 @@ async function stopAtGate(
     [trainWrite(loaded, stopped.value)],
     [...stopped.events, ...alerts]
   )
+  if (decision.kind === "block") await wakeHeldTrains(ports, loaded.networkId)
   return { kind: "moved" }
 }
 
@@ -899,17 +951,64 @@ async function returnWork(
     evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
     "clear"
   ) {
+    const runId = stationRunId(
+      station.value,
+      await ports.store.signalCount(station.value.id)
+    )
+    const checks =
+      station.value.state.status === "in_review"
+        ? station.value.state.proposal.evidence.checks
+        : []
+    const context = await ports.store.engineer.history(
+      train.networkId,
+      station.value.id,
+      runId,
+      checks
+    )
+    const feedbackContext = boundEngineerContext({
+      history: [
+        { runId, at: ports.now(), allowance: "current", feedback },
+        ...(station.value.lastReview
+          ? [
+              {
+                runId: "previous",
+                at: ports.now(),
+                allowance: "historical" as const,
+                feedback: station.value.lastReview.feedback,
+              },
+            ]
+          : []),
+      ],
+    })
+    const situation = {
+      station: stationBrief(station.value, ports.stationMaxRetries),
+      feedback: feedbackContext.history[0]!.feedback!,
+      previousFeedback: feedbackContext.history[1]?.feedback ?? null,
+      context,
+    }
     const advice = await perfSpan(
       "engineer.revision",
       { stationId: station.value.id },
       () =>
-        ports.engineer.revision({
-          station: stationBrief(station.value, ports.stationMaxRetries),
-          feedback,
-          previousFeedback: station.value.lastReview?.feedback ?? null,
-        }),
+        assessEngineer(
+          ports,
+          train.networkId,
+          train.value.id,
+          "revision",
+          { runId, trainHead: train.value.headCommit },
+          situation,
+          () => ports.engineer.revision(situation)
+        ),
       (result) => ({ advice: result })
     )
+    const current = await loadStation(ports, station.value.id)
+    const currentTrain = await loadTrain(ports, train.value.id)
+    if (
+      current.version !== station.version ||
+      currentTrain.version !== train.version ||
+      !currentStation(currentTrain.value, current.value)
+    )
+      throw new Error("Review changed during Engineer assessment; reload")
     if (advice.value === "escalate") {
       await blockTrainAndStation(
         ports,
@@ -995,7 +1094,8 @@ async function blockTrainAndStation(
   train: Loaded<Train>,
   station: Loaded<Station>,
   issues: Issue[],
-  feedback?: ReviewFeedback
+  feedback?: ReviewFeedback,
+  additionalEvents: DomainEvent[] = []
 ): Promise<void> {
   const blockedStation = applied(
     blockStation(
@@ -1018,11 +1118,13 @@ async function blockTrainAndStation(
       stationWrite(station, blockedStation.value),
     ],
     [
+      ...additionalEvents,
       ...blockedStation.events,
       ...blockedTrain.events,
       ...stationRetryUserAlert(blockedTrain.value, blockedStation.value),
     ]
   )
+  await wakeHeldTrains(ports, train.networkId)
 }
 
 async function awaitStation(
@@ -1054,16 +1156,38 @@ async function departureContext(
   networkId: NetworkId,
   station: Station
 ): Promise<DepartureContext> {
-  const [holds, conflicts, dependencies] = await Promise.all([
+  const [holds, conflicts, dependencies, stations, trains] = await Promise.all([
     ports.store.holds(networkId),
     ports.store.conflicts(networkId),
     ports.store.stationStatuses(station.manifest.dependencies),
+    station.manifest.dependencies.length
+      ? ports.store.stations(networkId)
+      : Promise.resolve([]),
+    station.manifest.dependencies.length
+      ? ports.store.trains(networkId)
+      : Promise.resolve([]),
   ])
   // No Train-level validation runs yet, so there are no Train checks.
-  return { holds, conflicts, dependencies, trainChecks: [] }
+  return {
+    holds,
+    conflicts,
+    dependencies,
+    unavailableDependencies: stations
+      .filter(
+        (source) =>
+          station.manifest.dependencies.includes(source.value.id) &&
+          trains.some(
+            (train) =>
+              train.value.lineId === source.value.lineId &&
+              train.value.state.status === "siding"
+          )
+      )
+      .map((source) => source.value.id),
+    trainChecks: [],
+  }
 }
 
-async function wakeHeldTrains(
+export async function wakeHeldTrains(
   ports: TrainPorts,
   networkId: NetworkId
 ): Promise<void> {

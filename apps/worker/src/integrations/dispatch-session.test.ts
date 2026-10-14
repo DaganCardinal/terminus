@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 import { env } from "cloudflare:test"
 import type { RepositoryAccess } from "@terminus/artifacts"
 import { ProposalSubmissionsExhausted } from "@terminus/agent-runtime"
+import { seedDispatchPlan } from "../../test/fixtures"
+import { DispatchDraftStore } from "./dispatch-draft-store"
 import { SandboxDispatchSessions } from "./dispatch-session"
 import type { StationSandbox } from "./station-runner"
 import type { ActivityObserver, AgentActivity } from "@terminus/protocol"
@@ -94,8 +96,13 @@ function fixture(options: { testExit?: number; harnessExit?: number } = {}) {
     repositories,
     () => sandbox
   )
-  const open = (checkBaseline = false, onActivity?: ActivityObserver) =>
+  const open = (
+    checkBaseline = false,
+    onActivity?: ActivityObserver,
+    planId?: string
+  ) =>
     sessions.open({
+      planId,
       model,
       repository: { repoId: "n/terminus", commit },
       checkBaseline,
@@ -200,6 +207,33 @@ describe("Sandbox Dispatcher session", () => {
     expect(error).toBeInstanceOf(ProposalSubmissionsExhausted)
     expect((error as ProposalSubmissionsExhausted).submission).toBe("answer 1")
   })
+  it("starts each attempt's draft from nothing and reads what the plan tools saved", async () => {
+    const plan = await seedDispatchPlan()
+    const drafts = new DispatchDraftStore(env.DB)
+    const station = {
+      key: "a",
+      name: "Station a",
+      goal: "Deliver a",
+      changeKind: "implementation" as const,
+      changeDescription: "Implement a",
+      scope: ["Only a"],
+      expectedAreas: ["src/a.ts"],
+      acceptanceCriteria: ["a works"],
+    }
+    // Left over from an earlier attempt.
+    await drafts.save(plan.id, { stations: {} }, { stations: { a: station } })
+    const f = fixture()
+    const session = f.open(false, undefined, plan.id)
+    await session.prepare()
+    expect(f.sandbox.configure).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        proposalCheck: { planId: plan.id, network, baseline: null },
+      })
+    )
+    expect(await session.draft()).toEqual({ stations: {} })
+    await drafts.save(plan.id, { stations: {} }, { stations: { a: station } })
+    expect(await session.draft()).toEqual({ stations: { a: station } })
+  })
   it("checks out read-only, seals secrets and history, then allows only the model", async () => {
     const f = fixture()
     const session = f.open()
@@ -214,12 +248,12 @@ describe("Sandbox Dispatcher session", () => {
       ],
       allowModel: false,
     })
-    // The proposal tool checks against the same context the plan is reviewed with.
+    // The plan tools check against the same context the plan is reviewed with.
     expect(f.sandbox.configure).toHaveBeenLastCalledWith({
       repositories: [],
       allowModel: true,
       model,
-      proposalCheck: { network, baseline: null },
+      proposalCheck: { planId: expect.any(String), network, baseline: null },
     })
     expect(f.repositories.access).toHaveBeenCalledWith("n/terminus", "read")
     expect(f.repositories.revoke).toHaveBeenCalledOnce()

@@ -9,6 +9,15 @@ import {
 } from "./repository-host"
 import { fakeRepositoryFiles } from "./fake-repository-files"
 import { documentRank, isDocumentPath } from "./repository-browse"
+import { compareFileText } from "./repository-changes"
+import type { RepositoryChangeEntry } from "@terminus/protocol"
+
+const fakeChange: RepositoryChangeEntry = {
+  path: "src/demo-change.ts",
+  kind: "modified",
+  beforeMode: "100644",
+  afterMode: "100644",
+}
 
 const fakeEntries = Object.entries(fakeRepositoryFiles)
   .map(([path, content]) => ({
@@ -37,6 +46,33 @@ export class FakeRepositoryHost implements RepositoryHost {
     }
   }
   async confirmRepair(): Promise<void> {}
+  async readChanges(_repoId: string, base: string, head: string) {
+    return {
+      base,
+      head,
+      files: base === head ? [] : [fakeChange],
+      filesTruncated: false,
+    }
+  }
+  async readChangeFile(
+    _repoId: string,
+    base: string,
+    head: string,
+    path: string
+  ) {
+    if (base === head || path !== fakeChange.path) return null
+    const before = `// Offline demo: illustrative changes, not repository contents.\nexport const acceptedSnapshot = ${JSON.stringify(base)}\n`
+    const after = `// Offline demo: illustrative changes, not repository contents.\nexport const acceptedSnapshot = ${JSON.stringify(head)}\n`
+    return compareFileText(
+      base,
+      head,
+      fakeChange,
+      before,
+      after,
+      before.length,
+      after.length
+    )
+  }
   async readOverview(_repoId: string, commit: string) {
     const documents = fakeEntries
       .filter((entry) => isDocumentPath(entry.path))

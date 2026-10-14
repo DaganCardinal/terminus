@@ -9,6 +9,7 @@ export const agentPhaseSchema = z.enum([
   "sealing_workspace",
   "starting_agent",
   "exploring",
+  "writing_plan",
   "validating_proposal",
   "correcting_proposal",
   "closing_workspace",

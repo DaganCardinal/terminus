@@ -40,3 +40,55 @@ export const repositoryFileQuerySchema = z.object({
   commit: z.string().min(1).max(100),
   path: z.string().min(1).max(1024),
 })
+
+/** Read-only comparisons of exact accepted snapshots; never persisted for browsing. */
+export const repositoryChangesQuerySchema = z.object({
+  base: z.string().min(1).max(100),
+  head: z.string().min(1).max(100),
+})
+export const repositoryChangeFileQuerySchema =
+  repositoryChangesQuerySchema.extend({
+    path: z
+      .string()
+      .min(1)
+      .max(1024)
+      .refine(
+        (path) =>
+          !path.includes("\0") &&
+          path
+            .split("/")
+            .every((part) => part && part !== "." && part !== ".."),
+        "Expected a repository-relative file path"
+      ),
+  })
+
+export const repositoryChangeEntrySchema = z.object({
+  path: z.string(),
+  kind: z.enum(["added", "deleted", "modified"]),
+  beforeMode: z.string().nullable(),
+  afterMode: z.string().nullable(),
+})
+export type RepositoryChangeEntry = z.infer<typeof repositoryChangeEntrySchema>
+
+export const repositoryChangesSchema = repositoryChangesQuerySchema.extend({
+  files: z.array(repositoryChangeEntrySchema),
+  filesTruncated: z.boolean(),
+})
+export type RepositoryChanges = z.infer<typeof repositoryChangesSchema>
+
+export const repositoryChangeFileSchema = repositoryChangesQuerySchema.extend({
+  file: repositoryChangeEntrySchema,
+  status: z.enum(["text", "binary", "too_large", "unsupported"]),
+  beforeSize: z.number().int().nonnegative().nullable(),
+  afterSize: z.number().int().nonnegative().nullable(),
+  hunks: z.array(
+    z.object({
+      oldStart: z.number().int().nonnegative(),
+      oldLines: z.number().int().nonnegative(),
+      newStart: z.number().int().nonnegative(),
+      newLines: z.number().int().nonnegative(),
+      lines: z.array(z.string()),
+    })
+  ),
+})
+export type RepositoryChangeFile = z.infer<typeof repositoryChangeFileSchema>

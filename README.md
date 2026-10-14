@@ -54,6 +54,7 @@ See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness
 | [Station execution](docs/station-execution.md) | Station runs, evidence, revision allowance, Conductor review |
 | [Terminus integration](docs/terminus-integration.md) | Clearance, merge/validate/promote, conflicts and recovery |
 | [Technician repairs](docs/technician.md) | Reconciling failed Terminus merges |
+| [Conflict watch](docs/conflict-watch.md) | Checking each accepted Car against other running Trains before they reach Terminus |
 | [Crossings](docs/crossings.md) | Picking up another Line's accepted work |
 | [Junctions](docs/junctions.md) | Multi-Line feature convergence before Terminus |
 | [Previews](docs/previews.md) | Previewing a Train or Terminus, preview hostnames |

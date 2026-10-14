@@ -6,6 +6,8 @@ import type {
 import type { ValidationCommand, ActivityObserver } from "@terminus/protocol"
 
 export interface DispatchPlanningInput {
+  /** Stable execution address for backend cancellation. */
+  planId?: string
   goal: string
   network: PlanningContext
   /** The exact Terminus snapshot the plan is reviewed against. */

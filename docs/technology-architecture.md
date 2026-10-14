@@ -941,10 +941,18 @@ That suits the Engineer well:
 - The probabilities support confidence thresholds. If no option is above the threshold, or Clef is unavailable, the Engineer keeps its deterministic default instead of guessing.
 - Clef runs only *after* the hard gates pass. It can never override them.
 
-The Engineer currently asks Clef two questions, both within the Station's automatic retry allowance:
+The Engineer asks Clef three typed questions. Action decisions remain within the Station's automatic retry allowance; notification decisions are advisory:
 
 - **A Station run failed** (`retry | wait | escalate`). A confident `retry` or `wait` starts the run again, immediately or after a pause, and uses up one automatic retry. The default is to block, as before.
 - **The Conductor returned work** (`revise | escalate`). A confident `escalate` stops the revision loop early and asks the user. The default is another revision, up to the cap.
+- **Should Dispatch hear of this situation?** (`notify_dispatcher`, yes/no). Eligible recovery situations are a backoff or repeated automatic attempts. Dependency delays are assessed after 30, 60 and 120 minutes without relevant upstream progress, then every two hours. Only a confident no stays quiet; doubt or model failure reports the concern. Upstream blockers are reported deterministically.
+
+Action decisions receive up to four preceding attempts, labeled as current or historical relative to the latest explicit reset, plus independent current check evidence. Diagnostic output is capped at 2,000 characters per check and 12,000 across the context. Diffs, source files and agent summaries are excluded; credential patterns are redacted and all content is treated as evidence, never instructions.
+
+`engineer_assessments` checkpoints the frozen model, question version, threshold, bounded input, full answer and applied action before its consequences. Repeated Workflow execution reuses that assessment. `engineer_notices` stores Dispatcher advisory metadata; it does not duplicate Train status or affect gates. Notice changes and their events are atomic. User acknowledgment suppresses an unchanged condition, progress resolves it, and a new incident can report again. Deliberate user holds and pending human approval suppress delay assessments and restart the inactivity clock when released.
+
+Each Train Workflow runs a durable Engineer observation after advancing (and after recording a Station outcome). It uses existing periodic wakeups; no browser or additional infrastructure is required. Assessments of a held Train decide only whether to report its wait, never whether to release the hold.
+
 
 ## The Engineer as the Train's Voice to Dispatch
 

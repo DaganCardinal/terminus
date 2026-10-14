@@ -27,7 +27,8 @@ export interface StationRunInput {
 }
 
 export type StationRunResult =
-  { ok: true; proposal: Proposal } | { ok: false; issues: Issue[] }
+  | { ok: true; proposal: Proposal }
+  | { ok: false; issues: Issue[]; phase?: string }
 
 /**
  * Runs a Station Agent on one manifest and returns the committed work. Its

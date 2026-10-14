@@ -1,4 +1,5 @@
 import { Files } from "@cloudflare/sandbox"
+import { outboundRequest } from "./sandbox-outbound"
 import { checkoutPreview } from "@terminus/artifacts"
 import {
   commandResultSchema,
@@ -146,6 +147,19 @@ export class ExecutionSandbox extends DurableObject<Env> {
     await (await this.current())?.close()
   }
 
+  /** Permanently stops this execution address, including a startup racing Stop. */
+  async cancel(): Promise<void> {
+    await this.ctx.storage.put("cancelled", true)
+    const name = await this.name()
+    if (name) {
+      const results = await Promise.allSettled(
+        SANDBOX_SIZES.map((size) => this.container(size, name).cancel())
+      )
+      if (results.some((result) => result.status === "rejected"))
+        throw new Error("Sandbox cancellation cleanup failed")
+    }
+  }
+
   /** Runs the Browser Run transport proof, then deletes this Sandbox, which
    * exists only for the proof. */
   async proveBrowserRun(scope: string): Promise<CommandResult> {
@@ -177,6 +191,8 @@ export class ExecutionSandbox extends DurableObject<Env> {
       .catch(() => {})
       .then(async () => {
         if (this.#purged) throw new Error("Sandbox was deleted")
+        if (await this.ctx.storage.get("cancelled"))
+          throw new Error("Sandbox was cancelled")
         const name = this.ctx.id.name
         if (!name) throw new Error("Sandboxes are started by name")
         await this.ctx.storage.put("name", name)
@@ -249,6 +265,8 @@ export abstract class SandboxContainer extends DurableObject<Env> {
   /** This container's own class binding, for routes back to it. */
   protected abstract readonly self: ContainerBinding
   #network: SandboxNetwork | null = null
+  #cancelled = false
+  readonly #outbound = new Set<AbortController>()
   #setup: Promise<void> | null = null
   #previewSetup: Promise<SandboxPreviewResult> | null = null
   #purged = false
@@ -608,10 +626,12 @@ export abstract class SandboxContainer extends DurableObject<Env> {
     network: SandboxNetwork,
     waitMs: number
   ): Promise<void> {
+    await this.assertActive()
     const parsed = sandboxNetworkSchema.parse(network)
     for (const repo of parsed.repositories) await this.register(repo.remote)
     await this.register()
     if (this.#purged) throw new Error("Sandbox was deleted")
+    await this.assertActive()
     this.#network = parsed
     this.#setup = null
     await this.ready(waitMs)
@@ -776,9 +796,72 @@ export abstract class SandboxContainer extends DurableObject<Env> {
     })
   }
 
+  /** Outbound calls run here so Stop can abort both pending headers and streams. */
+  async outbound(request: Request): Promise<Response> {
+    await this.assertActive()
+    const network = this.#network
+    if (!network) return new Response("Sandbox is closed", { status: 403 })
+    const abort = new AbortController()
+    this.#outbound.add(abort)
+    try {
+      const response = await outboundRequest(
+        new Request(request, {
+          signal: AbortSignal.any([request.signal, abort.signal]),
+        }),
+        this.env,
+        { ...network, sessionAffinity: `ses_${this.ctx.id.toString()}` }
+      )
+      if (!response.body) {
+        this.#outbound.delete(abort)
+        return response
+      }
+      const reader = response.body.getReader()
+      const active = this.#outbound
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const next = await reader.read()
+              if (next.done) {
+                active.delete(abort)
+                controller.close()
+              } else controller.enqueue(next.value)
+            } catch (error) {
+              active.delete(abort)
+              controller.error(error)
+            }
+          },
+          async cancel(reason) {
+            abort.abort()
+            active.delete(abort)
+            await reader.cancel(reason)
+          },
+        }),
+        response
+      )
+    } catch (error) {
+      this.#outbound.delete(abort)
+      throw error
+    }
+  }
+
+  async cancel(): Promise<void> {
+    this.#cancelled = true
+    await this.ctx.storage.put("cancelled", true)
+    await this.close()
+  }
+
+  private async assertActive(): Promise<void> {
+    if (this.#cancelled || (await this.ctx.storage.get("cancelled")))
+      throw new Error("Sandbox was cancelled")
+    if (this.#purged) throw new Error("Sandbox was deleted")
+  }
+
   async close(): Promise<void> {
     const started = Date.now()
     const running = this.container().running
+    for (const abort of this.#outbound) abort.abort()
+    this.#outbound.clear()
     await this.closeBrowser()
     this.#network = null
     this.#setup = null
@@ -807,6 +890,7 @@ export abstract class SandboxContainer extends DurableObject<Env> {
   }
 
   private async ready(waitMs = capacityWaitMs): Promise<void> {
+    await this.assertActive()
     await this.register()
     if (this.#purged) throw new Error("Sandbox was deleted")
     if (!this.#network)
@@ -820,6 +904,7 @@ export abstract class SandboxContainer extends DurableObject<Env> {
         let leaseMs = 0
         if (!container.running) {
           await this.acquireLease(waitMs)
+          await this.assertActive()
           leaseMs = Date.now() - setupStarted
           container.start({ enableInternet: false })
           this.#coldStartedAt = Date.now()
@@ -832,6 +917,14 @@ export abstract class SandboxContainer extends DurableObject<Env> {
         const outbound = this.ctx.exports.SandboxOutbound({
           props: {
             ...network,
+            ...(this.ctx.id.name?.startsWith("dispatch-")
+              ? {
+                  outboundSandbox: {
+                    binding: this.self,
+                    sandbox: this.ctx.id.toString(),
+                  },
+                }
+              : {}),
             sessionAffinity: `ses_${this.ctx.id.toString()}`,
             ...(network.allowBrowser
               ? {
@@ -843,6 +936,7 @@ export abstract class SandboxContainer extends DurableObject<Env> {
               : {}),
           },
         })
+        await this.assertActive()
         await container.interceptAllOutboundHttp(outbound)
         await container.interceptOutboundHttps("*", outbound)
         perf("sandbox.setup", {
@@ -863,7 +957,9 @@ export abstract class SandboxContainer extends DurableObject<Env> {
       })
     }
     await this.#setup
+    await this.assertActive()
     await this.renewLease()
+    await this.assertActive()
   }
 
   #lease() {
@@ -883,6 +979,7 @@ export abstract class SandboxContainer extends DurableObject<Env> {
     let delay = 1000
     let limit: number
     for (;;) {
+      await this.assertActive()
       polls++
       limit = await sandboxLimit(this.env.DB, lease)
       if (

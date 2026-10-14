@@ -7,7 +7,7 @@ import {
 import type { ModelTransport } from "./model-provider"
 
 export interface DecisionRequest {
-  role: "engineer"
+  role: "engineer" | "dispatcher"
   /** What the questions are about. Only deterministic domain state. */
   state: unknown
   questions: Record<string, DecisionQuestion>

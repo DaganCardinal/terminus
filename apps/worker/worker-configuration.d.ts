@@ -40,6 +40,7 @@ interface __BaseEnv_Env {
 	TRAIN_WORKFLOW: Workflow<Parameters<import("./src/index").TrainWorkflow['run']>[0]['payload']>;
 	STATION_WORKFLOW: Workflow<Parameters<import("./src/index").StationWorkflow['run']>[0]['payload']>;
 	INTEGRATION_WORKFLOW: Workflow<Parameters<import("./src/index").IntegrationWorkflow['run']>[0]['payload']>;
+	CONFLICT_WATCH_WORKFLOW: Workflow<Parameters<import("./src/index").ConflictWatchWorkflow['run']>[0]['payload']>;
 	terminus_dependency_cache?: R2Bucket;
 	BROWSER?: BrowserRun;
 	AI_GATEWAY_TOKEN?: string;
@@ -90,6 +91,7 @@ declare namespace Cloudflare {
 		TRAIN_WORKFLOW: Workflow<Parameters<import("./src/index").TrainWorkflow['run']>[0]['payload']>;
 		STATION_WORKFLOW: Workflow<Parameters<import("./src/index").StationWorkflow['run']>[0]['payload']>;
 		INTEGRATION_WORKFLOW: Workflow<Parameters<import("./src/index").IntegrationWorkflow['run']>[0]['payload']>;
+		CONFLICT_WATCH_WORKFLOW: Workflow<Parameters<import("./src/index").ConflictWatchWorkflow['run']>[0]['payload']>;
 	}
 	interface Env extends __BaseEnv_Env {}
 }

@@ -1,5 +1,10 @@
 import type { CommitId, RepoId } from "@terminus/domain"
-import type { RepositoryFile, RepositoryOverview } from "@terminus/protocol"
+import type {
+  RepositoryChangeFile,
+  RepositoryChanges,
+  RepositoryFile,
+  RepositoryOverview,
+} from "@terminus/protocol"
 
 /**
  * Each Project owns one Artifacts namespace, and every repository the Project
@@ -55,6 +60,18 @@ export type IntegrationMerge =
  * detail of Artifacts and Git; nothing outside this package sees them.
  */
 export interface RepositoryHost {
+  /** Compare accepted snapshots on demand; browsing never persists a patch. */
+  readChanges(
+    repoId: RepoId,
+    base: CommitId,
+    head: CommitId
+  ): Promise<RepositoryChanges>
+  readChangeFile(
+    repoId: RepoId,
+    base: CommitId,
+    head: CommitId,
+    path: string
+  ): Promise<RepositoryChangeFile | null>
   /** Independently verifies durable repair ancestry, scope and actual diffs. */
   inspectRepair(
     input: import("./technician-git").RepairGitInput,

@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import { useId } from "react"
 import type { UnloadMode, UnloadRecommendation } from "@terminus/protocol"
 
@@ -40,11 +41,10 @@ export function UnloadModeSwitch({
         </button>
       </div>
       {recommendation && (
-        <p className="detail-note">
-          Dispatcher suggests{" "}
-          {recommendation.mode === "auto" ? "auto-unload" : "human approval"}:{" "}
-          {recommendation.reason}
-        </p>
+        <Prose
+          className="detail-note"
+          text={`Dispatcher suggests ${recommendation.mode === "auto" ? "auto-unload" : "human approval"}: ${recommendation.reason}`}
+        />
       )}
     </div>
   )

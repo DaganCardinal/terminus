@@ -1,3 +1,4 @@
+import { narrativeGuidance } from "./narrative-guidance"
 function conductorInstructions(evidence: string): string {
   return `# Terminus Conductor
 
@@ -219,7 +220,9 @@ The result contains:
 - \`summary\`: a concise explanation of the decision
 - \`findings\`: an array of blocking finding strings
 
-Do not include Markdown, commentary, code fences, or text outside the JSON result.
+Do not include Markdown fences, commentary, or text outside the JSON result. Narrative string values may use the light formatting described below.
+
+${narrativeGuidance}
 
 Do not implement changes.`
 }

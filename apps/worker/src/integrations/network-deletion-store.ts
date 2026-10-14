@@ -29,6 +29,7 @@ export class NetworkDeletionStore {
       "junctions",
       "integration_attempts",
       "agent_runs",
+      "conflict_watches",
     ] as const
     const rows = await Promise.all(
       tables.map(async (table) => {
@@ -68,6 +69,7 @@ export class NetworkDeletionStore {
         JUNCTION_WORKFLOW: rows[4]!,
         INTEGRATION_WORKFLOW: rows[5]!,
         STATION_WORKFLOW: runIds,
+        CONFLICT_WATCH_WORKFLOW: rows[7]!,
       },
       sandboxes: sandboxes.map((row) => ({
         id: row.object_id,
@@ -98,6 +100,9 @@ export class NetworkDeletionStore {
         )
         .bind(networkId),
       ...[
+        "conflict_watches",
+        "engineer_notices",
+        "engineer_assessments",
         "execution_configs",
         "model_settings",
         "sandbox_limits",

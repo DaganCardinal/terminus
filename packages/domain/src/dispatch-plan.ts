@@ -124,7 +124,12 @@ export interface DispatchPlan {
         lineIds: string[]
         trainIds: string[]
       } & ReviewedPlan)
-    | { status: "failed"; message: string }
+    | {
+        status: "failed"
+        message: string
+        reason?: "cancelled"
+        cleanupPending?: boolean
+      }
 }
 
 export function createDispatchPlan(
@@ -379,7 +384,7 @@ export function assessDispatchProposal(
   }
 }
 
-function pathsOverlap(a: string, b: string): boolean {
+export function pathsOverlap(a: string, b: string): boolean {
   a = a.replace(/\/$/, "")
   b = b.replace(/\/$/, "")
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
@@ -539,6 +544,40 @@ export function finishPlanLaunch(plan: DispatchPlan): Transition<DispatchPlan> {
       lineIds: plan.state.lineIds,
       trainIds: plan.state.trainIds,
     },
+  ])
+}
+
+/** User cancellation uses the existing terminal storage status, with an explicit reason. */
+export function cancelDispatchPlan(
+  plan: DispatchPlan
+): Transition<DispatchPlan> {
+  if (plan.state.status === "failed" && plan.state.reason === "cancelled")
+    return accept(plan, [])
+  if (plan.state.status !== "planning")
+    return reject("invalid_state", "Only a plan being prepared can be stopped")
+  return accept(
+    {
+      ...plan,
+      state: {
+        status: "failed",
+        reason: "cancelled",
+        cleanupPending: true,
+        message: "Planning stopped at your request.",
+      },
+    },
+    [{ type: "dispatcher.plan_cancelled", planId: plan.id }]
+  )
+}
+
+/** Resource cleanup completes separately from the durable cancellation fence. */
+export function finishDispatchCancellation(
+  plan: DispatchPlan
+): Transition<DispatchPlan> {
+  if (plan.state.status !== "failed" || plan.state.reason !== "cancelled")
+    return reject("invalid_state", "Plan was not cancelled")
+  if (!plan.state.cleanupPending) return accept(plan, [])
+  return accept({ ...plan, state: { ...plan.state, cleanupPending: false } }, [
+    { type: "dispatcher.plan_stopped", planId: plan.id },
   ])
 }
 

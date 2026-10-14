@@ -22,6 +22,8 @@ import {
   type NetworkSnapshot,
   type NetworkSummary,
   repositoryFileSchema,
+  repositoryChangesSchema,
+  repositoryChangeFileSchema,
   repositoryOverviewSchema,
   generalModelSettingsSchema,
   networkModelSettingsSchema,
@@ -34,6 +36,29 @@ import {
 
 /** Application-level commands and queries against the Worker API. */
 export const api = {
+  changes: async (
+    trainId: string,
+    base: string,
+    head: string,
+    carId?: string
+  ) =>
+    repositoryChangesSchema.parse(
+      await request(
+        `${changesPath(trainId, carId)}?${new URLSearchParams({ base, head })}`
+      )
+    ),
+  changeFile: async (
+    trainId: string,
+    base: string,
+    head: string,
+    path: string,
+    carId?: string
+  ) =>
+    repositoryChangeFileSchema.parse(
+      await request(
+        `${changesPath(trainId, carId)}/file?${new URLSearchParams({ base, head, path })}`
+      )
+    ),
   deleteNetwork: (networkId: string) =>
     request<void>(`/networks/${encodeURIComponent(networkId)}`, {
       method: "DELETE",
@@ -111,6 +136,20 @@ export const api = {
     ),
   retryCrossing: (id: string) =>
     request(`/crossings/${encodeURIComponent(id)}/retry`, { method: "POST" }),
+  acknowledgeConflictReport: (
+    networkId: string,
+    watchId: string,
+    otherTrainId: string
+  ) =>
+    request(
+      `/networks/${encodeURIComponent(networkId)}/conflict-watches/${encodeURIComponent(watchId)}/${encodeURIComponent(otherTrainId)}/acknowledge`,
+      { method: "POST" }
+    ),
+  acknowledgeEngineerNotice: (networkId: string, noticeId: string) =>
+    request(
+      `/networks/${encodeURIComponent(networkId)}/engineer-notices/${encodeURIComponent(noticeId)}/acknowledge`,
+      { method: "POST" }
+    ),
   networks: () => request<NetworkListing[]>("/networks"),
   networkSummary: (networkId: string) =>
     request<NetworkListing>(`/networks/${networkId}/summary`),
@@ -187,6 +226,12 @@ export const api = {
   proposePlan: async (networkId: string, body: CreateDispatchPlanRequest) =>
     dispatchPlanSchema.parse(
       await request(`/networks/${networkId}/plans`, { method: "POST", body })
+    ),
+  stopPlan: async (networkId: string, planId: string) =>
+    dispatchPlanSchema.parse(
+      await request(`/networks/${networkId}/plans/${planId}/stop`, {
+        method: "POST",
+      })
     ),
   launchPlan: async (networkId: string, planId: string) =>
     dispatchPlanSchema.parse(
@@ -303,6 +348,10 @@ export const api = {
       method: "PUT",
       body: { siteUrl },
     }),
+}
+
+function changesPath(trainId: string, carId?: string): string {
+  return `/trains/${encodeURIComponent(trainId)}${carId ? `/cars/${encodeURIComponent(carId)}` : ""}/changes`
 }
 
 /** A refused request, with the server's structured details when it sent any. */

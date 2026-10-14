@@ -7,6 +7,8 @@ import {
 import { NonRetryableError } from "cloudflare:workflows"
 import {
   proposeDispatchPlan,
+  stopDispatchPlan,
+  retryDispatchPlan,
   launchPlannedLines,
   type DispatchPlanningPorts,
   selectPlanBaselineFix,
@@ -86,6 +88,7 @@ async function fixture() {
     planner: { model: "fake", plan: vi.fn(async () => planned(proposal())) },
     startPlanning: vi.fn(async () => {}),
     wakePlan: vi.fn(async () => {}),
+    stopPlan: vi.fn(async () => {}),
     retryPlan: vi.fn(async () => {}),
   }
   const request = {
@@ -513,5 +516,75 @@ describe("baseline checks before planning", () => {
     await expect(
       selectPlanBaselineFix(f.ports, f.network.id, f.plan.id, "reject")
     ).rejects.toThrow("no baseline fix")
+  })
+})
+
+describe("Dispatcher cancellation", () => {
+  it("persists cancellation and one event, repeats cleanup, and refuses retry or launch", async () => {
+    const f = await fixture()
+    const cleanup = vi.fn(async () => {
+      expect(
+        (await f.ports.store.dispatchPlan(f.plan.id))?.value.state
+      ).toMatchObject({ reason: "cancelled" })
+    })
+    f.ports.stopPlan = cleanup
+    await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    expect(cleanup).toHaveBeenCalledTimes(2)
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    expect(f.ports.planner.plan).not.toHaveBeenCalled()
+    await expect(
+      retryDispatchPlan(f.ports, f.network.id, f.plan.id)
+    ).rejects.toMatchObject({ status: 409 })
+    await expect(
+      launchPlannedLines(f.ports, f.network.id, f.plan.id)
+    ).rejects.toMatchObject({ status: 409 })
+    const snapshot = (await f.ports.store.snapshot(f.network.id))!
+    expect(snapshot.lines).toHaveLength(0)
+    const events = await f.ports.store.eventsAfter(f.network.id, 0)
+    expect(
+      events.filter((entry) => entry.event.type === "dispatcher.plan_cancelled")
+    ).toHaveLength(1)
+  })
+
+  it("discards a late model result and failure after Stop", async () => {
+    const f = await fixture()
+    f.ports.planner.plan = vi.fn(async () => {
+      await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+      return planned(proposal())
+    })
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await recordDispatchFailure(f.ports, f.plan.id, "planning")
+    expect(
+      (await f.ports.store.dispatchPlan(f.plan.id))?.value.state
+    ).toMatchObject({ reason: "cancelled" })
+  })
+
+  it("keeps the durable stop when cleanup fails and allows cleanup to be retried", async () => {
+    const f = await fixture()
+    f.ports.stopPlan = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("cleanup failed"))
+      .mockResolvedValue(undefined)
+    await expect(
+      stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    ).rejects.toThrow("cleanup failed")
+    expect(
+      (await f.ports.store.dispatchPlan(f.plan.id))?.value.state
+    ).toMatchObject({ cleanupPending: true })
+    await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    expect(f.ports.stopPlan).toHaveBeenCalledTimes(2)
+  })
+
+  it("refuses stopping another network's plan or a finished proposal", async () => {
+    const f = await fixture()
+    await expect(
+      stopDispatchPlan(f.ports, "other", f.plan.id)
+    ).rejects.toMatchObject({ status: 404 })
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await expect(
+      stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    ).rejects.toMatchObject({ status: 409 })
+    expect(f.ports.stopPlan).not.toHaveBeenCalled()
   })
 })

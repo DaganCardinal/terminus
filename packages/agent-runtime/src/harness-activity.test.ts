@@ -9,10 +9,16 @@ import {
   liveHarnessActivityScript,
 } from "./harness-activity"
 import {
-  maxRejectedSubmissions,
-  proposalAcceptedReply,
-  proposalToolAgentName,
-} from "./opencode"
+  maxRejectedFinalizations,
+  maxRejectedPlanCalls,
+  notSavedReply,
+  planAcceptedReply,
+  planToolAgentName,
+  planToolNames,
+} from "./dispatch-draft"
+
+const finalizeTool = planToolAgentName(planToolNames.finalize)
+const stationTool = planToolAgentName(planToolNames.station)
 
 const directory = "/workspace/repo"
 function tool(name: string, input: unknown, status = "completed") {
@@ -81,12 +87,22 @@ describe("filtered harness activity", () => {
         directory
       )
     ).toEqual({ kind: "tool", tool: "search", status: "completed" })
+    // The filter runs in the Sandbox as source text, so it names the plan
+    // tools literally; these must match the names OpenCode gives them.
+    for (const name of [
+      planToolNames.outline,
+      planToolNames.station,
+      planToolNames.inspect,
+    ])
+      expect(
+        filteredHarnessActivity(
+          "opencode",
+          tool(planToolAgentName(name), { goal: "PRIVATE" }),
+          directory
+        )
+      ).toEqual({ kind: "phase", phase: "writing_plan" })
     expect(
-      filteredHarnessActivity(
-        "opencode",
-        tool("terminus_submit_proposal", { proposal: "PRIVATE" }),
-        directory
-      )
+      filteredHarnessActivity("opencode", tool(finalizeTool, {}), directory)
     ).toEqual({ kind: "phase", phase: "validating_proposal" })
   })
 
@@ -233,21 +249,23 @@ describe("filtered harness activity", () => {
       rmSync(temp, { recursive: true, force: true })
     }
   }
-  const submission = (output: string) =>
+  const planCall = (tool: string, output: string) =>
     JSON.stringify(
       JSON.stringify({
         type: "tool_use",
         part: {
-          tool: proposalToolAgentName,
-          state: { status: "completed", input: { proposal: {} }, output },
+          tool,
+          state: { status: "completed", input: { goal: "PRIVATE" }, output },
         },
       })
     )
+  const script = (lines: string[], keepAlive = true) =>
+    `${lines.map((line) => `console.log(${line})`).join(";")}; ${keepAlive ? "setInterval(() => {}, 1000)" : "setTimeout(() => {}, 200)"}`
 
-  it("stops the harness once a proposal is accepted, keeping the submission", async () => {
+  it("stops the harness once the plan is finalized", async () => {
     const started = Date.now()
     const { code, exit, events } = await runLive(
-      `console.log(${submission(`${proposalAcceptedReply} use it.`)}); setInterval(() => {}, 1000)`
+      script([planCall(finalizeTool, `${planAcceptedReply} use it.`)])
     )
     expect(code).toBe(0)
     expect(exit).toEqual({
@@ -255,18 +273,44 @@ describe("filtered harness activity", () => {
       exitCode: 0,
       stopped: "proposal_accepted",
     })
-    expect(events).toContain(proposalToolAgentName)
+    expect(events).toContain(finalizeTool)
     expect(Date.now() - started).toBeLessThan(4000)
   })
 
-  it("lets the harness continue after a rejected submission", async () => {
+  it("lets the harness continue after rejected pieces and finalizations", async () => {
     const { exit } = await runLive(
-      `console.log(${submission("Not accepted. PRIVATE")}); setTimeout(() => {}, 200)`
+      script(
+        [
+          planCall(stationTool, `${notSavedReply} PRIVATE`),
+          planCall(finalizeTool, "Not accepted. PRIVATE"),
+          // A saved piece never counts, whatever problems it reports.
+          ...Array<string>(maxRejectedPlanCalls).fill(
+            planCall(stationTool, "Saved Station `a`. Problems: PRIVATE")
+          ),
+        ],
+        false
+      )
     )
     expect(exit).toEqual({ type: "harness_exit", exitCode: 0 })
   })
 
-  it("stops the harness after repeated rejected submissions, counting unparseable calls", async () => {
+  it("stops the harness after repeated rejected finalizations", async () => {
+    const { exit, output } = await runLive(
+      script(
+        Array<string>(maxRejectedFinalizations).fill(
+          planCall(finalizeTool, "Not accepted. PRIVATE")
+        )
+      )
+    )
+    expect(exit).toEqual({
+      type: "harness_exit",
+      exitCode: 0,
+      stopped: "proposal_rejected",
+    })
+    expect(output).not.toContain("PRIVATE")
+  })
+
+  it("stops the harness after repeated unsaved pieces, counting unparseable calls", async () => {
     const unparsed = JSON.stringify(
       JSON.stringify({
         type: "tool_use",
@@ -274,21 +318,20 @@ describe("filtered harness activity", () => {
           tool: "invalid",
           state: {
             status: "completed",
-            input: { tool: proposalToolAgentName, error: "PRIVATE" },
+            input: { tool: stationTool, error: "PRIVATE" },
             output: "The arguments provided to the tool are invalid: PRIVATE",
           },
         },
       })
     )
-    const rejected = submission("Not accepted. PRIVATE")
     const lines = [
       unparsed,
-      ...Array<string>(maxRejectedSubmissions - 1).fill(rejected),
+      ...Array<string>(maxRejectedPlanCalls - 1).fill(
+        planCall(stationTool, `${notSavedReply} PRIVATE`)
+      ),
     ]
     const started = Date.now()
-    const { code, exit, output } = await runLive(
-      `${lines.map((line) => `console.log(${line})`).join(";")}; setInterval(() => {}, 1000)`
-    )
+    const { code, exit, output } = await runLive(script(lines))
     expect(code).toBe(0)
     expect(exit).toEqual({
       type: "harness_exit",
@@ -306,7 +349,7 @@ describe("filtered harness activity", () => {
       { type: "step_start", timestamp: 1_300 },
     ]
     const { output } = await runLive(
-      `${events.map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`).join(";")}; setTimeout(() => { console.log(${submission(`${proposalAcceptedReply} use it.`)}) }, 250); setInterval(() => {}, 1000)`
+      `${events.map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`).join(";")}; setTimeout(() => { console.log(${planCall(finalizeTool, `${planAcceptedReply} use it.`)}) }, 250); setInterval(() => {}, 1000)`
     )
     const lines = output
       .split("\n")
@@ -319,7 +362,7 @@ describe("filtered harness activity", () => {
       ["harness_exit", undefined],
     ])
     expect(lines[1]!.tools).toEqual([
-      expect.objectContaining({ tool: proposalToolAgentName }),
+      expect.objectContaining({ tool: finalizeTool }),
     ])
   })
 

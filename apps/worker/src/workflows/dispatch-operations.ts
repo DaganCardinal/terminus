@@ -52,7 +52,10 @@ export async function prepareDispatchPlan(
     console.warn("Dispatcher activity persistence unavailable")
   }
   try {
+    const current = await load(ports, planId)
+    if (current.value.state.status !== "planning") return
     const result = await ports.planner.plan({
+      planId,
       goal: plan.goal,
       network: planningContext(snapshot),
       repository: {
@@ -80,6 +83,8 @@ export async function prepareDispatchPlan(
   } finally {
     await activity?.close()
   }
+  const current = await load(ports, planId)
+  if (current.value.state.status !== "planning") return
   const ready = applied(
     readyDispatchPlan(plan, proposal, planningContext(snapshot), baseline)
   )

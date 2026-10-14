@@ -89,7 +89,10 @@ export async function prepareHarness(
         "mkdir",
         "-p",
         "/workspace/harness-state",
-        ...(execution.harness === "codex" ? ["/etc/codex"] : []),
+        // Codex refuses to start when CODEX_HOME does not exist.
+        ...(execution.harness === "codex"
+          ? [invocation.env.CODEX_HOME!, "/etc/codex"]
+          : []),
       ])
     )
     if (created.exitCode !== 0)
@@ -409,7 +412,7 @@ function stderrTail(stderr: string): string {
 export interface HarnessExit {
   exitCode: number
   /** Set when the live runner ended the harness: its work was done, or it
-   * reached \`maxRejectedSubmissions\`. */
+   * reached its limit of rejected plan tool calls. */
   stopped?: "proposal_accepted" | "proposal_rejected"
   /** For diagnosis only: the signal and end of stderr after an abnormal exit. */
   signal?: string

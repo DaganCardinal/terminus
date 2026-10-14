@@ -1,10 +1,13 @@
 import type { AgentActivity, Harness } from "@terminus/protocol"
 import {
-  harnessTimelineScript,
-  maxRejectedSubmissions,
-  proposalAcceptedReply,
-  proposalToolAgentName,
-} from "./opencode"
+  maxRejectedFinalizations,
+  maxRejectedPlanCalls,
+  notSavedReply,
+  planAcceptedReply,
+  planToolAgentName,
+  planToolNames,
+} from "./dispatch-draft"
+import { harnessTimelineScript } from "./opencode"
 
 /** No tool output, reasoning, messages, commands or search expressions leave here. */
 export function filteredHarnessActivity(
@@ -40,7 +43,14 @@ export function filteredHarnessActivity(
     else if (state === "error") status = "failed"
     else if (state !== "completed") return null
     if (name === "task" && input.subagent_type !== "explore") return null
-    if (name === "terminus_submit_proposal")
+    // Literal names: this function runs in the Sandbox as source text.
+    if (
+      name === "terminus_set_plan_outline" ||
+      name === "terminus_put_station" ||
+      name === "terminus_inspect_plan"
+    )
+      return { kind: "phase", phase: "writing_plan" }
+    if (name === "terminus_finalize_plan")
       return { kind: "phase", phase: "validating_proposal" }
   } else if (harness === "claude-code" && e.type === "assistant") {
     const block = e.message?.content?.[0]
@@ -105,9 +115,10 @@ export function filteredHarnessActivity(
  * plus a short stderr tail after an abnormal exit and the per-step timeline as each step ends,
  * which orchestration logs but never displays. Logging steps as they end keeps them when the
  * run is cut short. Raw events remain in the local file for the existing final-outcome parser.
- * Once the Dispatcher's proposal tool accepts a submission, the harness is stopped: the
- * submission is the answer, and the model's closing message would cost another round trip.
- * After \`maxRejectedSubmissions\` rejected ones it is stopped too, and the last one is final. */
+ * Once \`finalize_plan\` accepts the Dispatcher's plan, the harness is stopped: the saved draft
+ * is the answer, and the model's closing message would cost another round trip. It is stopped
+ * too after \`maxRejectedFinalizations\` rejected finalizations or \`maxRejectedPlanCalls\`
+ * pieces that were not saved, and the saved draft is final. */
 export const liveHarnessActivityScript = `import { spawn } from "node:child_process"
 import { createWriteStream } from "node:fs"
 import { constants } from "node:os"
@@ -121,24 +132,30 @@ let stderr = ""
 child.stderr.setEncoding("utf8")
 child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000) })
 const decoder = new StringDecoder("utf8")
-let buffer = "", dropping = false, count = 0, rejected = 0, stopped = null
+let buffer = "", dropping = false, count = 0, rejected = 0, finalizeRejected = 0, stopped = null
 function emit(event) {
   if (count >= 1000) return
   const activity = filter(harness, event, directory)
   if (activity) { count++; console.log(JSON.stringify({ type: "activity", activity })) }
 }
-function stopAtSubmissionOutcome(event) {
+function stopAtPlanOutcome(event) {
   if (stopped || harness !== "opencode" || event.type !== "tool_use") return
-  const tool = ${JSON.stringify(proposalToolAgentName)}
+  const tools = ${JSON.stringify(Object.values(planToolNames).map(planToolAgentName))}
+  const finalize = ${JSON.stringify(planToolAgentName(planToolNames.finalize))}
   const state = event.part?.state ?? {}
   if (state.status !== "completed" && state.status !== "error") return
+  const tool = event.part?.tool
   // OpenCode routes a call whose arguments do not parse to its \`invalid\` tool.
-  const unparsed = event.part?.tool === "invalid" && (state.input?.tool === tool || String(state.input?.error ?? "").includes(tool))
-  if (event.part?.tool !== tool && !unparsed) return
-  if (!unparsed && state.status === "completed" && typeof state.output === "string" && state.output.startsWith(${JSON.stringify(proposalAcceptedReply)}))
-    stopped = "proposal_accepted"
-  else if (++rejected >= ${maxRejectedSubmissions}) stopped = "proposal_rejected"
-  else return
+  const unparsed = tool === "invalid" && tools.some((name) => state.input?.tool === name || String(state.input?.error ?? "").includes(name))
+  if (!unparsed && !tools.includes(tool)) return
+  const output = typeof state.output === "string" ? state.output : ""
+  if (tool === finalize) {
+    if (state.status === "completed" && output.startsWith(${JSON.stringify(planAcceptedReply)})) stopped = "proposal_accepted"
+    else if (++finalizeRejected >= ${maxRejectedFinalizations}) stopped = "proposal_rejected"
+  } else if (unparsed || state.status === "error" || output.startsWith(${JSON.stringify(notSavedReply)})) {
+    if (++rejected >= ${maxRejectedPlanCalls}) stopped = "proposal_rejected"
+  }
+  if (!stopped) return
   child.kill("SIGTERM")
   setTimeout(() => child.kill("SIGKILL"), 5000).unref()
 }
@@ -146,7 +163,7 @@ function line(text) {
   if (text.length > 1048576) return
   let event
   try { event = JSON.parse(text) } catch { return }
-  stopAtSubmissionOutcome(event)
+  stopAtPlanOutcome(event)
   if (harness === "opencode") perfEvent(event)
   if (harness === "claude-code" && event.type === "assistant" && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) emit({ type: "assistant", message: { content: [block] } })

@@ -18,6 +18,72 @@ import type { ReviewFeedback } from "./station"
  */
 export type DomainEvent =
   | {
+      type: "engineer.assessed"
+      trainId: TrainId
+      assessmentId: string
+      purpose: string
+      action: string
+    }
+  | {
+      type: "dispatcher.engineer_notice_raised"
+      trainId: TrainId
+      noticeId: string
+      summary: string
+    }
+  | {
+      type: "dispatcher.engineer_notice_acknowledged"
+      trainId: TrainId
+      noticeId: string
+    }
+  | {
+      type: "dispatcher.engineer_notice_resolved"
+      trainId: TrainId
+      noticeId: string
+    }
+  | {
+      type: "dispatcher.conflict_investigating"
+      trainId: TrainId
+      watchId: string
+      otherTrainId: TrainId
+      route: "overlap" | "triage"
+    }
+  | {
+      type: "dispatcher.conflict_reported"
+      trainId: TrainId
+      watchId: string
+      otherTrainId: TrainId
+      summary: string
+      paths: string[]
+    }
+  | {
+      type: "dispatcher.conflict_cleared"
+      trainId: TrainId
+      watchId: string
+      otherTrainId: TrainId
+      summary: string
+    }
+  | {
+      type: "dispatcher.conflict_investigation_failed"
+      trainId: TrainId
+      watchId: string
+      otherTrainId: TrainId
+      reason: string
+    }
+  | {
+      type: "dispatcher.conflict_acknowledged"
+      trainId: TrainId
+      watchId: string
+      otherTrainId: TrainId
+    }
+  | {
+      type: "station.run_failed"
+      trainId: TrainId
+      stationId: StationId
+      runId: string
+      issues: Issue[]
+      phase?: string
+    }
+  | {
       type:
         | "junction.created"
         | "junction.review_started"
@@ -157,6 +223,8 @@ export type DomainEvent =
   | { type: "dispatcher.plan_ready"; planId: string }
   | { type: "dispatcher.launch_requested"; planId: string }
   | { type: "dispatcher.plan_failed"; planId: string }
+  | { type: "dispatcher.plan_cancelled"; planId: string }
+  | { type: "dispatcher.plan_stopped"; planId: string }
   | {
       type: "dispatcher.baseline_fix_selected"
       planId: string

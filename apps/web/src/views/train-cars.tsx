@@ -1,9 +1,11 @@
+import { Prose } from "@terminus/ui/components/prose"
 import type { Car, NetworkSnapshot, Station } from "@terminus/protocol"
 import { useId, useRef, useState, type CSSProperties } from "react"
 import { TrainFront, X } from "lucide-react"
 import type { MapSelection } from "@/map/network-map"
 import { CheckRow, List, ManifestView, TechnicalDetails } from "./detail-parts"
 import { namesFor } from "./describe"
+import { Changes } from "./changes"
 
 const MAX_PENDING_CARS = 12
 const loading = new Set([
@@ -124,7 +126,7 @@ export function TrainCars({
                 <X size={14} aria-hidden="true" />
               </button>
             </div>
-            <p>{car.manifest.goal}</p>
+            <Prose text={car.manifest.goal} />
             {car.originCarId && (
               <p>
                 Picked up from{" "}
@@ -149,9 +151,8 @@ export function TrainCars({
                 . Original acceptance and review are preserved.
               </p>
             )}
-            <p>
-              <strong>Conductor review:</strong> {car.review.summary}
-            </p>
+            <h4>Conductor review</h4>
+            <Prose text={car.review.summary} />
             <List items={car.review.findings} />
             <CheckRow checks={car.evidence.checks} />
             <ManifestView manifest={car.manifest} name={name} met />
@@ -161,16 +162,15 @@ export function TrainCars({
                 { label: "Changed files", value: car.changedPaths },
               ]}
             />
-            <details>
-              <summary>Accepted changes</summary>
-              {car.diff !== undefined ? (
-                <pre className="unload-diff">
-                  {car.diff || "No file changes."}
-                </pre>
-              ) : (
-                <p>A diff was not recorded for this Car.</p>
-              )}
-            </details>
+            <Changes
+              target={{
+                trainId: car.trainId,
+                carId: car.id,
+                base: car.sourceCommit,
+                head: car.acceptedCommit,
+              }}
+              description="Work accepted into this Car."
+            />
           </div>
         )}
       </div>

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
+import { conflictHarnessAgent } from "./conflict-watch"
 import {
   conductorHarnessAgent,
   dispatcherHarnessAgent,
@@ -22,11 +23,11 @@ import {
   harnessPreflightCommand,
   harnessPreflightGuidance,
   harnessSessionId,
+  jsonParseHint,
   opencodeConfig,
   opencodeEnvironment,
   opencodeRunCommand,
-  proposalTool,
-  proposalToolAgentName,
+  planToolServer,
   repairBrackets,
   repositoryContentPolicy,
   stationHarnessAgent,
@@ -121,6 +122,24 @@ describe("Harness agent configuration", () => {
     }
   )
 
+  it("keeps the Dispatcher's conflict investigator read-only, without the plan tools", () => {
+    const config = JSON.parse(
+      opencodeConfig("account", "gateway", model, conflictHarnessAgent("S"))
+    )
+    expect(config.mcp).toBeUndefined()
+    for (const tool of [
+      "edit",
+      "bash",
+      "webfetch",
+      "websearch",
+      "skill",
+      "external_directory",
+    ])
+      expect(config.agent["dispatcher-investigator"].permission[tool]).toBe(
+        "deny"
+      )
+  })
+
   it("keeps the Dispatcher read-only", () => {
     const config = JSON.parse(
       opencodeConfig("account", "gateway", model, dispatcherHarnessAgent("S"))
@@ -150,14 +169,14 @@ describe("Harness agent configuration", () => {
       expect(limits(agent)).toEqual([8192, 8192])
   })
 
-  it("gives only the Dispatcher the proposal tool, and never its explore subagents", () => {
+  it("gives only the Dispatcher the plan tools, and never its explore subagents", () => {
     const dispatcher = JSON.parse(
       opencodeConfig("account", "gateway", model, dispatcherHarnessAgent("S"))
     )
     expect(dispatcher.mcp).toEqual({
       terminus: {
         type: "remote",
-        url: proposalTool.url,
+        url: planToolServer.url,
         enabled: true,
         oauth: false,
       },
@@ -326,15 +345,15 @@ async function filterEvents(events: object[]) {
 
 // Shapes as OpenCode 1.18.32 emits them for a remote MCP tool call.
 const sessionID = "ses_1"
-const submitted = (proposal: unknown, status = "completed") => ({
+const planToolCall = (input: unknown) => ({
   type: "tool_use",
   timestamp: 1,
   sessionID,
   part: {
     type: "tool",
-    tool: proposalToolAgentName,
+    tool: "terminus_put_station",
     callID: "call_1",
-    state: { status, input: { proposal }, output: "Accepted" },
+    state: { status: "completed", input, output: "Saved Station `a`." },
   },
 })
 const text = (value: string) => ({
@@ -344,36 +363,17 @@ const text = (value: string) => ({
   part: { type: "text", text: value },
 })
 
-describe("Submitted proposals", () => {
-  it("uses the last submission when the final message only reports it", async () => {
+describe("Plan tool calls", () => {
+  it("keep the final message as the answer, and their arguments stay in the Sandbox", async () => {
     const output = await filterEvents([
-      submitted({ summary: "first" }),
-      submitted({ summary: 'He said "hi"' }),
-      text("Proposal submitted."),
+      planToolCall({ key: "a", goal: "PRIVATE" }),
+      text("Plan submitted."),
     ])
     expect(harnessOutcome(output)).toEqual({
-      summary: '{"summary":"He said \\"hi\\""}',
+      summary: "Plan submitted.",
       error: null,
     })
-  })
-
-  it("prefers a later final message that carries JSON itself, and ignores unfinished calls", async () => {
-    expect(
-      harnessOutcome(
-        await filterEvents([
-          submitted({ summary: "old" }),
-          text('{"summary":"replacement"}'),
-        ])
-      ).summary
-    ).toBe('{"summary":"replacement"}')
-    expect(
-      harnessOutcome(
-        await filterEvents([
-          submitted({ summary: "never ran" }, "error"),
-          text("No proposal."),
-        ])
-      ).summary
-    ).toBe("No proposal.")
+    expect(output.stdout).not.toContain("PRIVATE")
   })
 })
 
@@ -469,5 +469,56 @@ describe("Final message JSON", () => {
       /position 15/
     )
     expect(() => finalMessageJson("I explored the repo.")).toThrow(SyntaxError)
+  })
+})
+
+describe("JSON parse hint", () => {
+  const hintFor = (json: string, text = json) => {
+    let message = "No JSON object"
+    try {
+      JSON.parse(json)
+    } catch (error) {
+      message = (error as Error).message
+    }
+    return jsonParseHint(message, text)
+  }
+
+  it("quotes where parsing stopped and names a wrong closer", () => {
+    // The live failure: every Station's `scope` list closed with `}`.
+    const station = (key: string) =>
+      `{"key":"${key}","manifest":{"repositoryChange":{"kind":"implementation"},"scope":["a","b"},"expectedAreas":["c"]}}`
+    const json = `{"lines":[{"stations":[${station("one")},${station("two")}]}]}`
+    const hint = hintFor(json, `Proposal:\n${json}`)
+    expect(hint).toContain("The parser reported: Expected ',' or ']'")
+    expect(hint).toContain(
+      '"implementation"},"scope":["a","b"<<<HERE>>>},"expectedAreas":["c"]}}'
+    )
+    expect(hint).toContain(
+      "There, the `scope` array is still open, and `}` cannot close it: it closes with `]`."
+    )
+  })
+
+  it("names the innermost open value for other mistakes", () => {
+    expect(hintFor('{"stations":[{"key":"a" "name":"b"}]}')).toContain(
+      "There, the innermost open value is an object in the `stations` array, which closes with `}`."
+    )
+    expect(hintFor('{"a":{"b":1},"c":[1}')).toContain(
+      "There, the `c` array is still open, and `}` cannot close it: it closes with `]`."
+    )
+  })
+
+  it("quotes without naming a value when parsing stopped inside a string", () => {
+    const hint = hintFor('{"a":"one\u0001two"}')
+    expect(hint).toContain('{"a":"one<<<HERE>>>\u0001two"}')
+    expect(hint).not.toContain("There,")
+  })
+
+  it("keeps the parser's message when there is nothing to quote", () => {
+    expect(() => finalMessageJson("I explored the repo.")).toThrow(
+      "No JSON object"
+    )
+    const hint = jsonParseHint("No JSON object", "I explored the repo.")
+    expect(hint).toContain("The parser reported: No JSON object")
+    expect(hint).not.toContain("<<<HERE>>>")
   })
 })

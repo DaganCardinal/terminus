@@ -247,6 +247,7 @@ describe("durable human unloading gate", () => {
       planner: new FakeDispatchPlanner(),
       startPlanning: async () => {},
       wakePlan: async () => {},
+      stopPlan: vi.fn(async () => {}),
       retryPlan: async () => {},
     }
     const plan = await proposeDispatchPlan(planning, network.id, {

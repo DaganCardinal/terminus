@@ -1,3 +1,12 @@
+import { EngineerStore } from "./engineer-store"
+import { ConflictWatchStore } from "./conflict-watch-store"
+import {
+  conflictWatchSchema,
+  engineerAssessmentSchema,
+  engineerNoticeSchema,
+  type EngineerAssessment,
+} from "@terminus/protocol"
+import type { ConflictWatch, EngineerNotice } from "@terminus/domain"
 import type {
   AgentConfig,
   Junction,
@@ -22,6 +31,7 @@ import type {
   TrainUnloadPolicy,
 } from "@terminus/domain"
 import {
+  activeConflictConcerns,
   signalFor,
   lineStops,
   integrateRepair,
@@ -93,6 +103,9 @@ export interface Loaded<T> {
 
 /** A row write. `version` is the version read, or null to insert. */
 export type Write =
+  | { kind: "engineer_assessment"; assessment: EngineerAssessment }
+  | { kind: "engineer_notice"; notice: EngineerNotice; version: number | null }
+  | { kind: "conflict_watch"; watch: ConflictWatch; version: number | null }
   | { kind: "junction"; junction: Junction; version: number | null }
   | { kind: "junction_ack"; integrationId: string }
   | { kind: "junction_command_consumed"; junctionId: string }
@@ -180,11 +193,20 @@ interface EventRow {
 
 /** D1 persistence for network state and its event log. */
 export class NetworkStore {
+  readonly engineer: EngineerStore
+  readonly conflictWatch: ConflictWatchStore
   readonly #db: D1Database
   readonly #creationExecutions?: RoleExecutions
 
   constructor(db: D1Database, creationExecutions?: RoleExecutions) {
     this.#db = db
+    this.engineer = new EngineerStore(db, (networkId, writes, events) =>
+      this.commit(networkId, writes, events)
+    )
+    this.conflictWatch = new ConflictWatchStore(
+      db,
+      (networkId, writes, events) => this.commit(networkId, writes, events)
+    )
     this.#creationExecutions = creationExecutions
   }
 
@@ -322,22 +344,21 @@ export class NetworkStore {
       const existing = await this.junctionCommand(id)
       if (existing?.release_commit === command.commit) return
       await this.#db.batch([
-        this.#db
-          .prepare(
-            "INSERT INTO events(network_id,type,payload,occurred_at) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM junction_commands WHERE id=? AND release_commit=?)"
-          )
-          .bind(
-            junction.networkId,
-            "junction.release_approved",
-            JSON.stringify({
-              type: "junction.release_approved",
-              junctionId: id,
-              mergeCommit: command.commit,
-            }),
-            new Date().toISOString(),
-            id,
-            command.commit
-          ),
+        this.#event(
+          junction.networkId,
+          {
+            type: "junction.release_approved",
+            junctionId: id,
+            mergeCommit: command.commit,
+          },
+          new Date().toISOString(),
+          {
+            guard: {
+              sql: "NOT EXISTS (SELECT 1 FROM junction_commands WHERE id=? AND release_commit=?)",
+              params: [id, command.commit],
+            },
+          }
+        ),
         this.#db
           .prepare(
             "INSERT INTO junction_commands(id,release_commit) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET release_commit=excluded.release_commit"
@@ -789,17 +810,7 @@ export class NetworkStore {
       )
       for (const event of [...repaired.events, ...resolved.events])
         statements.push(
-          this.#db
-            .prepare(
-              "INSERT INTO events (network_id, type, train_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?)"
-            )
-            .bind(
-              input.networkId,
-              event.type,
-              input.trainId,
-              JSON.stringify(event),
-              now
-            )
+          this.#event(input.networkId, event, now, { trainId: input.trainId })
         )
     }
     if (
@@ -832,17 +843,7 @@ export class NetworkStore {
         )
         for (const event of rejected.events)
           statements.push(
-            this.#db
-              .prepare(
-                "INSERT INTO events (network_id, type, train_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?)"
-              )
-              .bind(
-                input.networkId,
-                event.type,
-                input.trainId,
-                JSON.stringify(event),
-                now
-              )
+            this.#event(input.networkId, event, now, { trainId: input.trainId })
           )
       }
     }
@@ -867,17 +868,39 @@ export class NetworkStore {
         throw new Error(`Unexpected Junction integration event ${event.type}`)
       event = { ...event, type, junctionId: input.junctionId! } as DomainEvent
     }
+    return this.#event(input.networkId, event, new Date().toISOString(), {
+      trainId: input.trainId,
+      guard: { sql: "changes() = 1", params: [] },
+    })
+  }
+
+  /**
+   * Appends one event. Its Train and Station columns come from the payload;
+   * `trainId` tags an event whose payload names no Train. A `guard` is an SQL
+   * condition the insert also requires.
+   */
+  #event(
+    networkId: NetworkId,
+    event: DomainEvent,
+    occurredAt: string,
+    options: {
+      trainId?: string
+      guard?: { sql: string; params: unknown[] }
+    } = {}
+  ): D1PreparedStatement {
+    const { trainId, guard } = options
+    const insert =
+      "INSERT INTO events (network_id, type, train_id, station_id, payload, occurred_at) SELECT ?, ?, ?, ?, ?, ?"
     return this.#db
-      .prepare(
-        `INSERT INTO events (network_id, type, train_id, payload, occurred_at)
-      SELECT ?, ?, ?, ?, ? WHERE changes() = 1`
-      )
+      .prepare(guard ? `${insert} WHERE ${guard.sql}` : insert)
       .bind(
-        input.networkId,
+        networkId,
         event.type,
-        input.trainId,
+        "trainId" in event ? event.trainId : (trainId ?? null),
+        "stationId" in event ? event.stationId : null,
         JSON.stringify(event),
-        new Date().toISOString()
+        occurredAt,
+        ...(guard?.params ?? [])
       )
   }
 
@@ -1481,8 +1504,8 @@ export class NetworkStore {
     writes: Write[],
     events: DomainEvent[]
   ): Promise<void> {
-    if (!writes.some((write) => write.kind === "network"))
-      await this.assertActive(networkId)
+    // No deletion pre-check: the network_deleting triggers fence every table
+    // written here, atomically inside the batch.
     const occurredAt = new Date().toISOString()
     const created = writes.filter(
       (write) =>
@@ -1526,20 +1549,7 @@ export class NetworkStore {
     const statements = [
       ...writes.map((write) => this.#statement(networkId, write, occurredAt)),
       ...configurations,
-      ...events.map((event) =>
-        this.#db
-          .prepare(
-            "INSERT INTO events (network_id, type, train_id, station_id, payload, occurred_at) VALUES (?, ?, ?, ?, ?, ?)"
-          )
-          .bind(
-            networkId,
-            event.type,
-            "trainId" in event ? event.trainId : null,
-            "stationId" in event ? event.stationId : null,
-            JSON.stringify(event),
-            occurredAt
-          )
-      ),
+      ...events.map((event) => this.#event(networkId, event, occurredAt)),
     ]
     if (statements.length === 0) return
     try {
@@ -1594,6 +1604,8 @@ export class NetworkStore {
       junctions,
       junctionRepairs,
       junctionApprovals,
+      engineerNotices,
+      conflictWatches,
     ] = await this.#db.batch([
       this.#db.prepare("SELECT * FROM networks WHERE id = ?").bind(networkId),
       this.#db
@@ -1631,6 +1643,8 @@ export class NetworkStore {
           "SELECT junction_commands.id AS junctionId,release_commit AS releaseCommit FROM junction_commands JOIN junctions ON junctions.id=junction_commands.id WHERE junctions.network_id=? AND release_commit IS NOT NULL"
         )
         .bind(networkId),
+      select("engineer_notices"),
+      select("conflict_watches"),
     ])
     const network = networks!.results[0] as NetworkRow | undefined
     if (!network) return null
@@ -1638,6 +1652,15 @@ export class NetworkStore {
       (result?.results as RecordRow[]).map((row) => parse<T>(row))
     return {
       network: toNetwork(network),
+      conflictConcerns: activeConflictConcerns(
+        records<ConflictWatch>(conflictWatches).map((watch) =>
+          conflictWatchSchema.parse(watch)
+        ),
+        (trains!.results as TrainRow[]).map((row) => parse<Train>(row))
+      ),
+      engineerNotices: records<EngineerNotice>(engineerNotices)
+        .filter((notice) => !notice.resolvedAt && !notice.acknowledgedAt)
+        .map((notice) => engineerNoticeSchema.parse(notice)),
       junctionApprovals: (
         junctionApprovals!.results as {
           junctionId: string
@@ -1711,6 +1734,51 @@ export class NetworkStore {
         return db
           .prepare("DELETE FROM junction_commands WHERE id=?")
           .bind(write.junctionId)
+      case "engineer_assessment":
+        return db
+          .prepare(
+            "INSERT INTO engineer_assessments(id,network_id,train_id,record) VALUES (?,?,?,?)"
+          )
+          .bind(
+            write.assessment.id,
+            networkId,
+            write.assessment.trainId,
+            JSON.stringify(engineerAssessmentSchema.parse(write.assessment))
+          )
+      case "conflict_watch": {
+        const record = JSON.stringify(conflictWatchSchema.parse(write.watch))
+        return write.version === null
+          ? db
+              .prepare(
+                "INSERT INTO conflict_watches(id,network_id,train_id,car_id,record,version) VALUES (?,?,?,?,?,0)"
+              )
+              .bind(
+                write.watch.id,
+                networkId,
+                write.watch.trainId,
+                write.watch.carId,
+                record
+              )
+          : db
+              .prepare(
+                "UPDATE conflict_watches SET record=?,version=? WHERE id=? AND network_id=?"
+              )
+              .bind(record, write.version + 1, write.watch.id, networkId)
+      }
+      case "engineer_notice": {
+        const record = JSON.stringify(engineerNoticeSchema.parse(write.notice))
+        return write.version === null
+          ? db
+              .prepare(
+                "INSERT INTO engineer_notices(id,network_id,train_id,record,version) VALUES (?,?,?,?,0)"
+              )
+              .bind(write.notice.id, networkId, write.notice.trainId, record)
+          : db
+              .prepare(
+                "UPDATE engineer_notices SET record=?,version=? WHERE id=? AND network_id=?"
+              )
+              .bind(record, write.version + 1, write.notice.id, networkId)
+      }
       case "junction_ack":
         return db
           .prepare(

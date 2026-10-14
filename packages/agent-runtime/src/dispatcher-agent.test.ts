@@ -1,14 +1,23 @@
 import { describe, expect, it, vi } from "vitest"
 import type { BaselineReport } from "@terminus/domain"
-import { dispatchProposalSchema } from "@terminus/protocol"
-import type { RoleExecution } from "@terminus/protocol"
+import {
+  dispatchProposalSchema,
+  type PlanDraft,
+  type PlanOutline,
+  type PlanStation,
+  type RoleExecution,
+} from "@terminus/protocol"
 import {
   HarnessDispatcher,
-  proposalSubmissionReply,
+  reviewProposalText,
   type DispatchSession,
   type DispatchSessionFactory,
 } from "./dispatcher-agent"
-import { proposalAcceptedReply, proposalToolAgentName } from "./opencode"
+import {
+  emptyPlanDraft,
+  planToolAgentName,
+  planToolNames,
+} from "./dispatch-draft"
 import {
   FakeDispatchPlanner,
   type DispatchPlanningInput,
@@ -40,18 +49,28 @@ const failingBaseline: BaselineReport = {
   ],
 }
 
-/** Scripted final messages; records what the Dispatcher sent. */
+/** Scripted final messages and saved drafts, one per run; records what the
+ * Dispatcher sent. The last draft stays once the script runs out. */
 function scripted(
   replies: (string | object)[],
-  baseline: BaselineReport | null = null
+  baseline: BaselineReport | null = null,
+  drafts: PlanDraft[] = []
 ) {
   const text = (reply: string | object) =>
     typeof reply === "string" ? reply : JSON.stringify(reply)
   const queue = [...replies]
+  const saved = [...drafts]
   const session = {
     prepare: vi.fn<DispatchSession["prepare"]>(async () => baseline),
-    start: vi.fn<DispatchSession["start"]>(async () => text(queue.shift()!)),
-    resume: vi.fn<DispatchSession["resume"]>(async () => text(queue.shift()!)),
+    start: vi.fn<DispatchSession["start"]>(async () =>
+      text(queue.shift() ?? "")
+    ),
+    resume: vi.fn<DispatchSession["resume"]>(async () =>
+      text(queue.shift() ?? "")
+    ),
+    draft: vi.fn<DispatchSession["draft"]>(async () =>
+      saved.length > 1 ? saved.shift()! : (saved[0] ?? emptyPlanDraft)
+    ),
     close: vi.fn<DispatchSession["close"]>(async () => {}),
   }
   const sessions: DispatchSessionFactory = { open: vi.fn(() => session) }
@@ -69,14 +88,65 @@ type Loose = {
 
 const valid = async () => (await new FakeDispatchPlanner().plan(input)).proposal
 
+/** Claude Code has no plan tools, so it replies with the proposal JSON. */
+const textModel = "anthropic/claude-haiku-4-5-20251001"
+const textDispatcher = (sessions: DispatchSessionFactory) =>
+  new HarnessDispatcher(textModel, sessions, {
+    harness: "claude-code",
+    model: textModel,
+  } as RoleExecution)
+
+const tool = (name: keyof typeof planToolNames) =>
+  `\`${planToolAgentName(planToolNames[name])}\``
+
+function station(key: string, fields: Partial<PlanStation> = {}): PlanStation {
+  return {
+    key,
+    name: `Station ${key}`,
+    goal: "Add a footer",
+    changeKind: "implementation",
+    changeDescription: "Add the footer component",
+    scope: ["The footer only"],
+    expectedAreas: [`src/${key}.tsx`],
+    invariants: ["Existing pages are unchanged"],
+    acceptanceCriteria: ["A footer renders on every page"],
+    expectedEvidence: ["test"],
+    ...fields,
+  }
+}
+const outline: PlanOutline = {
+  summary: "One Line adds the footer.",
+  lines: [
+    {
+      key: "footer",
+      name: "Footer",
+      unloadRecommendation: { mode: "auto", reason: "A small change." },
+      stations: ["footer", "footer-tests"],
+    },
+  ],
+}
+const draft = (...stations: PlanStation[]): PlanDraft => ({
+  outline,
+  stations: Object.fromEntries(stations.map((s) => [s.key, s])),
+})
+const complete = draft(station("footer"), station("footer-tests"))
+
 describe("harness Dispatcher", () => {
-  it("explores through one session and returns a valid proposal without corrections", async () => {
-    const proposal = await valid()
-    const { session, sessions } = scripted([proposal])
+  it("explores through one session and returns the saved plan without corrections", async () => {
+    const { session, sessions } = scripted(["Plan submitted."], null, [
+      complete,
+    ])
     const result = await new HarnessDispatcher("configured", sessions).plan(
       input
     )
-    expect(result).toEqual({ proposal, baseline: null })
+    expect(result.proposal.lines[0]!.stations.map((s) => s.key)).toEqual([
+      "footer",
+      "footer-tests",
+    ])
+    expect(dispatchProposalSchema.parse(result.proposal)).toEqual(
+      result.proposal
+    )
+    expect(result.baseline).toBeNull()
     expect(sessions.open).toHaveBeenCalledWith({
       model: "configured",
       repository: input.repository,
@@ -85,12 +155,13 @@ describe("harness Dispatcher", () => {
       network: input.network,
     })
     const [system, message] = session.start.mock.calls[0]!
-    // OpenCode, the default harness, offers the proposal tool.
-    expect(system).toContain("## Submitting the Proposal")
-    expect(system).toContain(proposalToolAgentName)
-    expect(message).toContain(
-      `submit the proposal with \`${proposalToolAgentName}\``
-    )
+    // OpenCode, the default harness, offers the plan tools.
+    expect(system).toContain("## Writing the Plan")
+    expect(system).toContain(tool("station"))
+    expect(system).not.toContain("## Proposal JSON schema")
+    // Without JSON-text outlines, the outline tool carries its own schema.
+    expect(system).not.toContain("## Outline JSON schema")
+    expect(message).toContain(`starting with ${tool("outline")}`)
     expect(system).toContain("untrusted context")
     expect(system).toContain("SAME canonical baseline")
     expect(system).toContain("ONLY plain paths")
@@ -104,14 +175,71 @@ describe("harness Dispatcher", () => {
     expect(session.close).toHaveBeenCalledOnce()
   })
 
+  it("asks GLM for the outline as JSON text and includes its schema", async () => {
+    const model = "@cf/zai-org/glm-5.3-flash"
+    const { session, sessions } = scripted([""], null, [complete])
+    await new HarnessDispatcher(model, sessions).plan(input)
+    const [system] = session.start.mock.calls[0]!
+    expect(system).toContain("Pass the outline as JSON text")
+    expect(system).toContain("## Outline JSON schema")
+  })
+
+  it("corrects an incomplete draft in the same session", async () => {
+    const { session, sessions } = scripted([""], null, [
+      draft(station("footer")),
+      complete,
+    ])
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(session.resume).toHaveBeenCalledOnce()
+    const correction = session.resume.mock.calls[0]![0]
+    expect(correction).toContain("Your saved plan is not complete:")
+    expect(correction).toContain(
+      "These Stations are in the outline but not saved: `footer-tests`."
+    )
+    expect(correction).toContain(`then call ${tool("finalize")}`)
+  })
+
+  it("saves a still-blocked draft after the last correction", async () => {
+    const blocked = draft(
+      station("footer"),
+      station("footer-tests", { expectedEvidence: ["lint"] })
+    )
+    const { session, sessions } = scripted([""], null, [blocked])
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(session.resume).toHaveBeenCalledTimes(2)
+    expect(session.resume.mock.calls[0]![0]).toContain(
+      "- Station `footer-tests`: Footer / Station footer-tests: evidence lint is not a configured project check."
+    )
+    expect(
+      result.proposal.lines[0]!.stations[1]!.manifest.expectedEvidence
+    ).toEqual(["lint"])
+  })
+
+  it("fails safely when nothing was saved", async () => {
+    const { session, sessions } = scripted([""])
+    const error = await new HarnessDispatcher("configured", sessions)
+      .plan(input)
+      .catch((error: unknown) => error)
+    expect(session.resume).toHaveBeenCalledTimes(2)
+    expect(error).toBeInstanceOf(DispatchProposalError)
+    expect((error as DispatchProposalError).issues).toEqual([
+      { path: "$", code: "missing_outline" },
+    ])
+  })
+
   it("accepts a fenced final message", async () => {
     const proposal = await valid()
     const { sessions } = scripted([
       "```json\n" + JSON.stringify(proposal) + "\n```",
     ])
-    expect(
-      (await new HarnessDispatcher("configured", sessions).plan(input)).proposal
-    ).toEqual(proposal)
+    expect((await textDispatcher(sessions).plan(input)).proposal).toEqual(
+      proposal
+    )
   })
 
   it("corrects verification-only Stations inside the same session", async () => {
@@ -122,9 +250,9 @@ describe("harness Dispatcher", () => {
       description: "Run existing tests",
     }
     const { session, sessions } = scripted([invalid, proposal])
-    expect(
-      (await new HarnessDispatcher("configured", sessions).plan(input)).proposal
-    ).toEqual(proposal)
+    expect((await textDispatcher(sessions).plan(input)).proposal).toEqual(
+      proposal
+    )
     expect(session.resume).toHaveBeenCalledOnce()
     expect(session.resume.mock.calls[0]![0]).toContain(
       '"path":"lines.0.stations.0.manifest.repositoryChange.kind","code":"invalid_value"'
@@ -136,35 +264,32 @@ describe("harness Dispatcher", () => {
     const blocked = JSON.parse(JSON.stringify(proposal)) as typeof proposal
     blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
     const { session, sessions } = scripted([blocked, blocked, blocked])
-    const result = await new HarnessDispatcher("configured", sessions).plan(
-      input
-    )
+    const result = await textDispatcher(sessions).plan(input)
     expect(result.proposal).toEqual(blocked)
     expect(session.resume).toHaveBeenCalledTimes(2)
     expect(session.resume.mock.calls[0]![0]).toContain(
       "evidence lint is not a configured project check"
     )
     expect(session.resume.mock.calls[0]![0]).toContain(
-      `submit the complete corrected proposal with \`${proposalToolAgentName}\``
+      "Reply with the complete corrected proposal JSON as your final message."
     )
   })
 
-  it("asks for the proposal as the final message when the harness has no proposal tool", async () => {
+  it("asks for the proposal as the final message when the harness has no plan tools", async () => {
     const proposal = await valid()
     const blocked = JSON.parse(JSON.stringify(proposal)) as typeof proposal
     blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
     const { session, sessions } = scripted([blocked, proposal])
-    const model = "anthropic/claude-haiku-4-5-20251001"
-    await new HarnessDispatcher(model, sessions, {
-      harness: "claude-code",
-      model,
-    } as RoleExecution).plan(input)
+    await textDispatcher(sessions).plan(input)
     const [system, message] = session.start.mock.calls[0]!
-    expect(system).not.toContain("## Submitting the Proposal")
+    expect(system).not.toContain("## Writing the Plan")
+    expect(system).toContain("## Final Message")
+    expect(system).toContain("## Proposal JSON schema")
     expect(message).toContain("reply with only the proposal JSON")
     expect(session.resume.mock.calls[0]![0]).toContain(
       "Reply with the complete corrected proposal JSON as your final message."
     )
+    expect(session.draft).not.toHaveBeenCalled()
   })
 
   it("accepts omissions that cannot change the plan instead of asking for a resubmission", async () => {
@@ -175,17 +300,8 @@ describe("harness Dispatcher", () => {
     delete loose.lines[0]!.stations[0]!.manifest.avoidAreas
     loose.baselineFix = null
     loose.findings = null
-    const reply = proposalSubmissionReply(
-      { proposal: loose },
-      input.network,
-      null
-    )
-    expect(reply).toMatchObject({ accepted: true })
-    expect(reply.text.startsWith(proposalAcceptedReply)).toBe(true)
     const { session, sessions } = scripted([loose])
-    const result = await new HarnessDispatcher("configured", sessions).plan(
-      input
-    )
+    const result = await textDispatcher(sessions).plan(input)
     expect(session.resume).not.toHaveBeenCalled()
     expect(result.proposal.lines[0]!.stations[0]!.manifest).toMatchObject({
       dependencies: [],
@@ -197,8 +313,8 @@ describe("harness Dispatcher", () => {
     const wrong = structuredClone(proposal) as unknown as Loose
     wrong.lines[0]!.stations[0]!.manifest.dependencies = "none"
     expect(
-      proposalSubmissionReply({ proposal: wrong }, input.network, null).accepted
-    ).toBe(false)
+      reviewProposalText(JSON.stringify(wrong), input.network, null).kind
+    ).toBe("schema")
   })
 
   it("expands Line-shared Manifest values into every Station and stores none", async () => {
@@ -223,9 +339,7 @@ describe("harness Dispatcher", () => {
     delete second.manifest.projectFacts
 
     const { session, sessions } = scripted([loose])
-    const result = await new HarnessDispatcher("configured", sessions).plan(
-      input
-    )
+    const result = await textDispatcher(sessions).plan(input)
     expect(session.resume).not.toHaveBeenCalled()
     expect(result.proposal.lines[0]).not.toHaveProperty("shared")
     const [one, two] = result.proposal.lines[0]!.stations
@@ -254,60 +368,15 @@ describe("harness Dispatcher", () => {
     // Every Station still needs an invariant once shared values are merged.
     const missing = structuredClone(loose)
     delete missing.lines[0]!.shared!.invariants
-    const reply = proposalSubmissionReply(
-      { proposal: missing },
-      input.network,
-      null
-    )
-    expect(reply.accepted).toBe(false)
-    expect(reply.text).toContain(
-      '"path":"lines.0.stations.0.manifest.invariants"'
-    )
-  })
-
-  it("answers proposal tool submissions with the checks the Workflow applies", async () => {
-    const proposal = await valid()
     expect(
-      proposalSubmissionReply({ proposal }, input.network, null)
+      reviewProposalText(JSON.stringify(missing), input.network, null)
     ).toMatchObject({
-      accepted: true,
-      text: expect.stringContaining("Accepted"),
-    })
-    // A model may pass the proposal as JSON text instead of an object.
-    expect(
-      proposalSubmissionReply(
-        { proposal: JSON.stringify(proposal) },
-        input.network,
-        null
-      ).accepted
-    ).toBe(true)
-
-    const blocked = JSON.parse(JSON.stringify(proposal)) as typeof proposal
-    blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
-    const assessment = proposalSubmissionReply(
-      { proposal: blocked },
-      input.network,
-      null
-    )
-    expect(assessment.accepted).toBe(false)
-    expect(assessment.text).toContain(
-      "evidence lint is not a configured project check"
-    )
-    expect(assessment.text).toContain(
-      "submit the complete corrected proposal again"
-    )
-
-    const schema = proposalSubmissionReply(
-      { proposal: { summary: "Missing lines" } },
-      input.network,
-      null
-    )
-    expect(schema.accepted).toBe(false)
-    expect(schema.text).toContain('"path":"lines"')
-
-    expect(proposalSubmissionReply({}, input.network, null)).toMatchObject({
-      accepted: false,
-      text: expect.stringContaining("`proposal` argument"),
+      kind: "schema",
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          path: "lines.0.stations.0.manifest.invariants",
+        }),
+      ]),
     })
   })
 
@@ -338,9 +407,9 @@ describe("harness Dispatcher", () => {
       goal: "Change the primary accent colour to #32a852",
       network: { ...input.network, validationNames: ["build", "test"] },
     }
-    expect(
-      (await new HarnessDispatcher("configured", sessions).plan(goal)).proposal
-    ).toEqual(corrected)
+    expect((await textDispatcher(sessions).plan(goal)).proposal).toEqual(
+      corrected
+    )
     const feedback = session.resume.mock.calls[0]![0]
     expect(feedback).toContain(
       '{"path":"lines.0.stations.0.manifest.expectedAreas.1","code":"invalid_format"}'
@@ -356,7 +425,7 @@ describe("harness Dispatcher", () => {
       "private-response-text": "secret",
     }
     const { session, sessions } = scripted([invalid, invalid, invalid])
-    const error = await new HarnessDispatcher("configured", sessions)
+    const error = await textDispatcher(sessions)
       .plan(input)
       .catch((error: unknown) => error)
     expect(session.start).toHaveBeenCalledOnce()
@@ -374,11 +443,10 @@ describe("harness Dispatcher", () => {
     })
   })
 
-  it("makes the last submission final once the harness stops after repeated rejections", async () => {
-    const invalid = JSON.stringify({ ...liveDispatcherProposal, extra: 1 })
-    const { session, sessions } = scripted([])
+  it("makes the saved draft final once the harness stops after repeated rejections", async () => {
+    const { session, sessions } = scripted([], null, [draft(station("footer"))])
     session.start.mockRejectedValueOnce(
-      new ProposalSubmissionsExhausted(invalid)
+      new ProposalSubmissionsExhausted("Stopped.")
     )
     const error = await new HarnessDispatcher("configured", sessions)
       .plan(input)
@@ -387,25 +455,29 @@ describe("harness Dispatcher", () => {
     expect(session.resume).not.toHaveBeenCalled()
     expect(session.close).toHaveBeenCalledOnce()
 
-    // A still-blocked proposal is saved, as after the last correction.
-    const blocked = await valid()
-    blocked.lines[0]!.stations[0]!.manifest.expectedEvidence = ["lint"]
-    const later = scripted(["no JSON"])
+    // A still-blocked plan is saved, as after the last correction.
+    const blocked = draft(
+      station("footer"),
+      station("footer-tests", { expectedEvidence: ["lint"] })
+    )
+    const later = scripted([""], null, [draft(station("footer")), blocked])
     later.session.resume.mockRejectedValueOnce(
-      new ProposalSubmissionsExhausted(JSON.stringify(blocked))
+      new ProposalSubmissionsExhausted("Stopped.")
     )
     const result = await new HarnessDispatcher(
       "configured",
       later.sessions
     ).plan(input)
     expect(later.session.resume).toHaveBeenCalledOnce()
-    expect(result.proposal).toEqual(blocked)
+    expect(
+      result.proposal.lines[0]!.stations[1]!.manifest.expectedEvidence
+    ).toEqual(["lint"])
   })
 
   it("treats a final message without JSON as a schema problem", async () => {
     const proposal = await valid()
     const { session, sessions } = scripted(["I explored the repo.", proposal])
-    await new HarnessDispatcher("configured", sessions).plan(input)
+    await textDispatcher(sessions).plan(input)
     expect(session.resume.mock.calls[0]![0]).toContain(
       '{"path":"$","code":"invalid_json"}'
     )
@@ -421,16 +493,16 @@ describe("harness Dispatcher", () => {
       lines: [{ ...line, stations: "STATIONS" }, ...rest],
     }).replace('"STATIONS"', stations)
     const { session, sessions } = scripted([text])
-    expect(
-      (await new HarnessDispatcher("configured", sessions).plan(input)).proposal
-    ).toEqual(proposal)
+    expect((await textDispatcher(sessions).plan(input)).proposal).toEqual(
+      proposal
+    )
     expect(session.resume).not.toHaveBeenCalled()
   })
 
   it("tells the model where its JSON fails but keeps the parser out of the error", async () => {
     const broken = '{"summary":"x" oops}'
     const { session, sessions } = scripted([broken, broken, broken])
-    const error = await new HarnessDispatcher("configured", sessions)
+    const error = await textDispatcher(sessions)
       .plan(input)
       .catch((error: unknown) => error)
     const feedback = session.resume.mock.calls[0]![0]
@@ -444,15 +516,45 @@ describe("harness Dispatcher", () => {
     )
   })
 
+  it("shows where a rejected proposal's JSON stopped parsing", async () => {
+    const proposal = await valid()
+    const [line] = proposal.lines
+    // The live failure: every `scope` list closed with `}`. With routed Lines
+    // after the Stations, neither repair recovers the plan, and the model was
+    // told only a character position.
+    const routed = (key: string) => ({
+      ...line,
+      key,
+      route: line!.stations.map((station) => ({
+        kind: "station",
+        key: station.key,
+      })),
+    })
+    const text = JSON.stringify({
+      ...proposal,
+      lines: [routed("first"), routed("second")],
+    }).replace(/("scope":\[(?:"[^"]*",?)*)\]/g, "$1}")
+    const review = reviewProposalText(text, input.network, null)
+    expect(review).toMatchObject({
+      kind: "schema",
+      issues: [{ path: "$", code: "invalid_json" }],
+    })
+    const hint = review.kind === "schema" ? (review.parseHint ?? "") : ""
+    expect(hint).toMatch(/"<<<HERE>>>},"expectedAreas"/)
+    expect(hint).toContain(
+      "There, the `scope` array is still open, and `}` cannot close it: it closes with `]`."
+    )
+  })
+
   it("supplies a trusted baseline report and keeps a baseline fix only when checks failed", async () => {
     const proposal = (
       await new FakeDispatchPlanner().plan({ ...input, checkBaseline: true })
     ).proposal
     const failing = scripted([proposal], failingBaseline)
-    const result = await new HarnessDispatcher(
-      "configured",
-      failing.sessions
-    ).plan({ ...input, checkBaseline: true })
+    const result = await textDispatcher(failing.sessions).plan({
+      ...input,
+      checkBaseline: true,
+    })
     expect(result.baseline).toEqual(failingBaseline)
     expect(result.proposal.baselineFix?.line.stations).toHaveLength(1)
     expect(failing.session.start.mock.calls[0]![0]).toContain(
@@ -463,8 +565,7 @@ describe("harness Dispatcher", () => {
       checks: [{ ...failingBaseline.checks[0]!, status: "passed" }],
     })
     expect(
-      (await new HarnessDispatcher("configured", passing.sessions).plan(input))
-        .proposal.baselineFix
+      (await textDispatcher(passing.sessions).plan(input)).proposal.baselineFix
     ).toBeUndefined()
     expect(passing.session.resume.mock.calls[0]![0]).toContain(
       "baseline checks did not fail"
@@ -474,9 +575,7 @@ describe("harness Dispatcher", () => {
   it("closes the session and leaves transient failures to the durable execution layer", async () => {
     const { session, sessions } = scripted([])
     session.start.mockRejectedValueOnce(new Error("429"))
-    await expect(
-      new HarnessDispatcher("configured", sessions).plan(input)
-    ).rejects.toThrow("429")
+    await expect(textDispatcher(sessions).plan(input)).rejects.toThrow("429")
     expect(session.close).toHaveBeenCalledOnce()
   })
 

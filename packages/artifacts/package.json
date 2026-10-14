@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@terminus/domain": "^0.0.0",
-    "@terminus/protocol": "^0.0.0"
+    "@terminus/protocol": "^0.0.0",
+    "diff": "^8.0.4"
   }
 }

@@ -551,6 +551,38 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.tokens.size).toBe(0)
   })
 
+  it("reads exact historical comparisons from Artifacts objects without a workspace or token", async () => {
+    const f = await fixture({ readObjectsDirectly: true })
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const first = await f.change(
+      terminus.repoId,
+      "README.md",
+      "first accepted change\n"
+    )
+    await f.change(terminus.repoId, "README.md", "later accepted change\n")
+    const opened = f.grants.length
+    const files = await f.host.readChanges(
+      terminus.repoId,
+      terminus.headCommit,
+      first.commit
+    )
+    expect(files.files.map((file) => file.path)).toEqual(["README.md"])
+    const patch = await f.host.readChangeFile(
+      terminus.repoId,
+      terminus.headCommit,
+      first.commit,
+      "README.md"
+    )
+    expect(patch?.hunks.flatMap((hunk) => hunk.lines)).toContain(
+      "+first accepted change"
+    )
+    expect(patch?.hunks.flatMap((hunk) => hunk.lines)).not.toContain(
+      "+later accepted change"
+    )
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+  })
+
   it("reads files from objects by the same rules as a workspace, without opening one", async () => {
     const f = await fixture({ readObjectsDirectly: true })
     const terminus = await f.host.createTerminus({ namespace: "p" })

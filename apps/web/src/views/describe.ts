@@ -84,6 +84,26 @@ export function describeEvent(
   if ("junctionId" in event)
     return `${name(event.junctionId)} · ${event.type.replace("junction.", "").replaceAll("_", " ")}${"issues" in event ? `: ${describeIssues(event.issues)}` : ""}`
   switch (event.type) {
+    case "engineer.assessed":
+      return `${name(event.trainId)} · Engineer assessed ${event.purpose.replaceAll("_", " ")}: ${event.action}`
+    case "dispatcher.engineer_notice_raised":
+      return event.summary
+    case "dispatcher.engineer_notice_acknowledged":
+      return `${name(event.trainId)} · Engineer notice acknowledged`
+    case "dispatcher.engineer_notice_resolved":
+      return `${name(event.trainId)} · Engineer notice resolved`
+    case "dispatcher.conflict_investigating":
+      return `Dispatcher checking ${name(event.trainId)} against ${name(event.otherTrainId)} for conflicts`
+    case "dispatcher.conflict_reported":
+      return `Possible conflict between ${name(event.trainId)} and ${name(event.otherTrainId)}: ${event.summary}`
+    case "dispatcher.conflict_cleared":
+      return `No conflict between ${name(event.trainId)} and ${name(event.otherTrainId)}`
+    case "dispatcher.conflict_investigation_failed":
+      return `Conflict check of ${name(event.trainId)} and ${name(event.otherTrainId)} could not finish`
+    case "dispatcher.conflict_acknowledged":
+      return `Conflict report for ${name(event.trainId)} and ${name(event.otherTrainId)} acknowledged`
+    case "station.run_failed":
+      return `${name(event.stationId)} run failed${event.phase ? ` during ${event.phase}` : ""}: ${describeIssues(event.issues)}`
     case "crossing.created":
       return `Crossing laid at ${name(event.stationId)}`
     case "crossing.approaching":
@@ -134,6 +154,10 @@ export function describeEvent(
       return `Dispatcher laid ${plural(event.lineIds.length, "Line")}`
     case "dispatcher.plan_launched":
       return `Dispatcher launched ${plural(event.trainIds.length, "Train")}`
+    case "dispatcher.plan_cancelled":
+      return "Dispatcher planning cancelled at your request"
+    case "dispatcher.plan_stopped":
+      return "Dispatcher planning stopped"
     case "dispatcher.plan_failed":
       return "Dispatcher plan stopped; inspect its details"
     case "dispatcher.baseline_fix_selected":

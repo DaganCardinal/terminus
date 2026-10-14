@@ -128,3 +128,42 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Narrative text shares structure and spacing; containers own its tone and size. */
+.prose {
+  max-width: 68ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.prose > p,
+.prose > ul,
+.prose > ol {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+}
+.prose > :is(p, ul, ol) + :is(p, ul, ol) {
+  margin-top: 8px;
+}
+.prose > ul {
+  padding-left: 18px;
+  list-style: disc;
+}
+.prose > ol {
+  padding-left: 18px;
+  list-style: decimal;
+}
+.prose li + li {
+  margin-top: 4px;
+}
+.prose code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--muted);
+  font-size: 0.9em;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.prose strong {
+  font-weight: 600;
+}

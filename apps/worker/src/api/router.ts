@@ -1,4 +1,5 @@
 import { layJunction } from "../agents/junctions"
+import { readTrainChanges } from "./changes"
 import { readPerfLogs } from "./perf-logs"
 import { browserRunEnabled, proveBrowserRun } from "../integrations/browser-run"
 import { emergencyBrake } from "../agents/emergency-brake"
@@ -84,6 +85,7 @@ import {
   selectPlanBaselineFix,
   launchPlannedLines,
   retryDispatchPlan,
+  stopDispatchPlan,
 } from "../agents/dispatch-planning"
 
 type Handler = (
@@ -93,6 +95,66 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "POST",
+    new URLPattern({
+      pathname:
+        "/api/networks/:networkId/engineer-notices/:noticeId/acknowledge",
+    }),
+    async (_, env, { networkId, noticeId }) => {
+      const store = dispatcherPorts(env).store
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      const notice = await store.engineer.acknowledge(
+        networkId!,
+        noticeId!,
+        new Date().toISOString()
+      )
+      return notice ? json(notice) : notFound("Unknown Engineer notice")
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname:
+        "/api/networks/:networkId/conflict-watches/:watchId/:otherTrainId/acknowledge",
+    }),
+    async (_, env, { networkId, watchId, otherTrainId }) => {
+      const store = dispatcherPorts(env).store
+      if (!(await store.network(networkId!))) return notFound("Unknown network")
+      const watch = await store.conflictWatch.acknowledge(
+        networkId!,
+        watchId!,
+        otherTrainId!,
+        new Date().toISOString()
+      )
+      return watch ? json(watch) : notFound("Unknown conflict report")
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/trains/:trainId/changes" }),
+    (request, env, { trainId }) => readTrainChanges(request, env, trainId!),
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/trains/:trainId/changes/file" }),
+    (request, env, { trainId }) =>
+      readTrainChanges(request, env, trainId!, undefined, true),
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/trains/:trainId/cars/:carId/changes" }),
+    (request, env, { trainId, carId }) =>
+      readTrainChanges(request, env, trainId!, carId!),
+  ],
+  [
+    "GET",
+    new URLPattern({
+      pathname: "/api/trains/:trainId/cars/:carId/changes/file",
+    }),
+    (request, env, { trainId, carId }) =>
+      readTrainChanges(request, env, trainId!, carId!, true),
+  ],
   [
     "DELETE",
     new URLPattern({ pathname: "/api/networks/:networkId" }),
@@ -720,6 +782,18 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
           planId!
         ),
         202
+      ),
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/plans/:planId/stop" }),
+    async (_, env, { networkId, planId }) =>
+      json(
+        await stopDispatchPlan(
+          dispatchPlanningPorts(env, await networkModels(env, networkId!)),
+          networkId!,
+          planId!
+        )
       ),
   ],
   [
