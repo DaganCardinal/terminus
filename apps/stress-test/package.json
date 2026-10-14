@@ -1,0 +1,14 @@
+{
+  "name": "@terminus/stress-test",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@terminus/protocol": "^0.0.0",
+    "zod": "^4.6.5"
+  }
+}

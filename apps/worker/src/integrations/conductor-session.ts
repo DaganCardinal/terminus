@@ -24,6 +24,7 @@ import { gatewayConfig } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
 import { runInstalledChecks } from "./project-checks"
 import type { StationSandbox } from "./station-runner"
+import { reviewStressStation } from "./scripted-stress"
 
 type Repositories = Pick<ArtifactsRepositoryHost, "access" | "revoke">
 type FactoryInput = Parameters<ConductorSessionFactory["open"]>[0]
@@ -31,6 +32,7 @@ type OpenInput = FactoryInput & {
   execution?: RoleExecution
   /** TEMPORARY benchmark instrumentation: the Sandbox name. */
   label?: string
+  scripted?: boolean
 }
 
 export class SandboxConductorSessions implements ConductorSessionFactory {
@@ -38,12 +40,15 @@ export class SandboxConductorSessions implements ConductorSessionFactory {
   private readonly repositories: Repositories
   private readonly sandboxFactory: (id: string) => StationSandbox
   private readonly execution?: RoleExecution
+  private readonly scripted: boolean
   constructor(
     env: Env,
     repositories: Repositories,
     sandboxFactory?: (id: string) => StationSandbox,
-    execution?: RoleExecution
+    execution?: RoleExecution,
+    scripted = false
   ) {
+    this.scripted = scripted
     this.execution = execution
     this.env = env
     this.repositories = repositories
@@ -56,7 +61,12 @@ export class SandboxConductorSessions implements ConductorSessionFactory {
       this.env,
       this.repositories,
       this.sandboxFactory(id),
-      { ...input, execution: this.execution, label: `conductor-${id}` }
+      {
+        ...input,
+        execution: this.execution,
+        label: `conductor-${id}`,
+        scripted: this.scripted,
+      }
     )
   }
 }
@@ -110,7 +120,7 @@ class SandboxConductorSession implements ConductorSession {
 
   async prepare(validation?: ValidationCommand[]): Promise<ReviewPreparation> {
     const { candidate, model } = this.#input
-    gatewayConfig(this.#env, model)
+    if (!this.#input.scripted) gatewayConfig(this.#env, model)
     this.#phases.enter("access")
     this.#access = await this.#repositories.access(candidate.repoId, "read")
     this.#phases.enter("configure (container start)")
@@ -134,6 +144,8 @@ class SandboxConductorSession implements ConductorSession {
     const installed = commandResultSchema.parse(
       await this.#sandbox.installDependencies(sealedDirectory)
     )
+    if (this.#input.scripted && installed.exitCode !== 0)
+      throw new Error("Stress review dependency installation failed")
     // Install scripts are repository code, so the checkout is fingerprinted after them.
     this.#phases.enter("seal")
     await sealWorkspace(this.#workspace("seal"), { fingerprint: true })
@@ -173,6 +185,16 @@ class SandboxConductorSession implements ConductorSession {
       throw new Error("Could not create the Conductor review directory")
     for (const [name, contents] of Object.entries(material))
       await this.#sandbox.write(`${conductorReviewDirectory}/${name}`, contents)
+    if (this.#input.scripted) {
+      this.#phases.enter("scripted review")
+      const text = await reviewStressStation(
+        this.#workspace("scripted review"),
+        material,
+        sealedDirectory
+      )
+      await this.#assertUnchanged("Scripted Conductor")
+      return text
+    }
     this.#phases.enter("grant model")
     await this.#sandbox.configure({
       repositories: [],
@@ -193,6 +215,8 @@ class SandboxConductorSession implements ConductorSession {
   }
 
   async resume(message: string): Promise<string> {
+    if (this.#input.scripted)
+      throw new Error("Scripted verdicts cannot be corrected by a model")
     this.#resumes++
     this.#phases.enter("harness resume (verdict correction)")
     const text = await this.#harness.resume(message)

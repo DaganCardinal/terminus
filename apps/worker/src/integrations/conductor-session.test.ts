@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { env } from "cloudflare:test"
+import {
+  scriptedStressAgent,
+  stressFiles,
+  stressManifest,
+} from "@terminus/protocol"
 import type { RepositoryAccess } from "@terminus/artifacts"
 import { SandboxConductorSessions } from "./conductor-session"
 import type { StationSandbox } from "./station-runner"
@@ -8,7 +13,12 @@ const model = "@cf/zai-org/glm-5.3"
 const commit = "c".repeat(40)
 
 function fixture(
-  options: { installExit?: number; testExit?: number; changed?: string[] } = {}
+  options: {
+    installExit?: number
+    testExit?: number
+    changed?: string[]
+    scripted?: boolean
+  } = {}
 ) {
   const calls: {
     command: string[]
@@ -99,7 +109,9 @@ function fixture(
       AI_GATEWAY_TOKEN: "worker-only-secret",
     },
     repositories,
-    () => sandbox
+    () => sandbox,
+    undefined,
+    options.scripted
   )
   const open = () =>
     sessions.open({ model, candidate: { repoId: "n/station-a", commit } })
@@ -108,6 +120,48 @@ function fixture(
 }
 
 describe("Sandbox Conductor session", () => {
+  it("verifies scripted fixture contents after independent validation and never grants model access", async () => {
+    const f = fixture({ scripted: true })
+    const session = f.open()
+    const validation = ["typecheck", "test", "build"].map((name) => ({
+      name,
+      command: ["npm", "run", name],
+    }))
+    const preparation = await session.prepare(validation)
+    const task = { runId: "00000000-0000-4000-8000-000000000004", train: 1 }
+    const material = {
+      "review.json": JSON.stringify({
+        manifest: stressManifest(task),
+        proposal: {
+          headCommit: commit,
+          changedPaths: Object.keys(stressFiles(task)),
+          diff: "+checkpoint",
+          evidence: preparation.evidence,
+          agent: scriptedStressAgent,
+          agentSummary: null,
+        },
+      }),
+    }
+    expect(
+      JSON.parse(await session.start("unused", "unused", material)).verdict
+    ).toBe("accept")
+    expect(f.order).not.toContain("configure:model")
+    expect(f.order.at(-1)).toBe("fingerprint:compare")
+    expect(
+      f.calls.some(
+        ({ command }) =>
+          command[0] === "node" &&
+          command[1] === "-e" &&
+          command[2]?.includes("Incorrect stress checkpoint")
+      )
+    ).toBe(true)
+    await expect(
+      session.start("unused", "unused", { "review.json": "{}" })
+    ).rejects.toThrow()
+    await session.close()
+    expect(f.repositories.revoke).toHaveBeenCalledOnce()
+  })
+
   it("installs with read access only, fingerprints and seals, then allows only the model", async () => {
     const f = fixture()
     const session = f.open()
@@ -152,6 +206,16 @@ describe("Sandbox Conductor session", () => {
     expect(at("write:/workspace/review/review.json")).toBeLessThan(
       at("configure:model")
     )
+  })
+
+  it("refuses a failed installation in scripted review", async () => {
+    const f = fixture({ scripted: true, installExit: 1 })
+    const session = f.open()
+    await expect(session.prepare()).rejects.toThrow(
+      "Stress review dependency installation failed"
+    )
+    await session.close()
+    expect(f.repositories.revoke).toHaveBeenCalledOnce()
   })
 
   it("reports a failed install instead of hiding it", async () => {

@@ -1,6 +1,11 @@
 import { env } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { StationRunInput } from "@terminus/agent-runtime"
+import {
+  scriptedStressAgent,
+  stressFiles,
+  stressManifest,
+} from "@terminus/protocol"
 import type { RepositoryAccess } from "@terminus/artifacts"
 import { seedLine, seedNetwork, testPorts } from "../../test/fixtures"
 import { SandboxStationRunner, type StationSandbox } from "./station-runner"
@@ -12,7 +17,11 @@ const candidate = "b".repeat(40)
 afterEach(() => vi.restoreAllMocks())
 
 /** `failedTests` also makes the runner validate, as with a fake Conductor. */
-async function fixture(failedTests = false, inheritedMethods = false) {
+async function fixture(
+  failedTests = false,
+  inheritedMethods = false,
+  scripted = false
+) {
   const ports = testPorts()
   const network = await seedNetwork(ports)
   const { stations } = await seedLine(ports, network.id)
@@ -84,12 +93,49 @@ async function fixture(failedTests = false, inheritedMethods = false) {
     () =>
       inheritedMethods ? (Object.create(sandbox) as StationSandbox) : sandbox,
     undefined,
-    failedTests
+    failedTests,
+    scripted
   )
   return { runner, input, sandbox, repositories, store: ports.store }
 }
 
 describe("Station execution boundary", () => {
+  it("keeps real checkpoint/push mechanics for scripted edits without model access", async () => {
+    const f = await fixture(false, false, true)
+    const task = { runId: "00000000-0000-4000-8000-000000000003", train: 1 }
+    f.input.manifest = stressManifest(task)
+    const result = await f.runner.run(f.input)
+    expect(result.ok && result.proposal.agent).toEqual(scriptedStressAgent)
+    expect(result.ok && result.proposal.evidence).toEqual({ checks: [] })
+    expect(f.sandbox.configure).toHaveBeenCalledWith({
+      repositories: [expect.objectContaining({ scope: "write" })],
+      allowModel: false,
+    })
+    expect(f.sandbox.run).toHaveBeenCalledWith(
+      ["node", "-e", expect.any(String), JSON.stringify(stressFiles(task))],
+      "/workspace/repo",
+      undefined
+    )
+    expect(f.sandbox.write).not.toHaveBeenCalledWith(
+      "/workspace/opencode.json",
+      expect.anything()
+    )
+    expect(f.sandbox.run).toHaveBeenCalledWith(
+      expect.arrayContaining(["git", "push"]),
+      "/workspace/repo",
+      undefined
+    )
+    const calls = vi.mocked(f.sandbox.run).mock.calls.length
+    expect(await f.runner.run(f.input)).toEqual(result)
+    expect(vi.mocked(f.sandbox.run).mock.calls.length).toBe(calls)
+    expect(await f.store.agentRun(f.input, scriptedStressAgent)).toEqual(result)
+  })
+  it("refuses ordinary manifests in the scripted profile before granting credentials", async () => {
+    const f = await fixture(false, false, true)
+    await expect(f.runner.run(f.input)).rejects.toThrow("fixture manifests")
+    expect(f.repositories.access).not.toHaveBeenCalled()
+  })
+
   it("runs the harness with inherited Sandbox methods, as exposed by an RPC stub", async () => {
     const f = await fixture(false, true)
     const result = await f.runner.run(f.input)

@@ -113,6 +113,8 @@ export interface RepositoryHost {
   createTerminus(input: {
     namespace: string
     sourceUrl?: string
+    /** Trusted, bundled fixture for explicit test onboarding; never request content. */
+    initialFiles?: Record<string, string>
   }): Promise<RepoRef>
 
   /**

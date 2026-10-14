@@ -9,3 +9,4 @@ coverage/
 *.log
 *.local
 docs/temp
+stress-runs/

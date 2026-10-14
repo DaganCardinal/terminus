@@ -34,6 +34,7 @@ import {
   type RepositoryHost,
 } from "@terminus/artifacts"
 import {
+  scriptedStressAgent,
   harnessRoles,
   errorKind,
   perf,
@@ -71,6 +72,7 @@ import type {
   StationRunParams,
   TrainPorts,
 } from "../workflows/train-operations"
+import { stressProfile } from "../integrations/stress-profile"
 import { DispatchError, type DispatcherPorts } from "./dispatcher"
 import type { DispatchPlanningPorts } from "./dispatch-planning"
 
@@ -178,8 +180,13 @@ export function trainPorts(env: Env, models: ConfiguredModels): TrainPorts {
   return {
     store: new NetworkStore(env.DB),
     repositories: repositories(env),
-    conductor: conductor(env, models.conductor, models.executions?.conductor),
-    engineer: engineer(env, models.engineer),
+    conductor: conductor(
+      env,
+      models.conductor,
+      models.executions?.conductor,
+      stressProfile(models.executions)
+    ),
+    engineer: engineer(env, models.engineer, stressProfile(models.executions)),
     stationMaxRetries: stationMaxRetries(env),
     startStationRun: (params) => startStationRun(env, params),
     startIntegration: async (integrationId) => {
@@ -235,7 +242,7 @@ export function conflictWatchPorts(
   return {
     store: new NetworkStore(env.DB),
     triage:
-      env.ENGINEER_MODEL === FAKE
+      stressProfile(models.executions) || env.ENGINEER_MODEL === FAKE
         ? new FakeConflictTriage()
         : new ModelConflictTriage(models.engineer, {
             decide: (request) =>
@@ -245,7 +252,9 @@ export function conflictWatchPorts(
               ).decide(request),
           }),
     investigator:
-      env.DISPATCHER_MODEL === FAKE || env.REPOSITORY_MODE !== "artifacts"
+      stressProfile(models.executions) ||
+      env.DISPATCHER_MODEL === FAKE ||
+      env.REPOSITORY_MODE !== "artifacts"
         ? new FakeConflictInvestigator()
         : new HarnessConflictInvestigator(
             models.dispatcher,
@@ -277,7 +286,8 @@ export function integrationPorts(env: Env): IntegrationPorts {
       return conductor(
         env,
         execution?.model ?? model ?? models.conductor,
-        execution
+        execution,
+        stressProfile(models.executions)
       )
     },
     store: new NetworkStore(env.DB),
@@ -349,7 +359,8 @@ export function stationPorts(env: Env, models: ConfiguredModels): StationPorts {
     runner: stationRunner(
       env,
       models.stationAgent,
-      models.executions?.stationAgent
+      models.executions?.stationAgent,
+      stressProfile(models.executions)
     ),
   }
 }
@@ -520,9 +531,21 @@ function repositories(env: Env): RepositoryHost {
 function stationRunner(
   env: Env,
   model: string,
-  execution?: RoleExecution
+  execution?: RoleExecution,
+  scripted = false
 ): StationRunner {
-  if (env.STATION_AGENT_MODEL !== FAKE) {
+  if (scripted && env.REPOSITORY_MODE === "artifacts")
+    return new SandboxStationRunner(
+      env,
+      model,
+      artifactsRepositories(env),
+      new NetworkStore(env.DB),
+      undefined,
+      execution,
+      false,
+      true
+    )
+  if (!scripted && env.STATION_AGENT_MODEL !== FAKE) {
     if (env.REPOSITORY_MODE !== "artifacts")
       throw new Error("Real Station Agents require Artifacts repositories")
     return new SandboxStationRunner(
@@ -545,8 +568,66 @@ function stationRunner(
 function conductor(
   env: Env,
   model: string,
-  execution?: RoleExecution
+  execution?: RoleExecution,
+  scripted = false
 ): Conductor {
+  const reviewer = configuredConductor(env, model, execution, scripted)
+  if (scripted) return reviewer
+  return {
+    config: reviewer.config,
+    model: reviewer.model,
+    review: (input, context) => {
+      if (
+        input.proposal.agent.harness === scriptedStressAgent.harness ||
+        input.manifest.goal.startsWith("Pipeline stress ten-trains-v1 ")
+      )
+        throw new Error(
+          "Use the explicit stress-test command before reviewing this fixture"
+        )
+      return reviewer.review(input, context)
+    },
+    ...(reviewer.reviewCrossing
+      ? { reviewCrossing: reviewer.reviewCrossing.bind(reviewer) }
+      : {}),
+    ...(reviewer.reviewJunction
+      ? { reviewJunction: reviewer.reviewJunction.bind(reviewer) }
+      : {}),
+  }
+}
+
+function configuredConductor(
+  env: Env,
+  model: string,
+  execution?: RoleExecution,
+  scripted = false
+): Conductor {
+  if (scripted && env.REPOSITORY_MODE === "fake")
+    return new FakeConductor({ returns: 0 })
+  if (scripted) {
+    const reviewer = new HarnessConductor(
+      scriptedStressAgent.model,
+      new SandboxConductorSessions(
+        env,
+        artifactsRepositories(env),
+        undefined,
+        undefined,
+        true
+      )
+    )
+    return {
+      config: scriptedStressAgent,
+      model: scriptedStressAgent.model,
+      // Always recollect checks in the sealed checkout, even if a caller supplied evidence.
+      review: (input, context) =>
+        reviewer.review(
+          {
+            ...input,
+            proposal: { ...input.proposal, evidence: { checks: [] } },
+          },
+          context
+        ),
+    }
+  }
   if (env.CONDUCTOR_MODEL === FAKE)
     return new FakeConductor({ returns: Number(env.FAKE_CONDUCTOR_RETURNS) })
   // Verifying a candidate in a Sandbox needs its real repository; fake
@@ -589,8 +670,8 @@ function conductorSessions(
 
 /** The Engineer's decision model. A misconfigured Gateway fails each call, and
  * the Engineer escalates rather than guessing. */
-function engineer(env: Env, model: string): EngineerAdvisor {
-  if (env.ENGINEER_MODEL === FAKE) return new FakeEngineer()
+function engineer(env: Env, model: string, scripted = false): EngineerAdvisor {
+  if (scripted || env.ENGINEER_MODEL === FAKE) return new FakeEngineer()
   return new ModelEngineer(model, {
     decide: (request) =>
       new GatewayDecisionModel(

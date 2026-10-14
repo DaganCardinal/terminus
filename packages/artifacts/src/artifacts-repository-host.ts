@@ -283,7 +283,10 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   async createTerminus(input: {
     namespace: string
     sourceUrl?: string
+    initialFiles?: Record<string, string>
   }): Promise<RepoRef> {
+    if (input.sourceUrl && input.initialFiles)
+      throw new Error("Import and initial fixture are mutually exclusive")
     // The namespace belongs to one Project, so its Terminus name cannot
     // collide with another onboarding operation.
     const id = namespacedRepoId(input.namespace, TERMINUS_REPO_NAME)
@@ -321,6 +324,36 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
             access.branch,
             "/workspace/initial",
           ])
+          if (input.initialFiles) {
+            const files = input.initialFiles
+            if (
+              Object.keys(files).some(
+                (path) =>
+                  !/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/.test(path) ||
+                  path
+                    .split("/")
+                    .some(
+                      (part) => part === "." || part === ".." || part === ".git"
+                    )
+              )
+            )
+              throw new Error("Invalid initial fixture path")
+            const result = await workspace.run(
+              [
+                "node",
+                "-e",
+                `const fs = require("node:fs"); const path = require("node:path");
+              for (const [file, contents] of Object.entries(JSON.parse(process.argv[1]))) {
+                fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents, { flag: "wx" });
+              }`,
+                JSON.stringify(files),
+              ],
+              "/workspace/initial"
+            )
+            if (result.exitCode !== 0)
+              throw new Error("Could not write the initial fixture")
+            await git(workspace, ["add", "--all"], "/workspace/initial")
+          }
           await git(
             workspace,
             [

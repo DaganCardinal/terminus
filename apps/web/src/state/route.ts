@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 /** Where the app is, as encoded in the location hash. */
 export type Route =
   | { page: "networks" }
+  | { page: "stress-test"; networkId?: string }
   | { page: "map"; networkId: string }
   | {
       page: "overview"
@@ -12,6 +13,12 @@ export type Route =
     }
 
 export function parseRoute(hash: string): Route {
+  const stress = /^#\/stress-tests(?:\/([^/]+))?$/.exec(hash)
+  if (stress)
+    return {
+      page: "stress-test",
+      ...(stress[1] ? { networkId: decodeURIComponent(stress[1]) } : {}),
+    }
   const match =
     /^#\/networks\/([^/]+)(?:\/(map|settings|docs|files)(?:\/(.*))?)?$/.exec(
       hash
@@ -35,6 +42,10 @@ export function parseRoute(hash: string): Route {
 /** Paths keep their slashes so links read naturally. */
 export const routes = {
   networks: () => "#/",
+  stressTest: (networkId?: string) =>
+    networkId
+      ? `#/stress-tests/${encodeURIComponent(networkId)}`
+      : "#/stress-tests",
   overview: (networkId: string) =>
     `#/networks/${encodeURIComponent(networkId)}`,
   map: (networkId: string) => `#/networks/${encodeURIComponent(networkId)}/map`,
