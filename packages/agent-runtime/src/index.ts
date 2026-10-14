@@ -8,9 +8,13 @@ export * from "./conductor-agent"
 export * from "./dispatch-proposal"
 export * from "./dispatch-planner"
 export * from "./dispatcher-agent"
+export * from "./dispatch-draft"
 export * from "./opencode"
 
 export * from "./technician"
 
 export * from "./harness-adapters"
 export * from "./harness-activity"
+
+export * from "./engineer-context"
+export * from "./conflict-watch"

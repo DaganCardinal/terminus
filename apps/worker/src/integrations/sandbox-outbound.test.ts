@@ -1,24 +1,17 @@
+import { env as testEnv } from "cloudflare:test"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import {
-  FakeDispatchPlanner,
-  proposalTool,
-  type DispatchPlanningInput,
-} from "@terminus/agent-runtime"
+import { planToolServer } from "@terminus/agent-runtime"
+import { seedDispatchPlan } from "../../test/fixtures"
+import { DispatchDraftStore } from "./dispatch-draft-store"
 import { outboundRequest } from "./sandbox-outbound"
-
-const planningInput: DispatchPlanningInput = {
-  goal: "Add a footer",
-  network: { validationNames: ["test"], activeLines: [] },
-  repository: { repoId: "n/terminus", commit: "a".repeat(40) },
-  checkBaseline: false,
-  validation: [{ name: "test", command: ["npm", "test"] }],
-}
 
 const env = {
   AI_GATEWAY_ACCOUNT_ID: "account",
   AI_GATEWAY_ID: "gateway",
   AI_GATEWAY_TOKEN: "worker-secret",
+  DB: testEnv.DB,
 }
+
 const model = "@cf/zai-org/glm-5.3-flash"
 const remote =
   "https://account.artifacts.cloudflare.net/git/default/station.git"
@@ -47,17 +40,17 @@ describe("Sandbox outbound capabilities", () => {
   ])(
     "authorizes exact $provider requests, replaces auth and preserves streams",
     async ({ provider, model, apiModel, endpoint }) => {
-      const stream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode("data: first\n\n"))
-          controller.close()
-        },
-      })
       const send = vi.fn<typeof fetch>(
         async () =>
-          new Response(stream, {
-            headers: { "content-type": "text/event-stream" },
-          })
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("data: first\n\n"))
+                controller.close()
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } }
+          )
       )
       const url = `https://gateway.ai.cloudflare.com/v1/account/gateway/${provider}/${endpoint}`
       const request = (
@@ -95,8 +88,17 @@ describe("Sandbox outbound capabilities", () => {
         expect(forwarded.headers.has(header)).toBe(false)
       expect(forwarded.redirect).toBe("manual")
       expect(await forwarded.json()).toEqual({ model: apiModel, stream: true })
+      // Claude Code always calls the beta Messages route.
+      const beta = await outboundRequest(
+        request(url + "?beta=true"),
+        env,
+        grant,
+        send
+      )
+      expect(beta.status).toBe(provider === "anthropic" ? 200 : 403)
       for (const target of [
         url + "?alias=other",
+        url + "?beta=true&alias=other",
         url.replace("/gateway/", "/other/"),
         url.replace(endpoint, "models"),
         "https://api.openai.com/v1/responses",
@@ -124,9 +126,81 @@ describe("Sandbox outbound capabilities", () => {
           )
         ).status
       ).toBe(403)
-      expect(send).toHaveBeenCalledTimes(1)
+      expect(send).toHaveBeenCalledTimes(provider === "anthropic" ? 2 : 1)
     }
   )
+
+  it("checks tools that Codex declares in namespaces and additional_tools input items", async () => {
+    const send = vi.fn<typeof fetch>(async () => new Response("ok"))
+    const grant = {
+      repositories: [],
+      allowModel: true,
+      provider: "openai" as const,
+      model: "openai/gpt-6-luna",
+    }
+    const status = async (tools: unknown[], top = false) =>
+      (
+        await outboundRequest(
+          new Request(
+            "https://gateway.ai.cloudflare.com/v1/account/gateway/openai/responses",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                model: "gpt-6-luna",
+                ...(top ? { tools } : {}),
+                input: [
+                  ...(top
+                    ? []
+                    : [{ type: "additional_tools", role: "developer", tools }]),
+                  { type: "message", role: "user", content: [] },
+                ],
+              }),
+            }
+          ),
+          env,
+          grant,
+          send
+        )
+      ).status
+    // The shape Codex 0.156.1 sends for GPT-6 models.
+    const codex = [
+      {
+        type: "namespace",
+        name: "functions",
+        tools: [
+          { type: "custom", name: "exec" },
+          { type: "function", name: "wait" },
+        ],
+      },
+      {
+        type: "namespace",
+        name: "collaboration",
+        tools: [{ type: "function", name: "spawn_agent" }],
+      },
+    ]
+    expect(await status(codex)).toBe(200)
+    expect(await status(codex, true)).toBe(200)
+    for (const tools of [
+      [{ type: "web_search" }],
+      [...codex, { type: "image_generation" }],
+      [{ type: "namespace", name: "n", tools: [{ type: "web_search" }] }],
+      [
+        {
+          type: "namespace",
+          name: "outer",
+          tools: [
+            { type: "namespace", name: "inner", tools: [{ type: "mcp" }] },
+          ],
+        },
+      ],
+      [{ type: "namespace", name: "untyped" }],
+      [null],
+    ]) {
+      expect(await status(tools)).toBe(403)
+      expect(await status(tools, true)).toBe(403)
+    }
+    expect(send).toHaveBeenCalledTimes(2)
+  })
 
   it("does not follow redirects or retry upstream errors with another provider", async () => {
     const request = () =>
@@ -334,6 +408,50 @@ describe("Sandbox outbound capabilities", () => {
       )
     const sent = (send: ReturnType<typeof vi.fn<typeof fetch>>) =>
       send.mock.calls.map(([forwarded]) => forwarded as Request)
+
+    it("aborts both original and hedged requests when their caller stops", async () => {
+      const abort = new AbortController()
+      let copiesStarted!: () => void
+      const ready = new Promise<void>((resolve) => {
+        copiesStarted = resolve
+      })
+      const send = vi.fn<typeof fetch>(async (request) => {
+        if (send.mock.calls.length === 2) copiesStarted()
+        return stalled(request as Request)
+      })
+      const result = outboundRequest(
+        new Request(streamedRequest(), { signal: abort.signal }),
+        env,
+        affine,
+        send,
+        5
+      )
+      const rejected = expect(result).rejects.toMatchObject({
+        name: "AbortError",
+      })
+      await ready
+      abort.abort()
+      await rejected
+      expect(sent(send)).toHaveLength(2)
+      expect(sent(send).every((request) => request.signal.aborted)).toBe(true)
+    })
+
+    it("preserves cancellation after headers arrive, including non-streamed calls", async () => {
+      for (const stream of [true, false]) {
+        const abort = new AbortController()
+        const send = vi.fn<typeof fetch>(async () => new Response("answer"))
+        const response = await outboundRequest(
+          new Request(streamedRequest(stream), { signal: abort.signal }),
+          env,
+          affine,
+          send,
+          5
+        )
+        abort.abort()
+        expect(sent(send)[0]!.signal.aborted).toBe(true)
+        await response.body?.cancel()
+      }
+    })
 
     it("sends a copy without session affinity when headers are late, and aborts the original", async () => {
       vi.spyOn(console, "info").mockImplementation(() => {})
@@ -737,20 +855,25 @@ describe("Sandbox outbound capabilities", () => {
     ).toBe(false)
   })
 
-  it("answers the Dispatcher's proposal tool as an MCP server, without leaving the Worker", async () => {
+  it("serves the Dispatcher's plan tools as an MCP server, saving the draft in D1", async () => {
+    const plan = await seedDispatchPlan()
     const send = vi.fn<typeof fetch>()
     const planning = {
       repositories: [],
       allowModel: true,
       model,
       proposalCheck: {
-        network: { validationNames: ["test"], activeLines: [] },
+        planId: plan.id,
+        network: {
+          projectChecks: [{ name: "test", command: ["npm", "test"] }],
+          activeLines: [],
+        },
         baseline: null,
       },
     }
     const rpc = async (body: object, method = "POST") => {
       const response = await outboundRequest(
-        new Request(proposalTool.url, {
+        new Request(planToolServer.url, {
           method,
           ...(method === "POST"
             ? {
@@ -794,61 +917,153 @@ describe("Sandbox outbound capabilities", () => {
       await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })
     ).toEqual({ status: 202, body: null })
     expect((await rpc({}, "GET")).status).toBe(405)
-    const tools = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" })
-    expect(tools.body).toMatchObject({
-      result: { tools: [{ name: "submit_proposal" }] },
-    })
-
-    const call = (proposal: unknown) =>
-      rpc({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "submit_proposal", arguments: { proposal } },
-      })
-    const proposal = (await new FakeDispatchPlanner().plan(planningInput))
-      .proposal
-    const accepted = (await call(proposal)).body as {
-      result: { content: { text: string }[] }
-    }
-    expect(accepted.result.content[0]!.text).toMatch(/^Accepted/)
-    // GLM passes the proposal as JSON text, so a nesting slip arrives and is repaired.
-    expect(tools.body).toMatchObject({
+    const tools = (await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" }))
+      .body as {
       result: {
-        tools: [
-          { inputSchema: { properties: { proposal: { type: "string" } } } },
-        ],
-      },
+        tools: {
+          name: string
+          inputSchema: { properties: Record<string, { type?: string }> }
+        }[]
+      }
+    }
+    expect(tools.result.tools.map((t) => t.name)).toEqual([
+      "set_plan_outline",
+      "put_station",
+      "inspect_plan",
+      "finalize_plan",
+    ])
+    // GLM passes the outline as JSON text, so a nesting slip still arrives.
+    expect(tools.result.tools[0]!.inputSchema.properties.outline!.type).toBe(
+      "string"
+    )
+
+    type Reply = { result: { content: { text: string }[]; isError?: boolean } }
+    const call = async (name: string, args: unknown) =>
+      (
+        await rpc({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name, arguments: args },
+        })
+      ).body as Reply
+    const station = (key: string) => ({
+      key,
+      name: `Station ${key}`,
+      goal: `Deliver ${key}`,
+      changeKind: "implementation",
+      changeDescription: `Implement ${key}`,
+      scope: [`Only ${key}`],
+      expectedAreas: [`src/${key}.ts`],
+      invariants: ["Existing behavior stays intact"],
+      acceptanceCriteria: [`${key} works`],
+      expectedEvidence: ["test"],
     })
-    const slipped = JSON.stringify(proposal).replace(/\}\]\}$/, "]}")
-    expect(() => JSON.parse(slipped)).toThrow()
-    const repaired = (await call(slipped)).body as {
-      result: { content: { text: string }[] }
+    const outline = {
+      summary: "One Line.",
+      lines: [
+        {
+          key: "footer",
+          name: "Footer",
+          unloadRecommendation: { mode: "auto", reason: "Small." },
+          stations: ["a", "b", "c"],
+        },
+      ],
     }
-    expect(repaired.result.content[0]!.text).toMatch(/^Accepted/)
-    const rejected = (await call({ summary: "No lines" })).body as {
-      result: { content: { text: string }[]; isError?: boolean }
-    }
-    expect(rejected.result.content[0]!.text).toMatch(/^Not accepted/)
+    const text = (reply: Reply) => reply.result.content[0]!.text
+    expect(
+      text(await call("set_plan_outline", { outline: JSON.stringify(outline) }))
+    ).toMatch(/^Saved the outline/)
+    // Calls in one message arrive together; each saves only its own piece.
+    const saved = await Promise.all(
+      ["a", "b", "c"].map((key) => call("put_station", station(key)))
+    )
+    for (const reply of saved) expect(text(reply)).toMatch(/^Saved Station/)
+    const rejected = await call("put_station", { key: "a" })
+    expect(text(rejected)).toMatch(/^Not saved:/)
     expect(rejected.result.isError).toBeUndefined()
+    expect(text(await call("finalize_plan", {}))).toMatch(/^Accepted:/)
+
+    const draft = await new DispatchDraftStore(testEnv.DB).read(plan.id)
+    expect(draft.outline).toEqual(outline)
+    expect(Object.keys(draft.stations)).toEqual(["a", "b", "c"])
+    // The rejected call changed nothing.
+    expect(draft.stations.a!.goal).toBe("Deliver a")
+
     expect(
       await rpc({
         jsonrpc: "2.0",
         id: 3,
         method: "tools/call",
-        params: { name: "other", arguments: {} },
+        params: { name: "submit_proposal", arguments: {} },
       })
     ).toMatchObject({ body: { id: 3, error: { code: -32602 } } })
     expect(send).not.toHaveBeenCalled()
 
-    // Without a granted check, the same address is just another refused destination.
+    // Without a granted plan, the same address is just another refused destination.
     const refused = await outboundRequest(
-      new Request(proposalTool.url, { method: "POST", body: "{}" }),
+      new Request(planToolServer.url, { method: "POST", body: "{}" }),
       env,
       network,
       send
     )
     expect(refused.status).toBe(403)
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it("reports a failed save as a tool error the agent can retry", async () => {
+    const plan = await seedDispatchPlan()
+    await testEnv.DB.prepare(
+      "UPDATE networks SET deleting = 1 WHERE id = (SELECT network_id FROM dispatch_plans WHERE id = ?)"
+    )
+      .bind(plan.id)
+      .run()
+    const response = await outboundRequest(
+      new Request(planToolServer.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "set_plan_outline",
+            arguments: {
+              outline: {
+                summary: "One Line.",
+                lines: [
+                  {
+                    key: "footer",
+                    name: "Footer",
+                    unloadRecommendation: { mode: "auto", reason: "Small." },
+                    stations: ["a"],
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      }),
+      env,
+      {
+        repositories: [],
+        allowModel: true,
+        model,
+        proposalCheck: {
+          planId: plan.id,
+          network: {
+            projectChecks: [{ name: "test", command: ["npm", "test"] }],
+            activeLines: [],
+          },
+          baseline: null,
+        },
+      }
+    )
+    expect(await response.json()).toMatchObject({
+      result: {
+        isError: true,
+        content: [{ text: expect.stringContaining("Try the same call again") }],
+      },
+    })
   })
 })

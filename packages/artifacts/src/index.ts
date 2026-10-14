@@ -12,3 +12,4 @@ export * from "./smart-http"
 
 export * from "./technician-git"
 export * from "./stress-git"
+export * from "./trial-merge"

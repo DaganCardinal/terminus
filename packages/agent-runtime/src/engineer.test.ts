@@ -144,7 +144,15 @@ describe("model Engineer", () => {
     const advice = await new ModelEngineer(model, { decide }).stationFailure(
       failure
     )
-    expect(advice).toEqual({ value: "wait", confidence: 0.85 })
+    expect(advice).toMatchObject({
+      value: "wait",
+      confidence: 0.85,
+      fallback: false,
+      answer: {
+        type: "choice",
+        probabilities: { retry: 0.1, wait: 0.85, escalate: 0.05 },
+      },
+    })
     expect(decide.mock.calls[0]![0]).toEqual({
       role: "engineer",
       state: failure,
@@ -167,7 +175,8 @@ describe("model Engineer", () => {
     }
     expect(
       await new ModelEngineer(model, failing).stationFailure(failure)
-    ).toEqual({
+    ).toMatchObject({
+      fallback: true,
       value: "escalate",
       confidence: null,
       error: "engineer decision request failed (503)",
@@ -208,7 +217,11 @@ describe("model Engineer", () => {
       new ModelEngineer(model, {
         decide: answering({ type: "noul", noul }),
       }).notifyDispatcher(situation)
-    expect(await notify(0.1)).toEqual({ value: false, confidence: 0.9 })
+    expect(await notify(0.1)).toMatchObject({
+      value: false,
+      confidence: 0.9,
+      answer: { type: "noul", noul: 0.1 },
+    })
     expect((await notify(0.5)).value).toBe(true)
     expect((await notify(0.9)).value).toBe(true)
   })

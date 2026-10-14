@@ -1,3 +1,5 @@
+import { observeEngineer } from "./engineer-operations"
+import { watchNewCars } from "./conflict-watch-operations"
 import {
   stationOutcomeSchema,
   integrationOutcomeSchema,
@@ -66,6 +68,20 @@ export class TrainWorkflow extends WorkflowEntrypoint<
           (result) => ({ move: result })
         )
       )
+      await step.do(`Engineer observation ${leg}`, stepConfig, () =>
+        observeEngineer(ports, trainId)
+      )
+      // Retry unwatched Cars and pending dispatches even while held. Advisory
+      // failures must never terminate this Train's movement Workflow.
+      if (move.kind !== "finished") {
+        try {
+          await step.do(`Dispatcher conflict watch ${leg}`, stepConfig, () =>
+            watchNewCars(ports, trainId)
+          )
+        } catch {
+          console.warn("Dispatcher conflict watch deferred", { trainId, leg })
+        }
+      }
       switch (move.kind) {
         case "moved":
           break
@@ -91,6 +107,11 @@ export class TrainWorkflow extends WorkflowEntrypoint<
                   backoff: result?.backoff,
                 })
               )
+            )
+            await step.do(
+              `Engineer outcome observation ${move.runId} (${leg})`,
+              stepConfig,
+              () => observeEngineer(ports, trainId)
             )
             // Steps cached before Engineer retries returned nothing.
             if (recorded?.backoff)

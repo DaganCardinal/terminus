@@ -1,3 +1,4 @@
+import { wakeHeldTrains } from "./train-operations"
 import {
   blockTrain,
   clearForTerminus,
@@ -84,6 +85,7 @@ export async function advanceJunctionTrain(
         [{ kind: "train", train: result.value, version: loaded.version }],
         result.events
       )
+      await wakeHeldTrains(ports, loaded.networkId)
       return { kind: "moved" }
     }
   }
@@ -106,6 +108,7 @@ export async function advanceJunctionTrain(
         [{ kind: "train", train: result.value, version: loaded.version }],
         result.events
       )
+    if (gate.kind === "block") await wakeHeldTrains(ports, loaded.networkId)
     return { kind: gate.kind === "hold" ? "await_wake" : "await_clear" }
   }
   if (t.state.status === "held") {

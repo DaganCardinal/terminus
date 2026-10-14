@@ -67,3 +67,9 @@ Every orchestration install (Station, Conductor, integration and Dispatcher base
 The current runner supports npm projects and HTTPS/public imports. Dependencies must be retrievable from the npm registry without third-party install downloads. Private imports, arbitrary network access and deployment authentication are not implemented.
 
 Validation commands are trusted project configuration stored in D1, separate from model-generated manifests; see [API examples](api.md#validation-commands).
+
+## Engineer operational context
+
+Retry and revision decisions include a bounded history of up to four previous attempts, failure phases, retry/backoff decisions, Conductor feedback and independent checks. Current failed required-check evidence is included even when a Conductor session was skipped. Explicit reset labels older attempts historical without erasing them. Older run results may lack a phase and are treated as unknown.
+
+Every consumed current failed run records `station.run_failed` atomically with its retry or block; stale reports are ignored. Decision checkpoints survive Workflow retries. Recovery backoffs and repeated automatic attempts may produce an advisory Dispatcher card; acknowledging it never changes the retry allowance or Train gate.

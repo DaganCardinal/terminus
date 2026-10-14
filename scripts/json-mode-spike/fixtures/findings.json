@@ -1,0 +1,43 @@
+[
+  {
+    "topic": "Routing model",
+    "summary": "parseRoute in route.ts handles hash routes and currently maps tickets/<id> and tickets?customer=...; a customers/<id> route would need to extend the Page type and Route parsing, and App.tsx renders pages off route.page/route.customerId.",
+    "paths": [
+      "src/features/support/route.ts",
+      "src/App.tsx"
+    ]
+  },
+  {
+    "topic": "Data shapes for profile parts",
+    "summary": "Customer (id, name, email, company, color, plan, joined) and Ticket (customerId, status, priority, updatedAt, id) in src/data/support.ts provide everything the four parts need; joined gives \"customer since\", ticketCounts shows the open/resolved counting pattern.",
+    "paths": [
+      "src/data/support.ts"
+    ]
+  },
+  {
+    "topic": "Reusable UI primitives",
+    "summary": "common.tsx exports Avatar, StatusBadge, PriorityBadge, PageHeading, and EmptyState, which the new components should reuse; customers.tsx links names via #/tickets?customer=<id> and ticket-detail.tsx has a customer panel \u2014 both are the connection points for profile links.",
+    "paths": [
+      "src/features/support/common.tsx",
+      "src/features/support/customers.tsx",
+      "src/features/support/ticket-detail.tsx"
+    ]
+  },
+  {
+    "topic": "New ticket dialog",
+    "summary": "App.tsx opens NewTicketDialog via newTicketOpen and createTicket assigns Alex Morgan; the dialog lives in new-ticket.tsx and would need an optional preselected-customer prop for the profile button.",
+    "paths": [
+      "src/App.tsx",
+      "src/features/support/new-ticket.tsx"
+    ]
+  },
+  {
+    "topic": "Test environment",
+    "summary": "package.json scripts are typecheck (tsc -b), test (vitest run), and build; vite.config.ts has no test block, so Vitest runs in the default node environment with no jsdom or testing library \u2014 tests must assert pure helpers and renderToStaticMarkup output.",
+    "paths": [
+      "package.json",
+      "vite.config.ts",
+      "src/App.test.tsx"
+    ]
+  }
+]

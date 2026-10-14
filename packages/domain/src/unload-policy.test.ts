@@ -220,7 +220,7 @@ describe("human unloading permission", () => {
             },
           ],
         },
-        { validationNames: [], activeLines: [] }
+        { projectChecks: [], activeLines: [] }
       )
     )
     const selected = unwrap(selectPlannedUnloadMode(ready, "line", "auto"))

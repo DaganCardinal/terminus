@@ -113,6 +113,32 @@ describe("NetworkStore", () => {
     expect((await ports.store.train(train.id))?.version).toBe(1)
   })
 
+  it("refuses a commit to a deleting network and keeps the batch atomic", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    const { train } = await seedLine(ports, network.id)
+    const before = await ports.store.lastSeq(network.id)
+    await env.DB.prepare("UPDATE networks SET deleting = 1 WHERE id = ?")
+      .bind(network.id)
+      .run()
+
+    await expect(
+      ports.store.commit(
+        network.id,
+        [
+          {
+            kind: "train",
+            train: { ...train, state: { status: "siding", reason: "" } },
+            version: 0,
+          },
+        ],
+        [{ type: "train.sided", trainId: train.id, reason: "" }]
+      )
+    ).rejects.toThrow("network_deleting")
+    expect(await ports.store.lastSeq(network.id)).toBe(before)
+    expect((await ports.store.train(train.id))?.version).toBe(0)
+  })
+
   it("snapshots the network with signals and the latest event", async () => {
     const ports = testPorts()
     const network = await seedNetwork(ports)

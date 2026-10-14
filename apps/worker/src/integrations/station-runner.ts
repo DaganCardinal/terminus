@@ -332,7 +332,8 @@ export class SandboxStationRunner implements StationRunner {
         error: errorKind(error),
       })
       // The Engineer triages failed runs, so report where this one stopped.
-      throw new Error(
+      throw new StationExecutionError(
+        phase,
         `Station run failed during ${phase}: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error }
       )
@@ -356,5 +357,14 @@ export class SandboxStationRunner implements StationRunner {
         if (saved) phases.finish({ ok: true })
       }
     }
+  }
+}
+
+/** Trusted orchestration phase; never inferred from agent text. */
+export class StationExecutionError extends Error {
+  readonly phase: string
+  constructor(phase: string, message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.phase = phase
   }
 }

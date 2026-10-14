@@ -18,11 +18,12 @@ export class DispatchProposalError extends Error {
 }
 
 /**
- * The harness was stopped after \`maxRejectedSubmissions\` rejected proposal
- * submissions. The last one is final: no correction follows.
+ * The live runner stopped the harness after too many rejected plan tool calls
+ * (\`maxRejectedPlanCalls\`, \`maxRejectedFinalizations\`). The saved draft is
+ * final: no correction follows.
  */
 export class ProposalSubmissionsExhausted extends Error {
-  /** The last submission, as the harness reports its answer. */
+  /** The harness's final message. */
   readonly submission: string
   constructor(submission: string) {
     super("Dispatcher stopped after repeated rejected proposal submissions")

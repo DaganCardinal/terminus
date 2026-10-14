@@ -2,6 +2,7 @@ import type { EventEnvelope, NetworkSnapshot } from "@terminus/protocol"
 import { useNow } from "@/components/use-now"
 import { describeEvent, namesFor } from "./describe"
 import { dayLabel, presentEvent, type EventTone } from "./event-presentation"
+import { NamedText } from "./named-text"
 
 const SEVERITY_LABEL: Partial<Record<EventTone, string>> = {
   warning: "Warning",
@@ -50,7 +51,10 @@ export function ActivityFeed({
                   </span>
                   <p>
                     {severity && <span className="sr-only">{severity}: </span>}
-                    {describeEvent(envelope.event, name)}
+                    <NamedText
+                      describe={(named) => describeEvent(envelope.event, named)}
+                      name={name}
+                    />
                   </p>
                   <time
                     dateTime={envelope.occurredAt}

@@ -21,7 +21,8 @@ export interface HarnessAgent {
   /** Role instructions. They replace OpenCode's default system prompt. */
   readonly system: string
   /** Role limits, layered over the rules every harness agent shares. */
-  readonly capability: "planning" | "review" | "implementation" | "repair"
+  readonly capability:
+    "planning" | "investigation" | "review" | "implementation" | "repair"
 }
 
 /**
@@ -54,7 +55,8 @@ const readOnly = {
 
 /** Translate role capabilities only inside the OpenCode adapter. */
 function opencodePermissions(capability: HarnessAgent["capability"]) {
-  if (capability === "planning") return readOnly
+  if (capability === "planning" || capability === "investigation")
+    return readOnly
   if (capability === "review")
     return {
       ...readOnly,
@@ -71,9 +73,9 @@ function opencodePermissions(capability: HarnessAgent["capability"]) {
 /** Output tokens per model response, reasoning included. */
 const outputTokens = 8192
 /**
- * The Dispatcher writes its whole proposal in one response. A plan with
- * several multi-Station Lines can exceed the default once reasoning is
- * counted, and a cut-off submission is lost and rewritten from the start.
+ * The Dispatcher may save several Stations in one response, and without plan
+ * tools it writes its whole proposal in one. Either can exceed the default
+ * once reasoning is counted, and a cut-off response is lost and rewritten.
  */
 export const dispatcherOutputTokens = 16_384
 
@@ -133,39 +135,30 @@ function terminusProvider(
 }
 
 /**
- * The Dispatcher's proposal tool. The Worker's Sandbox outbound handler
- * serves it as a remote MCP server, so the request is answered before it
- * leaves Cloudflare and the Sandbox gains no other destination. OpenCode
- * exposes it to the agent as `terminus_submit_proposal`.
+ * The MCP server for the Dispatcher's plan tools (`dispatch-draft.ts`). The
+ * Worker's Sandbox outbound handler serves it, so each request is answered
+ * before it leaves Cloudflare and the Sandbox gains no other destination.
+ * OpenCode prefixes each tool with the server name, as in
+ * `terminus_put_station`.
  */
-export const proposalTool = {
-  server: "terminus",
-  name: "submit_proposal",
-  url: "https://api.cloudflare.com/terminus/v1/proposal-tool",
+export const planToolServer = {
+  name: "terminus",
+  url: "https://api.cloudflare.com/terminus/v1/plan-tools",
 } as const
-export const proposalToolAgentName = `${proposalTool.server}_${proposalTool.name}`
 
 /**
- * Whether a model passes its proposal to the tool as JSON text instead of an
- * object. GLM writes tool arguments as markup that Workers AI converts to
- * JSON: an object value is spliced into the call's arguments as written, so
- * one slip in a long, nested proposal makes the whole call unparseable.
- * OpenCode then answers with its `invalid` tool, Terminus never sees the
- * submission, and the model regenerates the entire proposal blind. A string
- * value is escaped by the provider, so the submission always arrives and gets
- * bracket repair, `jsonrepair`, and a precise parse hint.
+ * Whether a model passes the plan outline to its tool as JSON text instead
+ * of an object. GLM writes tool arguments as markup that Workers AI converts
+ * to JSON: an object value is spliced into the call's arguments as written,
+ * so one slip in a nested value makes the whole call unparseable. OpenCode
+ * then answers with its `invalid` tool and Terminus never sees the call. A
+ * string value is escaped by the provider, so the outline always arrives and
+ * gets bracket repair, `jsonrepair`, and a precise parse hint. Stations use
+ * flat arguments instead, which nest no deeper than a list.
  */
 export function proposalAsText(model: string): boolean {
   return model.startsWith("@cf/zai-org/glm-")
 }
-/** How the proposal tool's reply begins when Terminus accepts a submission. */
-export const proposalAcceptedReply = "Accepted:"
-/**
- * Rejected submissions, including calls the harness could not parse, after
- * which the live runner stops the Dispatcher. Each one regenerates the whole
- * proposal, so a model that cannot converge otherwise loops for minutes.
- */
-export const maxRejectedSubmissions = 3
 
 /**
  * The only OpenCode configuration a harness loads. The role runs as its own
@@ -190,9 +183,9 @@ export function opencodeConfig(
     ...(agent.capability === "planning"
       ? {
           mcp: {
-            [proposalTool.server]: {
+            [planToolServer.name]: {
               type: "remote",
-              url: proposalTool.url,
+              url: planToolServer.url,
               enabled: true,
               oauth: false,
             },
@@ -208,7 +201,7 @@ export function opencodeConfig(
         permission: {
           ...readOnly,
           task: "deny",
-          [`${proposalTool.server}_*`]: "deny",
+          [`${planToolServer.name}_*`]: "deny",
         },
       },
       [agent.name]: {
@@ -400,8 +393,8 @@ export function opencodeRunCommand(
   ]
 }
 
-/** A role's JSON answer: a bare object, optionally fenced or surrounded by prose. */
-export function finalMessageJson(text: string): unknown {
+/** The JSON object in a role's answer, which may be fenced or surrounded by prose. */
+function answerJson(text: string): string {
   const trimmed = text
     .trim()
     .replace(/^```(?:json)?\s*/i, "")
@@ -409,7 +402,12 @@ export function finalMessageJson(text: string): unknown {
   const start = trimmed.indexOf("{")
   const end = trimmed.lastIndexOf("}")
   if (start < 0 || end < start) throw new SyntaxError("No JSON object")
-  const json = trimmed.slice(start, end + 1)
+  return trimmed.slice(start, end + 1)
+}
+
+/** A role's JSON answer: a bare object, optionally fenced or surrounded by prose. */
+export function finalMessageJson(text: string): unknown {
+  const json = answerJson(text)
   try {
     return JSON.parse(json) as unknown
   } catch (error) {
@@ -430,12 +428,100 @@ export function finalMessageJson(text: string): unknown {
   }
 }
 
-/** Tells a role where its final message stopped being JSON, so a retry is not a guess. */
-export function jsonParseHint(parseError: string): string {
-  return [
-    `Your final message is not valid JSON. The parser reported: ${parseError}`,
-    "Positions count from the first `{`. Check that every object and array is closed in the order it was opened, that items are separated by commas, and that quotes and backslashes inside strings are escaped.",
-  ].join("\n")
+const parseStopMarker = "<<<HERE>>>"
+
+/**
+ * Tells a role where its JSON stopped parsing, so a retry is not a guess:
+ * the parser's message, the text around that point, and which value is still
+ * open there. Models cannot count to a character position in a long answer.
+ */
+export function jsonParseHint(parseError: string, text: string): string {
+  const hint = [`The JSON is not valid. The parser reported: ${parseError}`]
+  const at = Number(/at position (\d+)/.exec(parseError)?.[1])
+  let json: string | null = null
+  try {
+    json = answerJson(text)
+  } catch {
+    // No object to quote; the parser's message stands alone.
+  }
+  if (json !== null && Number.isInteger(at) && at <= json.length) {
+    hint.push(
+      `The text around that point, with ${parseStopMarker} where parsing stopped:`,
+      "```",
+      `${json.slice(Math.max(0, at - 160), at)}${parseStopMarker}${json.slice(at, at + 80)}`,
+      "```"
+    )
+    const open = openValue(json, at)
+    if (open) {
+      const closer = json[at]
+      const wrong =
+        (closer === "}" && open.closer === "]") ||
+        (closer === "]" && open.closer === "}")
+      hint.push(
+        wrong
+          ? `There, ${open.name} is still open, and \`${closer}\` cannot close it: it closes with \`${open.closer}\`.`
+          : `There, the innermost open value is ${open.name}, which closes with \`${open.closer}\`.`
+      )
+    }
+  }
+  hint.push(
+    "The parser stops at the first problem, so check the rest of the JSON for the same mistake before sending it again. Every object and array must close in the order it was opened, items need commas between them, and quotes and backslashes inside strings must be escaped."
+  )
+  return hint.join("\n")
+}
+
+/**
+ * The innermost object or array still open at `at`, named by the property
+ * that holds it. Null inside a string, where brackets are text.
+ */
+function openValue(
+  json: string,
+  at: number
+): { name: string; closer: "}" | "]" } | null {
+  const open: { closer: "}" | "]"; key: string | null; inArray: boolean }[] = []
+  let inString = false
+  let escaped = false
+  let string = ""
+  let lastString = ""
+  let key: string | null = null
+  for (let index = 0; index < at; index++) {
+    const char = json[index]!
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === "\\") escaped = true
+      else if (char === '"') {
+        inString = false
+        lastString = string
+      } else string += char
+    } else if (char === '"') {
+      inString = true
+      string = ""
+    } else if (char === ":") key = lastString
+    else if (char === "{" || char === "[") {
+      const parent = open.at(-1)
+      open.push({
+        closer: char === "{" ? "}" : "]",
+        key: parent?.closer === "]" ? parent.key : key,
+        inArray: parent?.closer === "]",
+      })
+      key = null
+    } else if (char === "}" || char === "]") open.pop()
+    else if (char === ",") key = null
+  }
+  const innermost = open.at(-1)
+  if (inString || !innermost) return null
+  const kind = innermost.closer === "}" ? "object" : "array"
+  return {
+    closer: innermost.closer,
+    name:
+      innermost.key === null
+        ? open.length === 1
+          ? "the top-level object"
+          : `an ${kind}`
+        : innermost.inArray
+          ? `an ${kind} in the \`${innermost.key}\` array`
+          : `the \`${innermost.key}\` ${kind}`,
+  }
 }
 
 /**
@@ -500,8 +586,6 @@ export function harnessOutcome(output: CommandResult): {
 } {
   let summary: string | null = null
   let error: string | null = null
-  let submission: string | null = null
-  let textAfterSubmission: string | null = null
   for (const line of output.stdout.split("\n")) {
     if (!line.trim()) continue
     let value: unknown
@@ -513,21 +597,9 @@ export function harnessOutcome(output: CommandResult): {
     const parsed = harnessEventSchema.safeParse(value)
     if (!parsed.success) continue
     const event = parsed.data
-    if (event.type === "text") {
-      summary = event.part.text
-      if (submission !== null) textAfterSubmission = event.part.text
-    } else if (event.type === "submission") {
-      submission =
-        typeof event.proposal === "string"
-          ? event.proposal
-          : JSON.stringify(event.proposal)
-      textAfterSubmission = null
-    } else error = event.error.data?.message ?? event.error.name
+    if (event.type === "text") summary = event.part.text
+    else error = event.error.data?.message ?? event.error.name
   }
-  // A submitted proposal is the answer, so the final message need not repeat
-  // it. A later final message that does carry JSON is a deliberate replacement.
-  if (submission !== null && !textAfterSubmission?.includes("{"))
-    summary = submission
   if (output.exitCode !== 0) error ??= `OpenCode exited with ${output.exitCode}`
   if (output.outputTruncated)
     error ??= "OpenCode output exceeded the capture limit"
@@ -631,8 +703,6 @@ for await (const line of createInterface({ input: createReadStream(process.argv[
   if (event.type === "tool_use") {
     const tool = event.part?.tool === "task" ? "task:" + event.part?.state?.input?.subagent_type : event.part?.tool
     counts[tool] = (counts[tool] ?? 0) + 1
-    if (tool === "${proposalToolAgentName}" && event.part?.state?.status === "completed")
-      console.log(JSON.stringify({ type: "submission", proposal: event.part.state.input?.proposal ?? null }))
   }
   perfEvent(event)
 }

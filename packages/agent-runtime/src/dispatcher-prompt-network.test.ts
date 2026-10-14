@@ -19,7 +19,7 @@ const station = (lineId: string): Station =>
   }) as unknown as Station
 
 const network = (finished: string[], live: string[]): PlanningContext => ({
-  validationNames: ["test"],
+  projectChecks: [{ name: "test", command: ["npm", "test"] }],
   activeLines: [],
   lines: [...finished, ...live].map(line),
   stations: [...finished, ...live].map(station),

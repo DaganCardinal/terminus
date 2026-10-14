@@ -89,7 +89,10 @@ export async function prepareHarness(
         "mkdir",
         "-p",
         "/workspace/harness-state",
-        ...(execution.harness === "codex" ? ["/etc/codex"] : []),
+        // Codex refuses to start when CODEX_HOME does not exist.
+        ...(execution.harness === "codex"
+          ? [invocation.env.CODEX_HOME!, "/etc/codex"]
+          : []),
       ])
     )
     if (created.exitCode !== 0)
@@ -272,6 +275,9 @@ export class HarnessSession {
     this.#session ??= result.sessionId
     if (output.stopped === "proposal_rejected")
       throw new ProposalSubmissionsExhausted(result.summary ?? "")
+    // Stopped because its plan was accepted: the saved draft is the answer,
+    // and is reviewed again, so a missing closing message is not a failure.
+    if (output.stopped === "proposal_accepted") return result.summary ?? ""
     if (result.error) throw new Error(result.error)
     return result.summary ?? ""
   }
@@ -409,7 +415,7 @@ function stderrTail(stderr: string): string {
 export interface HarnessExit {
   exitCode: number
   /** Set when the live runner ended the harness: its work was done, or it
-   * reached \`maxRejectedSubmissions\`. */
+   * reached its limit of rejected plan tool calls. */
   stopped?: "proposal_accepted" | "proposal_rejected"
   /** For diagnosis only: the signal and end of stderr after an abnormal exit. */
   signal?: string

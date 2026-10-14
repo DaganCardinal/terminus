@@ -14,6 +14,7 @@ import { statusWords, trainDisplayStatus } from "@/views/describe"
 import {
   BULLET_OFFSET,
   HUB_RADIUS,
+  JUNCTION_RADIUS,
   TRACK_WIDTH,
   awaitingApproval,
   clearingBlock,
@@ -105,6 +106,7 @@ export function NetworkMap({
   events,
   selection,
   terminusSelected,
+  selectedJunctionId,
   onSelectTerminus,
   onSelect,
   onClear,
@@ -116,6 +118,8 @@ export function NetworkMap({
   events: EventEnvelope[]
   selection: MapSelection | null
   terminusSelected: boolean
+  /** The Junction whose details are open, if any. */
+  selectedJunctionId?: string
   onSelectTerminus: () => void
   onSelect: (selection: MapSelection) => void
   onClear: () => void
@@ -521,46 +525,41 @@ export function NetworkMap({
                 </g>
               )
             })}
-            {junctions.map(({ id, point, halfHeight }) => {
+            {junctions.map(({ id, point, halfHeight, lineIds }) => {
               const j = (snapshot.junctions ?? []).find((x) => x.id === id)
               if (!j) return null
               const name = wrap(j.name, 16, 2)
+              const status = j.state.status
+              const select = () =>
+                onSelect({ lineId: j.outgoingLineId, junctionId: j.id })
               return (
                 <g
                   key={j.id}
                   role="button"
                   tabIndex={0}
-                  className="map-target"
-                  aria-label={`Select Junction ${j.name}, ${j.state.status}`}
-                  onClick={() =>
-                    onSelect({ lineId: j.outgoingLineId, junctionId: j.id })
-                  }
-                  onKeyDown={(e) =>
-                    keyboard(e, () =>
-                      onSelect({ lineId: j.outgoingLineId, junctionId: j.id })
-                    )
-                  }
+                  className={`map-target junction-marker junction-${status}`}
+                  aria-label={`Select Junction ${j.name}, ${statusWords(status)}, ${j.inputs.length} of ${j.incomingTrainIds.length} Lines in`}
+                  aria-pressed={selectedJunctionId === j.id}
+                  onClick={select}
+                  onKeyDown={(e) => keyboard(e, select)}
                 >
                   <title>{j.name}</title>
-                  <rect
-                    x={point.x - 28}
-                    y={point.y - halfHeight}
-                    width={56}
-                    height={halfHeight * 2}
-                    rx={12}
-                    fill="var(--map-paper)"
-                    stroke="var(--map-ink)"
-                    strokeWidth={3}
+                  <JunctionRing
+                    at={point}
+                    halfHeight={halfHeight}
+                    status={status}
+                    segments={lineIds.map((lineId) => ({
+                      lineId,
+                      color:
+                        routes.find((r) => r.line.id === lineId)?.color ??
+                        "var(--map-secondary)",
+                      in: j.inputs.some((input) => input.lineId === lineId),
+                    }))}
+                    outgoing={
+                      routes.find((r) => r.line.id === j.outgoingLineId)
+                        ?.color ?? "var(--map-ink)"
+                    }
                   />
-                  <text
-                    x={point.x}
-                    y={point.y + 10}
-                    textAnchor="middle"
-                    className="hub-letter"
-                    style={{ fill: "var(--map-ink)" }}
-                  >
-                    J
-                  </text>
                   {/* Above the marker: below it is where the outgoing Train waits. */}
                   <text
                     x={point.x}
@@ -578,11 +577,11 @@ export function NetworkMap({
                     x={point.x}
                     y={point.y - halfHeight - 12}
                     textAnchor="middle"
-                    className="station-state"
+                    className={`station-state ${status === "blocked" ? "state-blocked" : ""}`}
                   >
-                    {j.state.status === "ready"
+                    {status === "ready"
                       ? "Awaiting release"
-                      : statusWords(j.state.status)}{" "}
+                      : statusWords(status)}{" "}
                     · {j.inputs.length}/{j.incomingTrainIds.length}
                   </text>
                 </g>
@@ -996,7 +995,11 @@ export function NetworkMap({
             ))}
           </div>
         )}
-        <MapKey key={String(compactKey)} compact={compactKey} />
+        <MapKey
+          key={String(compactKey)}
+          compact={compactKey}
+          junctions={junctions.length > 0}
+        />
       </div>
       <div className="zoom-controls" aria-label="Zoom">
         <button
@@ -1021,7 +1024,13 @@ export function NetworkMap({
   )
 }
 
-function MapKey({ compact }: { compact: boolean }) {
+function MapKey({
+  compact,
+  junctions,
+}: {
+  compact: boolean
+  junctions: boolean
+}) {
   return (
     <details className="map-key glass" open={!compact}>
       <summary>Map key</summary>
@@ -1041,7 +1050,100 @@ function MapKey({ compact }: { compact: boolean }) {
         <span>
           <i className="key-train" /> Train
         </span>
+        {junctions && (
+          <span>
+            <i className="key-junction" /> Junction
+          </span>
+        )}
       </div>
     </details>
+  )
+}
+
+/** A ring of radius `r` centred on `at`, stretched to `half` high, traced
+ * clockwise from its left side, where approach lanes enter. */
+function capsule({ x, y }: { x: number; y: number }, r: number, half: number) {
+  const s = Math.max(0, half - r)
+  return `M${x - r},${y} V${y - s} A${r},${r} 0 0 1 ${x + r},${y - s} V${y + s} A${r},${r} 0 0 1 ${x - r},${y} Z`
+}
+
+const RING_WIDTH = 6
+/** Gap between neighbouring ring segments, as a share of the ring. */
+const RING_GAP = 2.5
+
+/** A Junction: a ring of its incoming Lines, one segment each in the order
+ * they enter, filled in as each one's Train converges, around a merge mark.
+ * The core takes the outgoing Line's colour once the feature is released. */
+function JunctionRing({
+  at,
+  halfHeight,
+  status,
+  segments,
+  outgoing,
+}: {
+  at: { x: number; y: number }
+  halfHeight: number
+  status: NonNullable<NetworkSnapshot["junctions"]>[number]["state"]["status"]
+  segments: { lineId: string; color: string; in: boolean }[]
+  outgoing: string
+}) {
+  const r = JUNCTION_RADIUS
+  const ring = capsule(at, r - RING_WIDTH / 2, halfHeight - RING_WIDTH / 2)
+  const inset = RING_WIDTH + 3
+  const core = capsule(at, r - inset, halfHeight - inset)
+  const span = 100 / Math.max(1, segments.length)
+  const released = status === "released"
+  const ink =
+    status === "blocked"
+      ? "var(--map-danger)"
+      : released
+        ? outgoing
+        : "var(--map-ink)"
+  return (
+    <>
+      <path className="hub-focus-ring" d={capsule(at, r + 8, halfHeight + 8)} />
+      <path d={capsule(at, r, halfHeight)} fill="var(--map-paper)" />
+      {segments.map((segment, i) => (
+        <path
+          key={segment.lineId}
+          d={ring}
+          fill="none"
+          stroke={segment.color}
+          strokeOpacity={segment.in ? 1 : 0.28}
+          strokeWidth={RING_WIDTH}
+          pathLength={100}
+          strokeDasharray={`${span - RING_GAP} ${100 - span + RING_GAP}`}
+          strokeDashoffset={-(i * span + RING_GAP / 2)}
+        />
+      ))}
+      <path
+        d={core}
+        fill={released ? outgoing : "var(--map-paper)"}
+        stroke={ink}
+        strokeOpacity={status === "reviewing" ? 0.22 : 1}
+        strokeWidth={2}
+      />
+      {status === "reviewing" && (
+        <path
+          d={core}
+          fill="none"
+          stroke="var(--map-ink)"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          pathLength={100}
+          strokeDasharray="26 74"
+          className="junction-spinner"
+        />
+      )}
+      {/* Two tracks merging into one, running on toward the outgoing Line. */}
+      <path
+        d={`M${at.x - 9},${at.y - 7} C${at.x - 2},${at.y - 7} ${at.x - 3},${at.y} ${at.x + 3},${at.y} M${at.x - 9},${at.y + 7} C${at.x - 2},${at.y + 7} ${at.x - 3},${at.y} ${at.x + 3},${at.y} H${at.x + 9}`}
+        fill="none"
+        stroke={released ? "white" : ink}
+        strokeWidth={2.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </>
   )
 }

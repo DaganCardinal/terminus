@@ -1,5 +1,5 @@
 import type { Station } from "@terminus/protocol"
-import type { ReactNode } from "react"
+import { Prose } from "@terminus/ui/components/prose"
 import {
   CircleCheck,
   CircleMinus,
@@ -20,7 +20,9 @@ export function List({ items, empty }: { items: string[]; empty?: string }) {
   return (
     <ul>
       {items.map((item, i) => (
-        <li key={i}>{item}</li>
+        <li key={i}>
+          <Prose text={item} />
+        </li>
       ))}
     </ul>
   )
@@ -75,54 +77,6 @@ export function CheckRow({ checks }: { checks: Checks }) {
   )
 }
 
-/** Renders an agent's plain-text report: paragraphs, "- " bullets, and
- * inline `code` and **bold**. Anything else stays as written. */
-export function Prose({ text }: { text: string }) {
-  const blocks: { kind: "p" | "ul"; lines: string[] }[] = []
-  for (const raw of text.split("\n")) {
-    const line = raw.trim()
-    const bullet = /^(?:[-*•]|\d+[.)])\s+(.*)$/.exec(line)
-    const last = blocks.at(-1)
-    if (!line) blocks.push({ kind: "p", lines: [] })
-    else if (bullet) {
-      if (last?.kind === "ul") last.lines.push(bullet[1] ?? "")
-      else blocks.push({ kind: "ul", lines: [bullet[1] ?? ""] })
-    } else if (last?.kind === "p") last.lines.push(line)
-    else blocks.push({ kind: "p", lines: [line] })
-  }
-  return (
-    <div className="prose">
-      {blocks
-        .filter((block) => block.lines.length > 0)
-        .map((block, i) =>
-          block.kind === "ul" ? (
-            <ul key={i}>
-              {block.lines.map((line, j) => (
-                <li key={j}>{inline(line)}</li>
-              ))}
-            </ul>
-          ) : (
-            <p key={i}>{inline(block.lines.join(" "))}</p>
-          )
-        )}
-    </div>
-  )
-}
-
-function inline(text: string): ReactNode[] {
-  return text
-    .split(/(`[^`]+`|\*\*[^*]+\*\*)/)
-    .map((part, i) =>
-      part.startsWith("`") && part.endsWith("`") && part.length > 1 ? (
-        <code key={i}>{part.slice(1, -1)}</code>
-      ) : part.startsWith("**") && part.endsWith("**") && part.length > 3 ? (
-        <strong key={i}>{part.slice(2, -2)}</strong>
-      ) : (
-        part
-      )
-    )
-}
-
 export const changeKinds: Record<
   NonNullable<Manifest["repositoryChange"]>["kind"],
   string
@@ -162,7 +116,7 @@ export function ManifestView({
       {change && (
         <div className="manifest-change">
           <span className="manifest-kind">{changeKinds[change.kind]}</span>
-          <p>{change.description}</p>
+          <Prose text={change.description} />
         </div>
       )}
       {(manifest.invariants.length > 0 || manifest.avoidAreas.length > 0) && (
@@ -187,11 +141,13 @@ export function ManifestView({
               {met ? "All met" : manifest.acceptanceCriteria.length}
             </span>
           </h4>
-          <ul className={`manifest-checklist${met ? " is-met" : ""}`}>
+          <ul
+            className={met ? "manifest-checklist is-met" : "manifest-checklist"}
+          >
             {manifest.acceptanceCriteria.map((item, i) => (
               <li key={i}>
                 <MetIcon size={14} aria-hidden="true" />
-                <span>{item}</span>
+                <Prose text={item} />
               </li>
             ))}
           </ul>
@@ -209,7 +165,7 @@ export function ManifestView({
               return (
                 <li key={i}>
                   {path && <code>{path}</code>}
-                  <span>{text}</span>
+                  <Prose text={text} />
                 </li>
               )
             })}

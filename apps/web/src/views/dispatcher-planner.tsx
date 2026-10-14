@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import { useRef, useState, type CSSProperties, type ReactNode } from "react"
 import {
   ChevronDown,
@@ -26,7 +27,6 @@ import { activityLabel } from "@/state/dispatch-activity"
 import { DispatchActivity } from "./dispatch-activity"
 import {
   ManifestView,
-  Prose,
   TechnicalDetails,
   changeKinds,
   manifestFacts,
@@ -91,12 +91,36 @@ export function PlanExchange({
         />
       ) : state.status === "failed" ? (
         <DispatcherMessage tone="attention" meta="Plan stopped">
-          <p>I couldn&rsquo;t turn this into a plan.</p>
-          <p className="dmsg-error">{state.message}</p>
+          <p>
+            {state.reason === "cancelled" ? (
+              state.cleanupPending ? (
+                "Planning cancelled. Press Stop to finish shutting it down."
+              ) : (
+                "Planning stopped at your request."
+              )
+            ) : (
+              <>I couldn&rsquo;t turn this into a plan.</>
+            )}
+          </p>
+          {state.reason !== "cancelled" && (
+            <Prose text={state.message} className="dmsg-error" format="plain" />
+          )}
+          {state.reason === "cancelled" && state.cleanupPending && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() =>
+                void command(() => api.stopPlan(networkId, plan.id))
+              }
+            >
+              Retry stop
+            </Button>
+          )}
           <div className="dmsg-actions">
             <Button
               size="sm"
-              disabled={pending}
+              disabled={pending || !!state.cleanupPending}
               onClick={() => propose(plan.goal)}
             >
               <RefreshCw size={14} /> Try again
@@ -240,7 +264,16 @@ function Proposal({
   // Matches launch order: an included fix is laid first, and every other
   // Line picks up its accepted checkpoint before its first Station.
   const lines = fixIncluded ? [fix.line, ...proposal.lines] : proposal.lines
-  const stations = lines.reduce((n, line) => n + line.stations.length, 0)
+  // Junction Lines are laid after these and shown in their Junction's card.
+  const featureLines = (proposal.junctions ?? []).flatMap((j) => [
+    ...j.incoming,
+    j.outgoing,
+  ])
+  const lineCount = lines.length + featureLines.length
+  const stations = [...lines, ...featureLines].reduce(
+    (n, line) => n + line.stations.length,
+    0
+  )
   const lineIds = "lineIds" in state ? state.lineIds : []
   const launchedLines = lineIds
     .map((id) => snapshot.lines.find((line) => line.id === id))
@@ -263,13 +296,13 @@ function Proposal({
     state.status === "ready" &&
     plan.terminusCommit !== snapshot.network.terminusCommit
   const blocked = assessment.errors.length > 0
-  const shape = `${plural(lines.length, "Line")} · ${plural(stations, "Station")}`
+  const shape = `${plural(lineCount, "Line")} · ${plural(stations, "Station")}`
 
   const superseded = state.status === "ready" && !latest
   const summary = launched
-    ? `Launched ${plural(lines.length, "Line")}.`
+    ? `Launched ${plural(lineCount, "Line")}.`
     : superseded
-      ? `Proposed ${plural(lines.length, "Line")}; not launched.`
+      ? `Proposed ${plural(lineCount, "Line")}; not launched.`
       : null
   const issues = assessment.errors.length + (stale ? 1 : 0)
   const notes = useRef<HTMLDivElement>(null)
@@ -324,7 +357,7 @@ function Proposal({
               <summary>
                 {j.name} · Junction · {j.incoming.length} incoming Lines
               </summary>
-              <p>{j.brief.goal}</p>
+              <Prose text={j.brief.goal} />
               <p>
                 Frozen baseline {shortCommit(plan.terminusCommit)}. All inputs
                 must be accepted; human approval releases the complete feature.
@@ -351,7 +384,9 @@ function Proposal({
               />
               <ul>
                 {j.brief.acceptanceCriteria.map((c, i) => (
-                  <li key={i}>{c}</li>
+                  <li key={i}>
+                    <Prose text={c} />
+                  </li>
                 ))}
               </ul>
               <details>
@@ -426,7 +461,9 @@ function Proposal({
                   >
                     <ul>
                       {assessment.errors.map((issue) => (
-                        <li key={issue}>{issue}</li>
+                        <li key={issue}>
+                          <Prose text={issue} />
+                        </li>
                       ))}
                     </ul>
                     <p>Refine the goal and I&rsquo;ll draft a fresh plan.</p>
@@ -492,7 +529,11 @@ function Proposal({
               ))}
             </div>
             {assessment.collisions.length > 0 && (
-              <PlanNote tone="held" title="Lines that may collide">
+              <PlanNote
+                tone="held"
+                title={`Lines that may collide · ${assessment.collisions.length}`}
+                collapsible
+              >
                 <ul>
                   {assessment.collisions.map((collision, index) => (
                     <li key={index}>
@@ -517,7 +558,7 @@ function Proposal({
             )}
             <PlanFooter
               state={state}
-              lines={lines.length}
+              lines={lineCount}
               issues={issues}
               showIssues={() =>
                 notes.current?.scrollIntoView({
@@ -596,7 +637,7 @@ function PlannedLineView({
               </button>
               {expanded && (
                 <div className="pstop-manifest">
-                  <p className="pstop-goal">{station.manifest.goal}</p>
+                  <Prose text={station.manifest.goal} className="pstop-goal" />
                   <ManifestView manifest={station.manifest} name={name} />
                   <TechnicalDetails
                     facts={manifestFacts(station.manifest)}
@@ -628,12 +669,15 @@ function PlannedLineView({
                 line={line.name}
               />
               {recommendation && (
-                <p className="pstop-reason">
-                  {recommendation.mode === mode
-                    ? "Why I suggest this: "
-                    : `I suggested ${recommendation.mode === "auto" ? "auto-unload" : "human approval"}: `}
-                  {recommendation.reason}
-                </p>
+                <Prose
+                  className="pstop-reason"
+                  text={
+                    (recommendation.mode === mode
+                      ? "Why I suggest this: "
+                      : `I suggested ${recommendation.mode === "auto" ? "auto-unload" : "human approval"}: `) +
+                    recommendation.reason
+                  }
+                />
               )}
             </div>
           )}
@@ -701,7 +745,7 @@ function Findings({ findings }: { findings: Finding[] }) {
         {findings.map((finding, index) => (
           <li key={index}>
             <strong>{finding.topic}</strong>
-            <p>{finding.summary}</p>
+            <Prose text={finding.summary} />
             {finding.paths.length > 0 && (
               <p className="plan-finding-paths">
                 {finding.paths.map((path) => (
@@ -793,12 +837,14 @@ function BaselineNote({
         </details>
       ))}
       {fix ? (
-        <p>
-          {fix.reason}{" "}
-          {included
-            ? `${fix.line.name} runs first; every other Line picks up its accepted fix before its first Station.`
-            : "The fix is rejected; Lines start from the failing baseline."}
-        </p>
+        <>
+          <Prose text={fix.reason} />
+          <p>
+            {included
+              ? `${fix.line.name} runs first; every other Line picks up its accepted fix before its first Station.`
+              : "The fix is rejected; Lines start from the failing baseline."}
+          </p>
+        </>
       ) : (
         <p>The Dispatcher did not suggest a separate fix for this goal.</p>
       )}
@@ -810,25 +856,44 @@ function PlanNote({
   tone,
   title,
   action,
+  collapsible,
   children,
 }: {
   tone: "attention" | "held"
   title: string
   action?: ReactNode
+  /** Starts closed, showing only the title. */
+  collapsible?: boolean
   children: ReactNode
 }) {
-  return (
-    <div className={`plan-note plan-note-${tone}`} role="note">
-      <h4>
-        {tone === "attention" ? (
-          <CircleAlert size={14} />
-        ) : (
-          <GitCompareArrows size={14} />
-        )}
-        {title}
-      </h4>
+  const heading = (
+    <h4>
+      {tone === "attention" ? (
+        <CircleAlert size={14} />
+      ) : (
+        <GitCompareArrows size={14} />
+      )}
+      {title}
+      {collapsible && (
+        <ChevronRight size={14} className="plan-note-chevron" aria-hidden />
+      )}
+    </h4>
+  )
+  const body = (
+    <>
       {children}
       {action && <div className="plan-note-action">{action}</div>}
+    </>
+  )
+  return collapsible ? (
+    <details className={`plan-note plan-note-${tone}`} role="note">
+      <summary>{heading}</summary>
+      {body}
+    </details>
+  ) : (
+    <div className={`plan-note plan-note-${tone}`} role="note">
+      {heading}
+      {body}
     </div>
   )
 }

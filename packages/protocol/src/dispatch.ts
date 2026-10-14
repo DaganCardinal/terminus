@@ -58,12 +58,54 @@ const manifest = workManifestSchema
   })
   .strict()
 
+/**
+ * The largest plan Terminus accepts. The proposal schemas, the plan tools'
+ * outline checks and the Dispatcher's instructions all use these values.
+ */
+export const planLimits = {
+  /** Top-level Lines. Junction and baseline-fix Lines do not count. */
+  lines: 8,
+  /** Stations on one top-level or baseline-fix Line. */
+  stationsPerLine: 6,
+  /** Stations in the whole plan, including Junction and baseline-fix Lines. */
+  stations: 24,
+  junctions: 4,
+} as const
+
+const plannedStationsLimit = `Plan at most ${planLimits.stations} Stations`
+
+/** Every Station in a proposal, wherever its Line sits. */
+function plannedStationCount(proposal: {
+  lines: { stations: unknown[] }[]
+  baselineFix?: { line: { stations: unknown[] } }
+  junctions?: {
+    incoming: { stations: unknown[] }[]
+    outgoing: { stations: unknown[] }
+  }[]
+}): number {
+  return (
+    proposal.lines.reduce((n, line) => n + line.stations.length, 0) +
+    (proposal.baselineFix?.line.stations.length ?? 0) +
+    (proposal.junctions ?? []).reduce(
+      (n, j) =>
+        n +
+        j.incoming.reduce((m, l) => m + l.stations.length, 0) +
+        j.outgoing.stations.length,
+      0
+    )
+  )
+}
+
 const plannedLineSchema = z
   .object({
     key,
     name: z.string().trim().min(1).max(120),
     unloadRecommendation: unloadRecommendationSchema,
-    route: z.array(plannedStopSchema).min(1).max(24).optional(),
+    route: z
+      .array(plannedStopSchema)
+      .min(1)
+      .max(planLimits.stations)
+      .optional(),
     stations: z
       .array(
         z
@@ -75,7 +117,7 @@ const plannedLineSchema = z
           .strict()
       )
       .min(1)
-      .max(6),
+      .max(planLimits.stationsPerLine),
   })
   .strict()
 
@@ -152,28 +194,19 @@ export const dispatchProposalSchema = z
       .array(
         createJunctionRequestSchema.omit({ requestId: true }).extend({ key })
       )
-      .max(4)
+      .max(planLimits.junctions)
       .optional(),
     summary: text,
-    lines: z.array(plannedLineSchema).min(0).max(8),
+    lines: z.array(plannedLineSchema).min(0).max(planLimits.lines),
     findings: z.array(findingSchema).max(12).optional(),
     baselineFix: baselineFixSchema.optional(),
   })
   .strict()
   .refine(
     (proposal) =>
-      proposal.lines.reduce((n, l) => n + l.stations.length, 0) +
-        (proposal.baselineFix?.line.stations.length ?? 0) +
-        (proposal.junctions ?? []).reduce(
-          (n, j) =>
-            n +
-            j.incoming.reduce((m, l) => m + l.stations.length, 0) +
-            j.outgoing.stations.length,
-          0
-        ) <=
-        24 &&
+      plannedStationCount(proposal) <= planLimits.stations &&
       (proposal.lines.length > 0 || !!proposal.junctions?.length),
-    "Plan at most twenty-four Stations"
+    plannedStationsLimit
   )
 
 /**
@@ -198,13 +231,119 @@ export const dispatchProposalSubmissionSchema = z
               })
             )
             .min(1)
-            .max(6),
+            .max(planLimits.stationsPerLine),
         })
       )
       .min(0)
-      .max(8),
+      .max(planLimits.lines),
   })
   .strict()
+
+/**
+ * One Line of a plan outline: its identity, route and ordered Station keys.
+ * Each Station's Manifest arrives separately (`planStationSchema`).
+ */
+export const outlineLineSchema = z
+  .object({
+    key,
+    name: plannedLineSchema.shape.name,
+    unloadRecommendation: unloadRecommendationSchema
+      .optional()
+      .describe(
+        "Required on top-level and baseline-fix Lines. On a Junction's outgoing Line, its mode sets how the finished feature unloads. Leave it out on Junction incoming Lines: they always unload into their Junction automatically."
+      ),
+    stations: z
+      .array(key)
+      .max(planLimits.stations)
+      .describe(
+        "This Line's Station keys, in order. Each Station needs its own put_station call. Only a Junction's outgoing Line may have none."
+      ),
+    route: plannedLineSchema.shape.route,
+    shared: lineSharedSchema.optional(),
+  })
+  .strict()
+
+/**
+ * The network layout of a plan, without Station Manifests. Every Line is
+ * listed once under `lines`; Junctions and the baseline fix name their Lines
+ * by key. Terminus assembles the proposal from the outline and the Stations.
+ */
+export const planOutlineSchema = z
+  .object({
+    summary: text,
+    lines: z.array(outlineLineSchema).min(1).max(32),
+    junctions: z
+      .array(
+        z
+          .object({
+            key,
+            name: createJunctionRequestSchema.shape.name,
+            brief: createJunctionRequestSchema.shape.brief,
+            incoming: z
+              .array(key)
+              .min(2)
+              .max(8)
+              .describe("Keys of the Lines that end at this Junction."),
+            outgoing: key.describe(
+              "Key of the Line that leaves this Junction for Terminus."
+            ),
+          })
+          .strict()
+      )
+      .max(planLimits.junctions)
+      .optional(),
+    findings: z.array(findingSchema).max(12).optional(),
+    baselineFix: z
+      .object({
+        reason: baselineFixSchema.shape.reason,
+        line: key.describe(
+          "Key of the Line, with exactly one Station and no route, that fixes the failing checks."
+        ),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+export type PlanOutline = z.infer<typeof planOutlineSchema>
+
+/**
+ * One Station as the Dispatcher submits it: flat fields, so no value nests
+ * deeper than a list. `invariants` and `expectedEvidence` may come from the
+ * Line's `shared` values instead.
+ */
+export const planStationSchema = z
+  .object({
+    key,
+    name: plannedLineSchema.shape.stations.element.shape.name,
+    goal: manifest.shape.goal,
+    changeKind: concreteRepositoryChangeSchema.shape.kind.describe(
+      "The primary kind of repository change this Station delivers."
+    ),
+    changeDescription:
+      concreteRepositoryChangeSchema.shape.description.describe(
+        "The concrete repository change this Station delivers."
+      ),
+    scope: manifest.shape.scope,
+    expectedAreas: manifest.shape.expectedAreas,
+    avoidAreas: manifest.shape.avoidAreas.optional(),
+    contracts: manifest.shape.contracts.optional(),
+    invariants: lineSharedSchema.shape.invariants,
+    dependencies: manifest.shape.dependencies.optional(),
+    acceptanceCriteria: manifest.shape.acceptanceCriteria,
+    expectedEvidence: lineSharedSchema.shape.expectedEvidence,
+    projectFacts: manifest.shape.projectFacts,
+  })
+  .strict()
+export type PlanStation = z.infer<typeof planStationSchema>
+
+/** A plan being assembled from tool calls: the outline and Stations saved so far. */
+export const planDraftSchema = z
+  .object({
+    outline: planOutlineSchema.optional(),
+    stations: z.record(key, planStationSchema),
+  })
+  .strict()
+export type PlanDraft = z.infer<typeof planDraftSchema>
 
 export const createDispatchPlanRequestSchema = z
   .object({
@@ -237,6 +376,8 @@ const storedStation =
       repositoryChange: repositoryChangeSchema.optional(),
     }),
   })
+// Reading follows `planLimits`, so a raised limit reads back. A lowered one
+// must keep its old value here, or plans saved before it stop reading.
 const storedProposal = z
   .strictObject({
     ...dispatchProposalSchema.shape,
@@ -245,11 +386,14 @@ const storedProposal = z
         dispatchProposalSchema.shape.lines.element.extend({
           unloadRecommendation: unloadRecommendationSchema.optional(),
           unloadMode: unloadModeSchema.optional(),
-          stations: z.array(storedStation).min(1).max(6),
+          stations: z
+            .array(storedStation)
+            .min(1)
+            .max(planLimits.stationsPerLine),
         })
       )
       .min(0)
-      .max(8),
+      .max(planLimits.lines),
     baselineFix: baselineFixSchema
       .extend({
         line: baselineFixSchema.shape.line.extend({
@@ -262,17 +406,8 @@ const storedProposal = z
   .refine(
     (proposal) =>
       (proposal.lines.length > 0 || !!proposal.junctions?.length) &&
-      proposal.lines.reduce((n, line) => n + line.stations.length, 0) +
-        (proposal.baselineFix?.line.stations.length ?? 0) +
-        (proposal.junctions ?? []).reduce(
-          (n, j) =>
-            n +
-            j.incoming.reduce((m, l) => m + l.stations.length, 0) +
-            j.outgoing.stations.length,
-          0
-        ) <=
-        24,
-    "Plan at most twenty-four Stations"
+      plannedStationCount(proposal) <= planLimits.stations,
+    plannedStationsLimit
   )
 const reviewed = {
   proposal: storedProposal,
@@ -311,6 +446,11 @@ export const dispatchPlanSchema = z.object({
       lineIds: z.array(z.string()),
       trainIds: z.array(z.string()),
     }),
-    z.object({ status: z.literal("failed"), message: z.string() }),
+    z.object({
+      status: z.literal("failed"),
+      message: z.string(),
+      reason: z.literal("cancelled").optional(),
+      cleanupPending: z.boolean().optional(),
+    }),
   ]),
 })

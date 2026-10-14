@@ -87,7 +87,10 @@ export interface PlanAssessment {
 }
 
 export interface PlanningContext {
-  validationNames: string[]
+  /** The project's configured checks. Their names are the evidence a Station
+   * may request, and every converged Junction feature runs them, so a feature
+   * check may reuse a name only with its command. */
+  projectChecks: { name: string; command: string[] }[]
   lines?: Line[]
   stations?: Station[]
   junctions?: import("./junction").Junction[]
@@ -124,7 +127,12 @@ export interface DispatchPlan {
         lineIds: string[]
         trainIds: string[]
       } & ReviewedPlan)
-    | { status: "failed"; message: string }
+    | {
+        status: "failed"
+        message: string
+        reason?: "cancelled"
+        cleanupPending?: boolean
+      }
 }
 
 export function createDispatchPlan(
@@ -153,6 +161,16 @@ export function assessDispatchProposal(
     for (const j of proposal.junctions) {
       if (j.incoming.length < 2)
         errors.push("A Junction needs at least two incoming Lines")
+      for (const check of j.brief.validation) {
+        const project = context.projectChecks.find((c) => c.name === check.name)
+        if (
+          project &&
+          JSON.stringify(project.command) !== JSON.stringify(check.command)
+        )
+          errors.push(
+            `${j.name}: feature check ${check.name} conflicts with the project check of that name (${project.command.join(" ")}). Project checks already run on the feature; remove it or give it a different name.`
+          )
+      }
       expanded.lines.push(
         ...j.incoming.map((l, i) => ({
           ...l,
@@ -217,7 +235,7 @@ export function assessDispatchProposal(
       }
       seen.add(station.key)
       for (const name of station.manifest.expectedEvidence) {
-        if (!context.validationNames.includes(name))
+        if (!context.projectChecks.some((check) => check.name === name))
           errors.push(
             `${label}: evidence ${name} is not a configured project check.`
           )
@@ -379,7 +397,7 @@ export function assessDispatchProposal(
   }
 }
 
-function pathsOverlap(a: string, b: string): boolean {
+export function pathsOverlap(a: string, b: string): boolean {
   a = a.replace(/\/$/, "")
   b = b.replace(/\/$/, "")
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
@@ -539,6 +557,40 @@ export function finishPlanLaunch(plan: DispatchPlan): Transition<DispatchPlan> {
       lineIds: plan.state.lineIds,
       trainIds: plan.state.trainIds,
     },
+  ])
+}
+
+/** User cancellation uses the existing terminal storage status, with an explicit reason. */
+export function cancelDispatchPlan(
+  plan: DispatchPlan
+): Transition<DispatchPlan> {
+  if (plan.state.status === "failed" && plan.state.reason === "cancelled")
+    return accept(plan, [])
+  if (plan.state.status !== "planning")
+    return reject("invalid_state", "Only a plan being prepared can be stopped")
+  return accept(
+    {
+      ...plan,
+      state: {
+        status: "failed",
+        reason: "cancelled",
+        cleanupPending: true,
+        message: "Planning stopped at your request.",
+      },
+    },
+    [{ type: "dispatcher.plan_cancelled", planId: plan.id }]
+  )
+}
+
+/** Resource cleanup completes separately from the durable cancellation fence. */
+export function finishDispatchCancellation(
+  plan: DispatchPlan
+): Transition<DispatchPlan> {
+  if (plan.state.status !== "failed" || plan.state.reason !== "cancelled")
+    return reject("invalid_state", "Plan was not cancelled")
+  if (!plan.state.cleanupPending) return accept(plan, [])
+  return accept({ ...plan, state: { ...plan.state, cleanupPending: false } }, [
+    { type: "dispatcher.plan_stopped", planId: plan.id },
   ])
 }
 

@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import type { NetworkListing, RepositoryOverview } from "@terminus/protocol"
 import { buttonVariants } from "@terminus/ui/components/button"
 import { cn } from "@terminus/ui/lib/utils"
@@ -220,7 +221,11 @@ export function NetworkOverview({
               </span>
             </div>
             {description && (
-              <p className="overview-description">{description}</p>
+              <Prose
+                text={description}
+                className="overview-description"
+                format="plain"
+              />
             )}
             <ul className="overview-meta">
               {source ? (

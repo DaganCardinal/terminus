@@ -93,6 +93,81 @@ async function withSandbox(
   })
 }
 
+describe("Sandbox cancellation", () => {
+  it("aborts outbound calls before headers and after streaming begins, and refuses new work", async () => {
+    await withSandbox(async (sandbox, f) => {
+      await sandbox.configure({
+        repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
+        allowModel: false,
+      })
+      let started!: () => void
+      const pending = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      let captured!: Request
+      const transport = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (input) => {
+          captured = input as Request
+          started()
+          return new Promise<Response>((_, reject) =>
+            captured.signal.addEventListener("abort", () =>
+              reject(new DOMException("Stopped", "AbortError"))
+            )
+          )
+        })
+      try {
+        const response = sandbox.outbound(
+          new Request("https://registry.npmjs.org/package")
+        )
+        const rejected = expect(response).rejects.toMatchObject({
+          name: "AbortError",
+        })
+        await pending
+        await sandbox.cancel()
+        await rejected
+        expect(captured.signal.aborted).toBe(true)
+        expect(f.container.destroy).toHaveBeenCalled()
+        await expect(
+          sandbox.configure({ repositories: [], allowModel: false })
+        ).rejects.toThrow("cancelled")
+        await expect(sandbox.run(["echo", "never"])).rejects.toThrow(
+          "cancelled"
+        )
+        await expect(
+          sandbox.outbound(new Request("https://registry.npmjs.org/package"))
+        ).rejects.toThrow("cancelled")
+      } finally {
+        transport.mockRestore()
+      }
+    })
+    await withSandbox(async (sandbox) => {
+      await sandbox.configure({
+        repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
+        allowModel: false,
+      })
+      let captured!: Request
+      const transport = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (input) => {
+          captured = input as Request
+          return new Response(new ReadableStream<Uint8Array>())
+        })
+      try {
+        const response = await sandbox.outbound(
+          new Request("https://registry.npmjs.org/package")
+        )
+        expect(captured.signal.aborted).toBe(false)
+        await sandbox.cancel()
+        expect(captured.signal.aborted).toBe(true)
+        await response.body?.cancel()
+      } finally {
+        transport.mockRestore()
+      }
+    })
+  })
+})
+
 describe("Sandbox streaming commands", () => {
   it("streams stdout with the existing environment, EOF stdin and no stderr exposure", async () => {
     await withSandbox(async (sandbox, f) => {
@@ -469,10 +544,22 @@ describe("Sandbox sizes", () => {
       close: vi.fn(async () => {
         stub.isRunning = false
       }),
+      cancel: vi.fn(async () => {}),
       purge: vi.fn(async () => {}),
     }
     return stub
   }
+
+  it("persists Stop before any startup and cancels every possible container size", async () => {
+    await withRouter(async (sandbox, containers, state) => {
+      await sandbox.cancel()
+      expect(await state.storage.get("cancelled")).toBe(true)
+      for (const size of ["standard-1", "standard-2", "standard-3"])
+        expect(containers[size]!.cancel).toHaveBeenCalledOnce()
+      await expect(sandbox.configure(network)).rejects.toThrow("cancelled")
+      await sandbox.cancel()
+    })
+  })
 
   it("starts at the network's size, and changes size only once no container runs", async () => {
     await useSizes("standard-3")

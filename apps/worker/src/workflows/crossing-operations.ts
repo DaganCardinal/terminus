@@ -1,3 +1,4 @@
+import { wakeHeldTrains } from "./train-operations"
 import {
   approachCrossing,
   completeCrossing,
@@ -40,6 +41,7 @@ async function fail(
     ],
     result.events
   )
+  await wakeHeldTrains(ports, loaded.networkId)
   return { kind: "moved" }
 }
 /** Called only by the receiving Train Workflow; it never writes the source Station. */

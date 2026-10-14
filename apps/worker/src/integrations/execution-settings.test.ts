@@ -94,6 +94,7 @@ describe("immutable execution settings", () => {
       planner: new FakeDispatchPlanner(),
       startPlanning: async () => {},
       wakePlan: async () => {},
+      stopPlan: async () => {},
       retryPlan: async () => {},
     }
     const plan = await proposeDispatchPlan(ports, network.id, {

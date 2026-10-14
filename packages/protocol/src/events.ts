@@ -55,6 +55,51 @@ const stationEvent = <T extends string>(type: T) =>
 const issues = z.array(issueSchema).min(1)
 
 export const domainEventSchema = z.discriminatedUnion("type", [
+  trainEvent("engineer.assessed").extend({
+    assessmentId: z.string(),
+    purpose: z.string(),
+    action: z.string(),
+  }),
+  trainEvent("dispatcher.engineer_notice_raised").extend({
+    noticeId: z.string(),
+    summary: z.string(),
+  }),
+  trainEvent("dispatcher.engineer_notice_acknowledged").extend({
+    noticeId: z.string(),
+  }),
+  trainEvent("dispatcher.engineer_notice_resolved").extend({
+    noticeId: z.string(),
+  }),
+  trainEvent("dispatcher.conflict_investigating").extend({
+    watchId: z.string(),
+    otherTrainId: z.string(),
+    route: z.enum(["overlap", "triage"]),
+  }),
+  trainEvent("dispatcher.conflict_reported").extend({
+    watchId: z.string(),
+    otherTrainId: z.string(),
+    summary: z.string(),
+    paths: z.array(z.string()),
+  }),
+  trainEvent("dispatcher.conflict_cleared").extend({
+    watchId: z.string(),
+    otherTrainId: z.string(),
+    summary: z.string(),
+  }),
+  trainEvent("dispatcher.conflict_investigation_failed").extend({
+    watchId: z.string(),
+    otherTrainId: z.string(),
+    reason: z.string(),
+  }),
+  trainEvent("dispatcher.conflict_acknowledged").extend({
+    watchId: z.string(),
+    otherTrainId: z.string(),
+  }),
+  trainAtStationEvent("station.run_failed").extend({
+    runId: z.string(),
+    issues,
+    phase: z.string().optional(),
+  }),
   z.object({
     type: z.literal("junction.release_approved"),
     junctionId: z.string(),
@@ -177,6 +222,11 @@ export const domainEventSchema = z.discriminatedUnion("type", [
     planId: z.string(),
   }),
   z.object({ type: z.literal("dispatcher.plan_failed"), planId: z.string() }),
+  z.object({
+    type: z.literal("dispatcher.plan_cancelled"),
+    planId: z.string(),
+  }),
+  z.object({ type: z.literal("dispatcher.plan_stopped"), planId: z.string() }),
   z.object({
     type: z.literal("dispatcher.baseline_fix_selected"),
     planId: z.string(),

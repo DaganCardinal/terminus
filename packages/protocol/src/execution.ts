@@ -38,8 +38,6 @@ export const harnessEventSchema = z.discriminatedUnion("type", [
       data: z.object({ message: z.string().optional() }).optional(),
     }),
   }),
-  /** A proposal the Dispatcher submitted through its proposal tool. */
-  z.object({ type: z.literal("submission"), proposal: z.unknown() }),
 ])
 
 export const chatCompletionSchema = z.object({
@@ -85,13 +83,14 @@ export const sandboxNetworkSchema = z.object({
     .regex(/^[A-Za-z0-9_-]{1,128}$/)
     .optional(),
   /**
-   * Lets a planning harness check its proposal while it works, through the
-   * outbound handler's proposal tool. The check is advisory: the Workflow
-   * validates the final proposal again. Orchestration supplies the planning
-   * context, never the Sandbox.
+   * Lets a planning harness write its plan through the outbound handler's
+   * plan tools, which save each piece to the plan's draft and check it. The
+   * checks are advisory: the Workflow validates the assembled proposal again.
+   * Orchestration supplies the plan and its context, never the Sandbox.
    */
   proposalCheck: z
     .object({
+      planId: z.string().min(1),
       network: z.custom<PlanningContext>(isObject),
       baseline: z.custom<BaselineReport>(isObject).nullable(),
     })

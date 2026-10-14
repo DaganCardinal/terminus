@@ -20,6 +20,7 @@ async function fixture() {
     planner: new FakeDispatchPlanner(),
     startPlanning: async () => {},
     wakePlan: async () => {},
+    stopPlan: vi.fn(async () => {}),
     retryPlan: async () => {},
   }
   const plan = await proposeDispatchPlan(ports, network.id, {

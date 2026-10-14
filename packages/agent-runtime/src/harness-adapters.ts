@@ -104,7 +104,7 @@ export function harnessInvocation(
     }
   if (config.harness === "claude-code") {
     const tools =
-      agent.capability === "planning"
+      agent.capability === "planning" || agent.capability === "investigation"
         ? "Read,Glob,Grep"
         : agent.capability === "review"
           ? "Read,Glob,Grep,Bash"
@@ -112,7 +112,6 @@ export function harnessInvocation(
     return {
       command: [
         "claude",
-        "--bare",
         "--print",
         "--output-format",
         "stream-json",
@@ -161,63 +160,37 @@ export function harnessInvocation(
         [`${root}/claude-settings.json`]: JSON.stringify({
           permissions: {
             deny: ["Read(**/.env)", "Read(**/.env.*)"],
-            blockReadsOutsideWorkingDirectories: true,
             additionalDirectories:
               agent.capability === "review"
                 ? ["/workspace/review", "/tmp"]
                 : ["/tmp"],
           },
           disableAllHooks: true,
-          sandbox: {
-            enabled: agent.capability !== "planning",
-            failIfUnavailable: true,
-            allowUnsandboxedCommands: false,
-            autoAllowBashIfSandboxed: true,
-            excludedCommands: [],
-            enableWeakerNestedSandbox: false,
-            filesystem: {
-              allowWrite:
-                agent.capability === "review"
-                  ? ["/workspace/review", "/tmp"]
-                  : ["/tmp"],
-              denyWrite: [
-                root,
-                ...(agent.capability === "review" ? [directory] : []),
-              ],
-            },
-            network: {
-              allowedDomains: ["registry.npmjs.org", "localhost", "127.0.0.1"],
-              allowLocalBinding: true,
-            },
-          },
+          // The Sandbox container and outbound Worker are the security
+          // boundary, so Claude Code's own Bash sandbox is off.
+          sandbox: { enabled: false },
         }),
       },
     }
   }
-  // Keep native filesystem sandboxing on. A CLI that cannot enforce this in
-  // Cloudflare fails; never retry with the sandbox/approval bypass flags.
+  // The Sandbox container and outbound Worker are the security boundary, so
+  // Codex's own command sandbox and approvals are off. Codex then loads the
+  // repository's `.codex/config.toml` even for an untrusted project, so these
+  // flags (which take precedence) and the managed requirements file below
+  // override what it could set.
   const settings = {
     model_provider: "terminus",
     model: entry.apiModel,
     model_instructions_file: `${root}/system.txt`,
+    developer_instructions: "",
     project_doc_max_bytes: 0,
     project_doc_fallback_filenames: [],
-    approval_policy: "never",
-    default_permissions: "terminus",
-    "permissions.terminus.filesystem": {
-      ":root": "read",
-      [directory]: ["planning", "review"].includes(agent.capability)
-        ? "read"
-        : "write",
-      "/tmp": "write",
-      ...(agent.capability === "review"
-        ? { "/workspace/review": "write" }
-        : {}),
-    },
-    "permissions.terminus.network.enabled": agent.capability !== "planning",
     web_search: "disabled",
     "features.plugins": false,
-    "features.skills": false,
+    // 0.156.1 ignores `features.skills`; these remove bundled skills and
+    // the skills instructions.
+    "skills.bundled.enabled": false,
+    "skills.include_instructions": false,
     "features.hooks": false,
     "features.memories": false,
     "features.multi_agent": false,
@@ -251,6 +224,7 @@ export function harnessInvocation(
       ]),
       "exec",
       ...(session ? ["resume", session] : []),
+      "--dangerously-bypass-approvals-and-sandbox",
       "--json",
       "--skip-git-repo-check",
       "--output-last-message",
@@ -261,8 +235,8 @@ export function harnessInvocation(
     env: { CODEX_HOME: `${root}/codex` },
     files: {
       [`${root}/system.txt`]: system,
-      "/etc/codex/requirements.toml":
-        'allowed_permission_profiles = ["terminus"]\ndefault_permissions = "terminus"\nallowed_approval_policies = ["never", "untrusted"]\n',
+      // An empty allowlist: no MCP server, including a repository's, starts.
+      "/etc/codex/requirements.toml": "[mcp_servers]\n",
     },
   }
 }

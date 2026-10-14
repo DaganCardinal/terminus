@@ -1,9 +1,10 @@
+import { Prose } from "@terminus/ui/components/prose"
 import type { NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
-import { ArrowUpRight, RotateCcw } from "lucide-react"
+import { ArrowUpRight, CirclePause, RotateCcw } from "lucide-react"
 import { lineBadge } from "@/map/layout"
 import { api } from "@/state/api"
-import { describeIssues, namesFor } from "./describe"
+import { namesFor } from "./describe"
 import { CheckRow } from "./detail-parts"
 import { DispatcherMessage, LineBadge } from "./dispatcher-message"
 
@@ -21,6 +22,167 @@ export function attentionTrains(snapshot: NetworkSnapshot) {
       train.state.reasons.some((r) => r.kind === "awaiting_user_approval")
   )
   return { blocked, awaiting }
+}
+
+/** Possible conflicts the Dispatcher reported. Checks it is still running
+ * stay silent; only a confirmed pair needs the user. */
+export function conflictThreads(snapshot: NetworkSnapshot) {
+  const concerns = snapshot.conflictConcerns ?? []
+  return {
+    reported: concerns.filter((concern) => concern.pair.stage === "confirmed"),
+  }
+}
+
+/** The Dispatcher's conflict reports. Holding is the user's call; the
+ * report itself never moves a Train. */
+export function ConflictMessages({
+  snapshot,
+  pending,
+  command,
+  openTrain,
+}: {
+  snapshot: NetworkSnapshot
+  pending: boolean
+  command: Command
+  openTrain: (lineId: string) => void
+}) {
+  const name = namesFor(snapshot)
+  const { reported } = conflictThreads(snapshot)
+  const badge = (lineId: string) => {
+    const badge = lineBadge(snapshot, lineId)
+    return badge ? (
+      <LineBadge color={badge.color} number={badge.number} />
+    ) : null
+  }
+  const held = (trainId: string) =>
+    snapshot.holds.some(
+      (hold) => hold.scope.kind === "train" && hold.scope.trainId === trainId
+    )
+  return (
+    <>
+      {reported.map((concern) => {
+        const { pair } = concern
+        const finding = pair.investigation?.finding
+        if (!finding) return null
+        const hold = finding.suggestedHold
+        const holdLine =
+          hold === concern.trainId
+            ? concern.lineId
+            : hold === pair.otherTrainId
+              ? pair.otherLineId
+              : undefined
+        return (
+          <DispatcherMessage
+            card
+            key={`${concern.watchId}:${pair.otherTrainId}`}
+            tone="attention"
+            meta={
+              <>
+                {badge(concern.lineId)} {badge(pair.otherLineId)} Possible{" "}
+                {finding.kind === "textual" ? "merge conflict" : "conflict"}
+              </>
+            }
+          >
+            <p>
+              <strong>{name(concern.lineId)}</strong> and{" "}
+              <strong>{name(pair.otherLineId)}</strong> look likely to collide
+              when both reach Terminus.
+            </p>
+            <Prose className="dmsg-quote" text={finding.summary} />
+            {finding.paths.length > 0 && (
+              <p className="dmsg-hint">
+                {finding.paths.slice(0, 6).join(", ")}
+                {finding.paths.length > 6
+                  ? ` and ${finding.paths.length - 6} more`
+                  : ""}
+              </p>
+            )}
+            {(finding.details.length > 0 || pair.investigation) && (
+              <details className="dmsg-details">
+                <summary>How I checked</summary>
+                <p>
+                  {pair.route === "overlap"
+                    ? "Both Lines touch the same files, so I investigated directly."
+                    : "Clef judged the Lines related, so I investigated."}{" "}
+                  {pair.investigation?.trialMerge
+                    ? pair.investigation.trialMerge.clean
+                      ? "A trial merge of both Trains was clean."
+                      : `A trial merge of both Trains conflicted in ${pair.investigation.trialMerge.conflictPaths.length} ${pair.investigation.trialMerge.conflictPaths.length === 1 ? "file" : "files"}.`
+                    : ""}
+                </p>
+                {finding.details.length > 0 && (
+                  <ul>
+                    {finding.details.map((detail, index) => (
+                      <li key={index}>
+                        <Prose text={detail} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {pair.investigation?.checks?.length ? (
+                  <p>
+                    Checks on the merged result:{" "}
+                    {pair.investigation.checks
+                      .map((check) => `${check.name} ${check.status}`)
+                      .join(", ")}
+                  </p>
+                ) : null}
+              </details>
+            )}
+            <div className="dmsg-actions">
+              {hold && holdLine && !held(hold) && (
+                <Button
+                  size="sm"
+                  disabled={pending}
+                  onClick={() =>
+                    void command(() =>
+                      api.placeHold(snapshot.network.id, {
+                        kind: "user",
+                        scope: { kind: "train", trainId: hold },
+                        note: `Held for a possible conflict with ${name(hold === concern.trainId ? pair.otherLineId : concern.lineId)}`,
+                      })
+                    )
+                  }
+                >
+                  <CirclePause size={14} /> Hold {name(holdLine)}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => openTrain(concern.lineId)}
+              >
+                Open {name(concern.lineId)} <ArrowUpRight size={14} />
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => openTrain(pair.otherLineId)}
+              >
+                Open {name(pair.otherLineId)} <ArrowUpRight size={14} />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={() =>
+                  void command(() =>
+                    api.acknowledgeConflictReport(
+                      snapshot.network.id,
+                      concern.watchId,
+                      pair.otherTrainId
+                    )
+                  )
+                }
+              >
+                Acknowledge
+              </Button>
+            </div>
+          </DispatcherMessage>
+        )
+      })}
+    </>
+  )
 }
 
 export function AttentionMessages({
@@ -53,6 +215,59 @@ export function AttentionMessages({
   )
   return (
     <>
+      {(snapshot.engineerNotices ?? [])
+        .filter(
+          (notice) => !blocked.some((view) => view.train.id === notice.trainId)
+        )
+        .map((notice) => {
+          const train = snapshot.trains.find(
+            (view) => view.train.id === notice.trainId
+          )?.train
+          if (!train) return null
+          return (
+            <DispatcherMessage
+              card
+              key={notice.id}
+              tone="attention"
+              meta={<>{badge(train.lineId)} Engineer concern</>}
+            >
+              <p>{notice.summary}</p>
+              {notice.dependencyIds.map((id) => {
+                const station = snapshot.stations.find(
+                  (station) => station.id === id
+                )
+                return station ? (
+                  <Button
+                    key={id}
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => openTrain(station.lineId)}
+                  >
+                    Open {station.name} <ArrowUpRight size={14} />
+                  </Button>
+                ) : null
+              })}
+              <div className="dmsg-actions">
+                {open(train.lineId)}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={() =>
+                    void command(() =>
+                      api.acknowledgeEngineerNotice(
+                        snapshot.network.id,
+                        notice.id
+                      )
+                    )
+                  }
+                >
+                  Acknowledge
+                </Button>
+              </div>
+            </DispatcherMessage>
+          )
+        })}
       {(snapshot.junctions ?? [])
         .filter(
           (j) => j.state.status === "ready" || j.state.status === "blocked"
@@ -71,7 +286,15 @@ export function AttentionMessages({
                 : "needs intervention."}
             </p>
             {j.state.status === "blocked" && (
-              <p className="dmsg-quote">{describeIssues(j.state.issues)}</p>
+              <>
+                {j.state.issues.map((issue, index) => (
+                  <Prose
+                    key={index}
+                    className="dmsg-quote"
+                    text={issue.detail}
+                  />
+                ))}
+              </>
             )}
             <div className="dmsg-actions">
               {open(j.outgoingLineId, "Review Junction")}
@@ -100,7 +323,33 @@ export function AttentionMessages({
               <p>
                 <strong>{name(train.id)}</strong> has stopped and needs you.
               </p>
-              <p className="dmsg-quote">{describeIssues(train.state.issues)}</p>
+              {train.state.issues.map((issue, index) => (
+                <Prose key={index} className="dmsg-quote" text={issue.detail} />
+              ))}
+              {(snapshot.engineerNotices ?? [])
+                .filter((notice) => notice.trainId === train.id)
+                .map((notice) => (
+                  <div key={notice.id}>
+                    <p>
+                      <strong>{name(train.id)}</strong> · {notice.summary}
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={pending}
+                      onClick={() =>
+                        void command(() =>
+                          api.acknowledgeEngineerNotice(
+                            snapshot.network.id,
+                            notice.id
+                          )
+                        )
+                      }
+                    >
+                      Acknowledge
+                    </Button>
+                  </div>
+                ))}
               <div className="dmsg-actions">{open(train.lineId)}</div>
             </DispatcherMessage>
           )
@@ -129,19 +378,19 @@ export function AttentionMessages({
                 : "used all its automatic revisions, so the Engineer stopped the Train and flagged me."}
             </p>
             {exhausted.map((issue, index) => (
-              <p key={index} className="dmsg-quote">
-                {issue.detail}
-              </p>
+              <Prose key={index} className="dmsg-quote" text={issue.detail} />
             ))}
             {station?.lastReview && (
               <details className="dmsg-details">
                 <summary>Latest Conductor feedback</summary>
-                <p>{station.lastReview.feedback.summary}</p>
+                <Prose text={station.lastReview.feedback.summary} />
                 {station.lastReview.feedback.findings.length > 0 && (
                   <ul>
                     {station.lastReview.feedback.findings.map(
                       (finding, index) => (
-                        <li key={index}>{finding}</li>
+                        <li key={index}>
+                          <Prose text={finding} />
+                        </li>
                       )
                     )}
                   </ul>

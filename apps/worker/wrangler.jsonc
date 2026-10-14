@@ -85,6 +85,11 @@
       "binding": "INTEGRATION_WORKFLOW",
       "class_name": "IntegrationWorkflow",
     },
+    {
+      "name": "terminus-conflict-watch",
+      "binding": "CONFLICT_WATCH_WORKFLOW",
+      "class_name": "ConflictWatchWorkflow",
+    },
   ],
   // Agent roles run harnesses in ExecutionSandbox. Git, validation and
   // previews run in the agentless WorkspaceSandbox, which has its own image
@@ -326,6 +331,11 @@
           "name": "terminus-integration-fake",
           "binding": "INTEGRATION_WORKFLOW",
           "class_name": "IntegrationWorkflow",
+        },
+        {
+          "name": "terminus-conflict-watch-fake",
+          "binding": "CONFLICT_WATCH_WORKFLOW",
+          "class_name": "ConflictWatchWorkflow",
         },
       ],
       "vars": {

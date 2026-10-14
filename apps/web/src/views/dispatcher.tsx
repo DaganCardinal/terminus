@@ -9,10 +9,15 @@ import {
   type Ref,
 } from "react"
 import { ArrowUp, Maximize2, Minimize2, Route, Sparkles, X } from "lucide-react"
-import type { NetworkSnapshot } from "@terminus/protocol"
+import type { DispatchPlan, NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
-import { api } from "@/state/api"
-import { AttentionMessages, attentionTrains } from "./dispatcher-alerts"
+import { api, ApiRequestError } from "@/state/api"
+import {
+  AttentionMessages,
+  attentionTrains,
+  ConflictMessages,
+  conflictThreads,
+} from "./dispatcher-alerts"
 import {
   DispatcherAvatar,
   DispatcherMessage,
@@ -53,19 +58,12 @@ export function DispatcherButton({
   )
 }
 
-/** Example goals for an empty thread. They fill the composer; the user
- * still decides what to send. */
-const starters = [
-  "Add an accessible footer with links and a copyright line, with tests",
-  "Add a light/dark theme toggle that remembers the choice",
-  "Improve the README with setup and contribution instructions",
-]
-
 type Sent = {
   goal: string
   requestId: string
   checkBaseline: boolean
   planId?: string
+  planning?: boolean
 }
 
 /** The Dispatcher as a collaborator beside the map: a thread of goals, the
@@ -95,6 +93,10 @@ export function DispatcherPanel({
   // The goal being refined, shown above the composer until it is sent.
   const [revising, setRevising] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [stoppedId, setStoppedId] = useState<string | null>(null)
+  const [cleanupPlanId, setCleanupPlanId] = useState<string | null>(null)
+  const submission = useRef<Promise<DispatchPlan> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const panel = useRef<HTMLElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
@@ -102,10 +104,34 @@ export function DispatcherPanel({
 
   const plans = snapshot.plans
   const latest = plans.at(-1)
-  const showSent = sent && !plans.some((plan) => plan.id === sent.planId)
+  const showSent =
+    sent &&
+    sent.planId !== stoppedId &&
+    !plans.some((plan) => plan.id === sent.planId)
+  const activePlanId =
+    cleanupPlanId ??
+    plans.findLast(
+      (plan) =>
+        (plan.state.status === "planning" ||
+          (plan.state.status === "failed" &&
+            plan.state.reason === "cancelled" &&
+            plan.state.cleanupPending)) &&
+        plan.id !== stoppedId
+    )?.id ??
+    (showSent && (pending || sent.planning)
+      ? (sent.planId ?? `dispatch-${sent.requestId.replaceAll("-", "")}`)
+      : null)
   const { blocked, awaiting } = attentionTrains(snapshot)
+  const conflicts = conflictThreads(snapshot)
   const repairs = repairThreads(snapshot)
-  const needs = blocked.length + awaiting.length + repairs.length
+  const needs =
+    blocked.length +
+    awaiting.length +
+    conflicts.reported.length +
+    repairs.length +
+    (snapshot.engineerNotices?.filter(
+      (notice) => !blocked.some((view) => view.train.id === notice.trainId)
+    ).length ?? 0)
   const running = snapshot.trains.filter(
     ({ train }) => !["unloaded", "siding"].includes(train.state.status)
   ).length
@@ -130,7 +156,7 @@ export function DispatcherPanel({
 
   function propose(goal: string) {
     const trimmed = goal.trim()
-    if (!trimmed || pending) return
+    if (!trimmed || pending || activePlanId || stopping) return
     // A resend of the same text keeps its request identity, so a retried
     // request cannot create a second plan.
     const request =
@@ -145,18 +171,58 @@ export function DispatcherPanel({
     setRevising(null)
     void command(async () => {
       try {
-        const created = await api.proposePlan(networkId, {
+        const creating = api.proposePlan(networkId, {
           goal: request.goal,
           requestId: request.requestId,
           ...(request.checkBaseline ? { checkBaseline: true } : {}),
         })
-        setSent({ ...request, planId: created.id })
+        submission.current = creating
+        const created = await creating
+        setSent({
+          ...request,
+          planId: created.id,
+          planning: created.state.status === "planning",
+        })
       } catch (caught) {
         setSent(null)
         setDraft(request.goal)
         throw caught
       }
     })
+  }
+
+  async function stop() {
+    if (!activePlanId || stopping) return
+    const planId = activePlanId
+    setStopping(true)
+    setError(null)
+    try {
+      setCleanupPlanId(planId)
+      try {
+        await api.stopPlan(networkId, planId)
+      } catch (caught) {
+        // Stop can beat the initial insert; retry once the submission establishes its identity.
+        if (
+          !(caught instanceof ApiRequestError) ||
+          caught.status !== 404 ||
+          !submission.current
+        )
+          throw caught
+        await submission.current
+        await api.stopPlan(networkId, planId)
+      }
+      setStoppedId(planId)
+      setCleanupPlanId(null)
+      setSent((previous) =>
+        previous ? { ...previous, planId, planning: false } : null
+      )
+    } catch (caught) {
+      if (caught instanceof ApiRequestError && caught.status < 500)
+        setCleanupPlanId(null)
+      setError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setStopping(false)
+    }
   }
 
   function submit(event: FormEvent) {
@@ -296,12 +362,6 @@ export function DispatcherPanel({
           <p>You review the plan. Nothing runs until you launch it.</p>
           {empty && (
             <div className="starters">
-              <p className="starters-label">Try one of these</p>
-              {starters.map((starter) => (
-                <button key={starter} onClick={() => refine(starter, false)}>
-                  {starter}
-                </button>
-              ))}
               <div className="starters-demo">
                 <span>Just exploring?</span>
                 <Button
@@ -377,6 +437,12 @@ export function DispatcherPanel({
               pending={pending}
               command={command}
             />
+            <ConflictMessages
+              snapshot={snapshot}
+              pending={pending}
+              command={command}
+              openTrain={openTrain}
+            />
             <AttentionMessages
               snapshot={snapshot}
               pending={pending}
@@ -437,14 +503,26 @@ export function DispatcherPanel({
                   : "Describe what you want to build…"
             }
           />
-          <button
-            type="submit"
-            className="composer-send"
-            disabled={pending || !draft.trim()}
-            aria-label="Send goal to the Dispatcher"
-          >
-            <ArrowUp size={17} />
-          </button>
+          {activePlanId ? (
+            <button
+              type="button"
+              className="composer-send composer-stop"
+              disabled={stopping}
+              onClick={() => void stop()}
+              aria-label="Stop Dispatcher planning"
+            >
+              {stopping ? "Stopping…" : "Stop"}
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="composer-send"
+              disabled={pending || stopping || !draft.trim()}
+              aria-label="Send goal to the Dispatcher"
+            >
+              <ArrowUp size={17} />
+            </button>
+          )}
         </div>
         <div className="composer-footer">
           <label

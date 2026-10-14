@@ -7,21 +7,23 @@ import {
   sandboxNetworkSchema,
   type SandboxNetwork,
 } from "@terminus/protocol"
-import { proposalAsText, proposalTool } from "@terminus/agent-runtime"
+import { planToolServer, proposalAsText } from "@terminus/agent-runtime"
 import { WorkerEntrypoint } from "cloudflare:workers"
 import {
   browserControlHost,
   browserControlRequest,
+  browserSandboxSchema,
   type BrowserSandbox,
 } from "./browser-run"
-import { proposalToolResponse } from "./proposal-tool"
+import { DispatchDraftStore } from "./dispatch-draft-store"
+import { planToolResponse } from "./plan-tools"
 
 /** Each Sandbox receives only the network capabilities for its one operation. */
 export async function outboundRequest(
   request: Request,
   env: Pick<
     Env,
-    "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_ID" | "AI_GATEWAY_TOKEN"
+    "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_ID" | "AI_GATEWAY_TOKEN" | "DB"
   >,
   network: SandboxNetwork,
   send: typeof fetch = fetch,
@@ -38,13 +40,14 @@ export async function outboundRequest(
 
   if (
     network.proposalCheck &&
-    `${url.origin}${url.pathname}` === proposalTool.url &&
+    `${url.origin}${url.pathname}` === planToolServer.url &&
     !url.search
   )
-    return proposalToolResponse(
+    return planToolResponse(
       request,
       network.proposalCheck,
-      proposalAsText(network.model ?? "")
+      proposalAsText(network.model ?? ""),
+      new DispatchDraftStore(env.DB)
     )
 
   for (const grant of network.repositories) {
@@ -109,7 +112,8 @@ export async function outboundRequest(
     url.hostname === modelHost &&
     url.pathname === modelPath &&
     request.method === "POST" &&
-    !url.search
+    // Claude Code's SDK client always sends `?beta=true`; nothing else is allowed.
+    (!url.search || (provider === "anthropic" && url.search === "?beta=true"))
   ) {
     // TEMPORARY benchmark instrumentation: when the request reached the Worker.
     const entered = Date.now()
@@ -128,17 +132,38 @@ export async function outboundRequest(
       return denied()
     // Hosted tools would run outside our Sandbox role restrictions.
     const body = payload.data
-    if (
-      Array.isArray(body.tools) &&
-      body.tools.some((tool: unknown) => {
-        if (!tool || typeof tool !== "object") return true
-        const type = "type" in tool ? tool.type : undefined
-        return provider === "openai"
-          ? !["function", "custom"].includes(String(type))
-          : provider === "anthropic" && type !== undefined && type !== "custom"
-      })
-    )
-      return denied()
+    const hosted = (tool: unknown): boolean => {
+      if (!tool || typeof tool !== "object") return true
+      const type = "type" in tool ? tool.type : undefined
+      // Codex groups GPT-6 tools into namespaces; check every member.
+      if (provider === "openai" && type === "namespace")
+        return (
+          !("tools" in tool) ||
+          !Array.isArray(tool.tools) ||
+          tool.tools.some(hosted)
+        )
+      return provider === "openai"
+        ? !["function", "custom"].includes(String(type))
+        : provider === "anthropic" && type !== undefined && type !== "custom"
+    }
+    // Responses requests can also declare tools in `additional_tools` input
+    // items, which Codex uses for GPT-6 models.
+    const declared = [
+      ...(Array.isArray(body.tools) ? body.tools : []),
+      ...(Array.isArray(body.input)
+        ? body.input.flatMap((item: unknown) =>
+            item &&
+            typeof item === "object" &&
+            "type" in item &&
+            item.type === "additional_tools"
+              ? "tools" in item && Array.isArray(item.tools)
+                ? item.tools
+                : [null]
+              : []
+          )
+        : []),
+    ]
+    if (declared.some(hosted)) return denied()
     const bodyMs = Date.now() - entered
     const headers = cleanHeaders(request.headers)
     if (provider === "workers-ai") {
@@ -198,7 +223,7 @@ export async function outboundRequest(
               headers: sent,
               body: forwarded,
               redirect: "manual",
-              signal,
+              signal: AbortSignal.any([request.signal, signal]),
             })
           )
         },
@@ -262,7 +287,10 @@ export async function outboundRequest(
 }
 
 /** The container adds its own identity when its network grants a browser. */
-type SandboxOutboundProps = SandboxNetwork & { browserSandbox?: BrowserSandbox }
+type SandboxOutboundProps = SandboxNetwork & {
+  browserSandbox?: BrowserSandbox
+  outboundSandbox?: BrowserSandbox
+}
 
 export class SandboxOutbound extends WorkerEntrypoint<
   Env,
@@ -279,6 +307,15 @@ export class SandboxOutbound extends WorkerEntrypoint<
         this.env,
         this.ctx.props.browserSandbox
       )
+    const source = this.ctx.props.outboundSandbox
+      ? browserSandboxSchema.parse(this.ctx.props.outboundSandbox)
+      : undefined
+    if (source) {
+      const namespace = this.env[source.binding]
+      return namespace
+        .get(namespace.idFromString(source.sandbox))
+        .outbound(request)
+    }
     return outboundRequest(request, this.env, network)
   }
 }

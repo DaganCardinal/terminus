@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import { useEffect, useState } from "react"
 import type { Crossing, NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
@@ -135,7 +136,9 @@ function CrossingItem({
         <>
           <ul>
             {c.state.issues.map((i, n) => (
-              <li key={n}>{i.detail}</li>
+              <li key={n}>
+                <Prose text={i.detail} />
+              </li>
             ))}
           </ul>
           <Button
@@ -176,18 +179,22 @@ function CrossingItem({
             ]}
           />
           {a.evidence && <CheckRow checks={a.evidence.checks} />}
-          <p>{a.review?.summary}</p>
+          <Prose text={a.review?.summary ?? ""} />
           {a.review?.findings.length ? (
             <ul>
               {a.review.findings.map((f, i) => (
-                <li key={i}>{f}</li>
+                <li key={i}>
+                  <Prose text={f} />
+                </li>
               ))}
             </ul>
           ) : null}
           {a.result && !a.result.ok && (
             <ul>
               {a.result.issues.map((i, n) => (
-                <li key={n}>{i.detail}</li>
+                <li key={n}>
+                  <Prose text={i.detail} />
+                </li>
               ))}
             </ul>
           )}

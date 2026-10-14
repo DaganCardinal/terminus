@@ -7,6 +7,8 @@ import {
 import { NonRetryableError } from "cloudflare:workflows"
 import {
   proposeDispatchPlan,
+  stopDispatchPlan,
+  retryDispatchPlan,
   launchPlannedLines,
   type DispatchPlanningPorts,
   selectPlanBaselineFix,
@@ -23,7 +25,9 @@ import {
   layDispatchLines,
   startDispatchTrains,
   recordDispatchFailure,
+  planningFailureMessage,
 } from "./dispatch-operations"
+import { SANDBOX_CAPACITY_MESSAGE } from "../integrations/sandbox-capacity"
 import { advanceTrain } from "./train-operations"
 import {
   prepareIntegration,
@@ -86,6 +90,7 @@ async function fixture() {
     planner: { model: "fake", plan: vi.fn(async () => planned(proposal())) },
     startPlanning: vi.fn(async () => {}),
     wakePlan: vi.fn(async () => {}),
+    stopPlan: vi.fn(async () => {}),
     retryPlan: vi.fn(async () => {}),
   }
   const request = {
@@ -349,6 +354,21 @@ describe("durable Dispatcher planning and launch", () => {
       )
     ).toBe(false)
   })
+  it("records why a launch was refused instead of retrying it", async () => {
+    const f = await fixture()
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await launchPlannedLines(f.ports, f.network.id, f.plan.id)
+    await promoteOtherWork(f)
+    await expect(layDispatchLines(f.ports, f.plan.id)).rejects.toBeInstanceOf(
+      NonRetryableError
+    )
+    const saved = (await f.ports.store.dispatchPlan(f.plan.id))!.value
+    expect(saved.state).toMatchObject({
+      status: "failed",
+      message:
+        "Launch refused: Terminus changed before launch. Request a new plan.",
+    })
+  })
   it("rejects mismatched or malformed context/output, and stores safe failure diagnostics", async () => {
     const f = await fixture()
     f.ports.planner.plan = vi.fn(async () => ({
@@ -376,6 +396,59 @@ describe("durable Dispatcher planning and launch", () => {
       )
     ).toHaveLength(1)
   })
+  it("records what kind of failure stopped planning, never its message", async () => {
+    const f = await fixture()
+    await recordDispatchFailure(
+      f.ports,
+      f.plan.id,
+      "planning",
+      new Error("OpenCode exited with 137 token=PRIVATE")
+    )
+    const saved = (await f.ports.store.dispatchPlan(f.plan.id))!.value.state
+    expect(saved).toMatchObject({
+      status: "failed",
+      message:
+        "Planning failed: the Dispatcher's agent stopped before it finished the plan. Request a new plan.",
+    })
+    expect(JSON.stringify(saved)).not.toContain("PRIVATE")
+  })
+})
+
+describe("planning failure messages", () => {
+  it.each([
+    [
+      `${SANDBOX_CAPACITY_MESSAGE}: this network already runs 10 agent Sandboxes.`,
+      "every agent Sandbox this network may run was busy",
+    ],
+    [
+      "Configure AI_GATEWAY_ID before running real agents",
+      "configuration is incomplete",
+    ],
+    [
+      "Dispatcher configuration changed; request a new plan",
+      "configuration is incomplete, or changed",
+    ],
+    ["OpenCode exited with 1", "agent stopped before it finished"],
+    ["codex exited with 2", "agent stopped before it finished"],
+    [
+      "OpenCode did not produce a final message",
+      "agent stopped before it finished",
+    ],
+    ["The operation timed out", "ran out of time"],
+    ["Container exceeded its memory limit", "ran out of memory"],
+    ["Container is not running", "stopped unexpectedly"],
+    ["Too many requests", "overloaded"],
+    ["Something else entirely", "could not prepare a valid proposal"],
+  ])("describes %j by its kind", (message, kind) => {
+    const described = planningFailureMessage(new Error(message))
+    expect(described).toContain(kind)
+    expect(described).not.toContain(message)
+  })
+  it("describes a failure that is not an Error generically", () => {
+    expect(planningFailureMessage("lost")).toContain(
+      "could not prepare a valid proposal"
+    )
+  })
 })
 
 it("launches planned Crossing references atomically across Lines", async () => {
@@ -398,6 +471,41 @@ it("launches planned Crossing references atomically across Lines", async () => {
   expect(
     snapshot.lines.find((l) => l.id === c.lineId)?.stops?.[0]
   ).toMatchObject({ kind: "crossing", stationId: source.id })
+})
+
+it("flags a Junction feature check that redefines a project check before launch", async () => {
+  const f = await fixture(),
+    p = proposal()
+  f.ports.planner.plan = async () =>
+    planned({
+      summary: "Feature",
+      lines: [],
+      junctions: [
+        {
+          key: "feature",
+          name: "Feature",
+          brief: {
+            goal: "Feature",
+            scope: ["src/"],
+            contracts: [],
+            invariants: [],
+            acceptanceCriteria: ["works"],
+            validation: [{ name: "test", command: ["npm", "run", "test"] }],
+          },
+          incoming: [
+            { name: p.lines[0]!.name, stations: p.lines[0]!.stations },
+            { name: p.lines[1]!.name, stations: p.lines[1]!.stations },
+          ],
+          outgoing: { name: "Deliver", stations: [] },
+        },
+      ],
+    })
+  await prepareDispatchPlan(f.ports, f.plan.id)
+  const plan = (await f.ports.store.dispatchPlan(f.plan.id))!.value
+  if (plan.state.status !== "ready") throw new Error("Expected ready")
+  expect(plan.state.assessment.errors.join(" ")).toContain(
+    "feature check test conflicts with the project check"
+  )
 })
 
 it("atomically launches Junction proposals with stable membership and a deferred outgoing Train", async () => {
@@ -513,5 +621,75 @@ describe("baseline checks before planning", () => {
     await expect(
       selectPlanBaselineFix(f.ports, f.network.id, f.plan.id, "reject")
     ).rejects.toThrow("no baseline fix")
+  })
+})
+
+describe("Dispatcher cancellation", () => {
+  it("persists cancellation and one event, repeats cleanup, and refuses retry or launch", async () => {
+    const f = await fixture()
+    const cleanup = vi.fn(async () => {
+      expect(
+        (await f.ports.store.dispatchPlan(f.plan.id))?.value.state
+      ).toMatchObject({ reason: "cancelled" })
+    })
+    f.ports.stopPlan = cleanup
+    await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    expect(cleanup).toHaveBeenCalledTimes(2)
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    expect(f.ports.planner.plan).not.toHaveBeenCalled()
+    await expect(
+      retryDispatchPlan(f.ports, f.network.id, f.plan.id)
+    ).rejects.toMatchObject({ status: 409 })
+    await expect(
+      launchPlannedLines(f.ports, f.network.id, f.plan.id)
+    ).rejects.toMatchObject({ status: 409 })
+    const snapshot = (await f.ports.store.snapshot(f.network.id))!
+    expect(snapshot.lines).toHaveLength(0)
+    const events = await f.ports.store.eventsAfter(f.network.id, 0)
+    expect(
+      events.filter((entry) => entry.event.type === "dispatcher.plan_cancelled")
+    ).toHaveLength(1)
+  })
+
+  it("discards a late model result and failure after Stop", async () => {
+    const f = await fixture()
+    f.ports.planner.plan = vi.fn(async () => {
+      await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+      return planned(proposal())
+    })
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await recordDispatchFailure(f.ports, f.plan.id, "planning")
+    expect(
+      (await f.ports.store.dispatchPlan(f.plan.id))?.value.state
+    ).toMatchObject({ reason: "cancelled" })
+  })
+
+  it("keeps the durable stop when cleanup fails and allows cleanup to be retried", async () => {
+    const f = await fixture()
+    f.ports.stopPlan = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("cleanup failed"))
+      .mockResolvedValue(undefined)
+    await expect(
+      stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    ).rejects.toThrow("cleanup failed")
+    expect(
+      (await f.ports.store.dispatchPlan(f.plan.id))?.value.state
+    ).toMatchObject({ cleanupPending: true })
+    await stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    expect(f.ports.stopPlan).toHaveBeenCalledTimes(2)
+  })
+
+  it("refuses stopping another network's plan or a finished proposal", async () => {
+    const f = await fixture()
+    await expect(
+      stopDispatchPlan(f.ports, "other", f.plan.id)
+    ).rejects.toMatchObject({ status: 404 })
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await expect(
+      stopDispatchPlan(f.ports, f.network.id, f.plan.id)
+    ).rejects.toMatchObject({ status: 409 })
+    expect(f.ports.stopPlan).not.toHaveBeenCalled()
   })
 })

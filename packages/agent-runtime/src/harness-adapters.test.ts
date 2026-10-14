@@ -16,6 +16,7 @@ import {
   stationHarnessAgent,
   type HarnessAgent,
 } from "./opencode"
+import { conflictHarnessAgent } from "./conflict-watch"
 import type { Harness } from "@terminus/protocol"
 
 const harnesses: { harness: Harness; model: string }[] = [
@@ -25,6 +26,7 @@ const harnesses: { harness: Harness; model: string }[] = [
 ]
 const roles: HarnessAgent[] = [
   dispatcherHarnessAgent("Plan"),
+  conflictHarnessAgent("Investigate"),
   conductorHarnessAgent("Review"),
   stationHarnessAgent,
   {
@@ -88,11 +90,23 @@ describe("role harness adapters", () => {
       expect(configuredSystem).toContain(role.system)
       expect(JSON.stringify(initial)).not.toContain("--ephemeral")
       expect(JSON.stringify(initial)).not.toContain("--no-session-persistence")
-      expect(JSON.stringify(initial)).not.toContain("--dangerously-bypass")
+      // The Sandbox container is the boundary; only Codex needs the flag to
+      // turn off its own command sandbox.
+      expect(JSON.stringify(initial).includes("--dangerously-bypass")).toBe(
+        harness === "codex"
+      )
       if (harness === "claude-code") {
-        expect(initial.command).toContain("--bare")
+        // Bare mode drops Glob and Grep; the flags below isolate configuration.
+        expect(initial.command).not.toContain("--bare")
+        expect(initial.command).toContain("--strict-mcp-config")
+        expect(
+          initial.command[initial.command.indexOf("--setting-sources") + 1]
+        ).toBe("")
         const tools = initial.command[initial.command.indexOf("--tools") + 1]!
-        if (role.capability === "planning")
+        if (
+          role.capability === "planning" ||
+          role.capability === "investigation"
+        )
           expect(tools).not.toMatch(/Bash|Edit|Write/)
         if (role.capability === "review")
           expect(tools).toBe("Read,Glob,Grep,Bash")
@@ -104,25 +118,27 @@ describe("role harness adapters", () => {
           initial.files["/workspace/harness-state/claude-settings.json"]!
         )
         expect(settings.disableAllHooks).toBe(true)
-        expect(settings.sandbox.allowUnsandboxedCommands).toBe(false)
-        expect(settings.sandbox.failIfUnavailable).toBe(true)
-        if (role.capability === "review")
-          expect(settings.sandbox.filesystem.denyWrite).toContain(
-            "/workspace/repo"
-          )
+        expect(settings.sandbox).toEqual({ enabled: false })
+        // Unattended `dontAsk` sessions would refuse any command that
+        // touches a path outside the checkout.
+        expect(settings.permissions.blockReadsOutsideWorkingDirectories).toBe(
+          undefined
+        )
       }
       if (harness === "codex") {
-        expect(initial.command).toContain('approval_policy="never"')
-        expect(initial.command).toContain('default_permissions="terminus"')
-        expect(initial.command).not.toContain("sandbox_mode")
-        const filesystem = initial.command.find((value) =>
-          value.startsWith("permissions.terminus.filesystem=")
-        )!
-        expect(filesystem).toContain(
-          `"/workspace/repo" = "${["planning", "review"].includes(role.capability) ? "read" : "write"}"`
+        expect(resumed.command).toContain(
+          "--dangerously-bypass-approvals-and-sandbox"
+        )
+        // Codex loads repository `.codex/config.toml` when unsandboxed; these
+        // override what it could add.
+        expect(initial.command).toContain('developer_instructions=""')
+        expect(initial.files["/etc/codex/requirements.toml"]).toBe(
+          "[mcp_servers]\n"
         )
         expect(initial.command).toContain("project_doc_max_bytes=0")
         expect(initial.command).toContain("--skip-git-repo-check")
+        expect(initial.command).toContain("skills.include_instructions=false")
+        expect(initial.command).not.toContain("features.skills=false")
       }
     }
   )

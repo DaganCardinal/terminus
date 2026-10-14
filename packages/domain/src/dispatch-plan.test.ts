@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import {
   assessDispatchProposal,
   createDispatchPlan,
+  cancelDispatchPlan,
+  finishDispatchCancellation,
   failDispatchPlan,
   finishPlanLaunch,
   launchDispatchPlan,
@@ -16,7 +18,10 @@ import {
 } from "./dispatch-plan"
 import { manifest, unwrap, expectRejected, eventTypes } from "./testing"
 
-const context = { validationNames: ["test"], activeLines: [] }
+const context = {
+  projectChecks: [{ name: "test", command: ["npm", "test"] }],
+  activeLines: [],
+}
 const proposal = (): DispatchProposal => ({
   summary: "Implement the goal",
   lines: [
@@ -55,6 +60,43 @@ const plan = () =>
 const ready = () => unwrap(readyDispatchPlan(plan(), proposal(), context))
 
 describe("Dispatcher plan lifecycle", () => {
+  it("cancels planning once and refuses to cancel ready or launching work", () => {
+    const stopped = cancelDispatchPlan(plan())
+    expect(eventTypes(stopped)).toEqual(["dispatcher.plan_cancelled"])
+    const cancelled = unwrap(stopped)
+    expect(cancelled.state).toMatchObject({
+      status: "failed",
+      reason: "cancelled",
+    })
+    expect(eventTypes(cancelDispatchPlan(cancelled))).toEqual([])
+    expectRejected(
+      readyDispatchPlan(cancelled, proposal(), context),
+      "invalid_state"
+    )
+    expectRejected(
+      requestPlanLaunch(cancelled, "base", context),
+      "invalid_state"
+    )
+    expectRejected(cancelDispatchPlan(ready()), "invalid_state")
+    expectRejected(
+      cancelDispatchPlan(unwrap(requestPlanLaunch(ready(), "base", context))),
+      "invalid_state"
+    )
+  })
+  it("records completion of cancellation cleanup once and requires a cancelled plan", () => {
+    const stopped = unwrap(cancelDispatchPlan(plan()))
+    expect(stopped.state).toMatchObject({ cleanupPending: true })
+    const finished = finishDispatchCancellation(stopped)
+    expect(eventTypes(finished)).toEqual(["dispatcher.plan_stopped"])
+    expect(unwrap(finished).state).toMatchObject({ cleanupPending: false })
+    expect(eventTypes(finishDispatchCancellation(unwrap(finished)))).toEqual([])
+    expectRejected(finishDispatchCancellation(plan()), "invalid_state")
+    expectRejected(
+      finishDispatchCancellation(unwrap(failDispatchPlan(plan(), "Failed"))),
+      "invalid_state"
+    )
+  })
+
   it("refuses launch of a plan without concrete changes", () => {
     for (const repositoryChange of [
       undefined,
@@ -350,7 +392,7 @@ describe("Baseline fix suggestions", () => {
         {
           key: "feature",
           name: "Feature",
-          brief: {} as never,
+          brief: { validation: [] } as never,
           incoming: [],
           outgoing: { name: "Out", stations: [] },
         },
@@ -359,6 +401,42 @@ describe("Baseline fix suggestions", () => {
     expect(assessPlan(junctions, context, failing).errors.join(" ")).toContain(
       "cannot reach Junction input Lines"
     )
+  })
+
+  it("refuses a Junction feature check that redefines a project check", () => {
+    const line = proposal().lines[0]!
+    const feature = (command: string[]): DispatchProposal => ({
+      summary: "Feature",
+      lines: [],
+      junctions: [
+        {
+          key: "feature",
+          name: "Feature",
+          brief: {
+            validation: [{ name: "test", command }],
+          } as never,
+          incoming: [
+            { ...line, stations: [{ ...line.stations[0]!, key: "a" }] },
+            { ...line, stations: [{ ...line.stations[0]!, key: "b" }] },
+          ],
+          outgoing: { name: "Out", stations: [] },
+        },
+      ],
+    })
+    const checks = {
+      ...context,
+      projectChecks: [{ name: "test", command: ["npm", "test"] }],
+    }
+    expect(
+      assessPlan(
+        feature(["npm", "run", "test"]),
+        checks,
+        undefined
+      ).errors.join(" ")
+    ).toContain("feature check test conflicts with the project check")
+    expect(
+      assessPlan(feature(["npm", "test"]), checks, undefined).errors.join(" ")
+    ).not.toContain("conflicts with the project check")
   })
 
   it("selects the fix Line's unload mode like any other planned Line", () => {

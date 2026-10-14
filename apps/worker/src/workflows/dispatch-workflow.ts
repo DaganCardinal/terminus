@@ -5,7 +5,7 @@ import {
 } from "cloudflare:workers"
 import { dispatchPlanningPorts, planModels } from "../agents/ports"
 import { DISPATCH_EVENTS } from "./events"
-import { timedStep } from "@terminus/protocol"
+import { errorDetail, timedStep } from "@terminus/protocol"
 import {
   dispatchPlanState,
   layDispatchLines,
@@ -42,9 +42,14 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
     try {
       // Model output is saved before this step returns; retries reuse a saved proposal.
       // Each attempt is a full exploration session, so it gets one retry.
+      // The timeout outlasts the session's own limits (a Sandbox capacity
+      // wait of up to 10 minutes, a 15-minute run and two 5-minute
+      // corrections) and leaves 25 minutes for checkout and baseline checks.
+      // A retry started while the first session still ran would reuse its
+      // Sandbox and clear its draft.
       await step.do(
         "prepare proposal",
-        { retries: { ...retries, limit: 1 }, timeout: "30 minutes" },
+        { retries: { ...retries, limit: 1 }, timeout: "60 minutes" },
         timedStep("dispatch", planId, "prepare proposal", () =>
           prepareDispatchPlan(ports, planId)
         )
@@ -91,9 +96,11 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
         planId,
         phase,
         errorName: error instanceof Error ? error.name : "UnknownError",
+        detail: errorDetail(error),
       })
+      // Only the kind of failure is recorded, never the error's message.
       await step.do("record failure", { retries }, () =>
-        recordDispatchFailure(ports, planId, phase)
+        recordDispatchFailure(ports, planId, phase, error)
       )
       // Starting Trains remain durable and inspectable if kickoff exhausts its retries.
       // Explicit retry restarts this same Workflow with stable repo/Train identities.

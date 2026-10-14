@@ -17,6 +17,10 @@ import {
   type CommittedObjects,
 } from "./repository-browse"
 import type { HeadReader } from "./smart-http"
+import {
+  readCommittedChanges,
+  readCommittedChangeFile,
+} from "./repository-changes"
 import { ArtifactsApiError } from "./artifacts-rest"
 import {
   git,
@@ -143,6 +147,32 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         return readRepositoryOverview(workspace, access, commit)
       }
     )
+  }
+
+  async readChanges(repoId: string, base: string, head: string) {
+    return readCommittedChanges(this.committedObjects(repoId), base, head)
+  }
+
+  async readChangeFile(
+    repoId: string,
+    base: string,
+    head: string,
+    path: string
+  ) {
+    return readCommittedChangeFile(
+      this.committedObjects(repoId),
+      base,
+      head,
+      path
+    )
+  }
+
+  private committedObjects(repoId: string): CommittedObjects {
+    const { namespace, name } = parseRepoId(repoId)
+    const objects = this.artifacts.namespace(namespace).objects?.(name)
+    if (!objects)
+      throw new Error("Repository comparisons require Artifacts object reads")
+    return objects
   }
 
   async readFile(repoId: string, commit: string, path: string) {

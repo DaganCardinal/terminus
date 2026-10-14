@@ -2,6 +2,7 @@
 // with Station runs and Train wakes recorded instead of started.
 import {
   FakeConductor,
+  FakeDispatchPlanner,
   FakeEngineer,
   FakeStationRunner,
   type Conductor,
@@ -17,6 +18,7 @@ import {
   layLine,
   type DispatcherPorts,
 } from "../src/agents/dispatcher"
+import { proposeDispatchPlan } from "../src/agents/dispatch-planning"
 import { NetworkStore } from "../src/integrations/network-store"
 import {
   prepareStation,
@@ -189,6 +191,23 @@ export function twoStationLine(name = "Red Line"): LayLineRequest {
 
 export async function seedNetwork(ports: TestPorts) {
   return createNetwork(ports.dispatcher, { name: "Test network" })
+}
+
+/** A persisted plan in a new network, waiting for its proposal. */
+export async function seedDispatchPlan(ports: TestPorts = testPorts()) {
+  const network = await seedNetwork(ports)
+  return proposeDispatchPlan(
+    {
+      ...ports.dispatcher,
+      planner: new FakeDispatchPlanner(),
+      startPlanning: async () => {},
+      wakePlan: async () => {},
+      stopPlan: async () => {},
+      retryPlan: async () => {},
+    },
+    network.id,
+    { goal: "Add a footer", requestId: crypto.randomUUID() }
+  )
 }
 
 export async function seedLine(

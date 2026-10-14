@@ -1,5 +1,7 @@
 # API examples
 
+Stop Dispatcher planning with `POST /api/networks/:networkId/plans/:planId/stop`. Cancellation is durable and cleanup can be retried with the same endpoint; see [Stopping planning](dispatcher-planning.md#stopping-planning).
+
 Vite proxies `/api` to the Worker at port 8787. Feature-specific endpoints are documented alongside each feature: [planning](dispatcher-planning.md), [unloading](unloading.md), [previews](previews.md), [integration recovery](terminus-integration.md#conflicts-and-recovery), [Technician repairs](technician.md#api), [Crossings](crossings.md) and [Junctions](junctions.md).
 
 Use **Emergency Brake** in Network Overview or the Terminus tab to stop all Station work in that network and discard unfinished Sandbox contents. Its endpoint is `POST /api/networks/:networkId/emergency-brake` with JSON `{ "discardUnfinishedWork": true }`; see [Emergency Brake](station-execution.md#emergency-brake) for scope, partial failures and recovery. For targeted cleanup, `DELETE /api/stations/:stationId/sandbox` takes JSON `{ "runId": "STATION_ID-s1-r0" }`; see [Station Sandbox cleanup](station-execution.md#stopping-one-leftover-station-sandbox) for Workflow gates and unpublished-candidate protection.
@@ -9,6 +11,23 @@ Sandbox limits: `GET`/`PUT /api/settings/sandboxes` reads or saves the General l
 Temporary benchmark logging: `GET /api/perf-logs?from=<ISO time>&to=<ISO time>` returns `{ from, to, invocations, complete, records }`, the `[perf]` lines stored by the perf Tail Worker, oldest first. `to` defaults to now and `from` to an hour earlier; a window may span six hours. `complete` is false when the window held more stored objects than one request reads. See [Deployment](live-setup.md#deployment).
 
 The explicit [ten-Train stress-test command](pipeline-stress-test.md) creates its own fixture Network, freezes scripted execution for those Trains, and adds resource diagnostics and a canonical Git oracle. The browser uses normal application login; no deployment-wide test mode is needed.
+
+## Browsing accepted changes
+
+Train and Car panels fetch comparisons from Artifacts on demand. These reads do not write D1 or start a Sandbox. Existing persisted review diffs are retained.
+
+| Read | Endpoint |
+| --- | --- |
+| Train's changed files | `GET /api/trains/:trainId/changes?base=<terminusBaseline>&head=<headCommit>` |
+| Train's file diff | `GET /api/trains/:trainId/changes/file?base=<terminusBaseline>&head=<headCommit>&path=<path>` |
+| Car's changed files | `GET /api/trains/:trainId/cars/:carId/changes?base=<sourceCommit>&head=<acceptedCommit>` |
+| Car's file diff | `GET /api/trains/:trainId/cars/:carId/changes/file?base=<sourceCommit>&head=<acceptedCommit>&path=<path>` |
+
+The Worker checks both commits against recorded provenance. A stale Train comparison returns `409`; an unknown Train, Car from another Train, or unchanged/excluded file returns `404`. Copied Cars use their preserved original commit pair in the receiving Train repository. Train comparisons include all accepted work since the frozen Terminus baseline, including Crossings and released Junction work, rather than comparing against today's Terminus head.
+
+File lists contain `path`, `kind` (`added`, `deleted`, `modified`), and before/after Git modes. File diffs return unified `hunks` and a `status` of `text`, `binary`, `too_large`, or `unsupported` (symlink/submodule). Known credential paths are excluded. Listing stops at 5,000 files, 1,000 tree reads, or 64 directory levels, with `filesTruncated: true`. Inline diffs limit each file to 128,000 bytes and 10,000 lines, with bounded comparison time and edit distance; oversized changes return no partial patch. Renames appear as deletion plus addition.
+
+Successful responses allow private browser caching by exact commits. The UI keeps bounded session caches and loads file contents only when that file is expanded. Offline mode shows explicitly illustrative changes.
 
 ## Permanently deleting a network
 
@@ -44,3 +63,13 @@ curl http://localhost:8787/api/networks/NETWORK_ID
 curl 'http://localhost:8787/api/networks/NETWORK_ID/events?after=0'
 curl http://localhost:8787/api/networks/NETWORK_ID/integrations
 ```
+
+## Engineer notices
+
+Network snapshots optionally include `engineerNotices`: unresolved, unacknowledged advisory notices. Each identifies its Train, relevant Station/dependencies, factual summary and assessment time; dependency notices also include `waitingSince`. The backend resolves obsolete notices and retains their lifecycle in the ordinary event log.
+
+`POST /api/networks/:networkId/engineer-notices/:noticeId/acknowledge` acknowledges a notice and returns its metadata. Repeating the request is safe, including after resolution. An unknown network or a notice belonging to another network returns 404. Acknowledgment does not change any Train, Station, hold or gate.
+
+Engineer notices do not start planning or recovery. Actual blockers and required approvals remain visible through their existing Dispatcher cards.
+
+Network snapshots optionally include `conflictConcerns`: Dispatcher conflict checks still running and unacknowledged conflict reports between running Trains (see [Conflict watch](conflict-watch.md)). `POST /api/networks/:networkId/conflict-watches/:watchId/:otherTrainId/acknowledge` acknowledges one report and returns the watch. It is idempotent, returns 404 for an unknown network or a watch in another network, and changes no Train, Station, hold or gate.

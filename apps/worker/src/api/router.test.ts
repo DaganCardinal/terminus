@@ -12,11 +12,14 @@ import {
 import {
   SELF,
   introspectWorkflow,
+  introspectWorkflowInstance,
   type WorkflowIntrospector,
 } from "cloudflare:test"
 import { env } from "cloudflare:test"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { manifest } from "../../test/fixtures"
+import { manifest, testPorts, seedNetwork } from "../../test/fixtures"
+import { proposeDispatchPlan } from "../agents/dispatch-planning"
+import { FakeDispatchPlanner } from "@terminus/agent-runtime"
 
 const base = "https://terminus.test/api"
 let introspectors: WorkflowIntrospector[] = []
@@ -67,6 +70,79 @@ async function waitUntil(
 }
 
 describe("the API with real Workflows", () => {
+  it("stops a persisted planning request before its Workflow starts and retains history", async () => {
+    const base = testPorts()
+    const network = await seedNetwork(base)
+    const plan = await proposeDispatchPlan(
+      {
+        ...base.dispatcher,
+        planner: new FakeDispatchPlanner(),
+        startPlanning: async () => {},
+        wakePlan: async () => {},
+        retryPlan: async () => {},
+        stopPlan: async () => {},
+      },
+      network.id,
+      { requestId: crypto.randomUUID(), goal: "A stoppable request" }
+    )
+    expect((await post(`/networks/other/plans/${plan.id}/stop`)).status).toBe(
+      404
+    )
+    const response = await post(`/networks/${network.id}/plans/${plan.id}/stop`)
+    expect(response.status).toBe(200)
+    expect(dispatchPlanSchema.parse(await response.json()).state).toMatchObject(
+      { reason: "cancelled", cleanupPending: false }
+    )
+    expect(
+      (await post(`/networks/${network.id}/plans/${plan.id}/stop`)).status
+    ).toBe(200)
+    expect(
+      (await post(`/networks/${network.id}/plans/${plan.id}/retry`)).status
+    ).toBe(409)
+    expect(
+      (await post(`/networks/${network.id}/plans/${plan.id}/launch`)).status
+    ).toBe(409)
+    expect((await snapshot(network.id)).lines).toHaveLength(0)
+  })
+  it("terminates a paused Dispatcher Workflow when Stop is requested", async () => {
+    const base = testPorts()
+    const network = await seedNetwork(base)
+    const plan = await proposeDispatchPlan(
+      {
+        ...base.dispatcher,
+        planner: new FakeDispatchPlanner(),
+        startPlanning: async () => {},
+        wakePlan: async () => {},
+        retryPlan: async () => {},
+        stopPlan: async () => {},
+      },
+      network.id,
+      { requestId: crypto.randomUUID(), goal: "Stop before exploration" }
+    )
+    await using control = await introspectWorkflowInstance(
+      env.DISPATCH_WORKFLOW,
+      plan.id
+    )
+    await control.modify(async (m) => {
+      await m.mockStepError(
+        { name: "resolve role models" },
+        new Error("Pause before planning")
+      )
+    })
+    const instance = await env.DISPATCH_WORKFLOW.create({
+      id: plan.id,
+      params: { planId: plan.id },
+    })
+    await instance.pause()
+    expect((await instance.status()).status).toBe("paused")
+    const response = await post(`/networks/${network.id}/plans/${plan.id}/stop`)
+    expect(response.status).toBe(200)
+    expect((await instance.status()).status).toBe("terminated")
+    expect(dispatchPlanSchema.parse(await response.json()).state).toMatchObject(
+      { reason: "cancelled", cleanupPending: false }
+    )
+  })
+
   it("permanently deletes waiting Dispatcher and Train Workflows and their Network", async () => {
     const network = await createNetwork()
     await post(`/networks/${network.id}/holds`, {

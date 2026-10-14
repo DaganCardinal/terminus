@@ -4,7 +4,14 @@ import {
   type WorkflowIntrospector,
 } from "cloudflare:test"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FakeConductor, FakeStationRunner } from "@terminus/agent-runtime"
+import {
+  FakeConductor,
+  FakeStationRunner,
+  FakeConflictTriage,
+  FakeConflictInvestigator,
+  ModelConflictTriage,
+  HarnessConflictInvestigator,
+} from "@terminus/agent-runtime"
 import {
   PIPELINE_STRESS_PROFILE,
   scriptedStressAgent,
@@ -23,7 +30,7 @@ import { FakeIntegrationValidator } from "../integrations/integration-validator"
 import { handleApi } from "./router"
 import { stressOracle, stressStatus } from "./stress-test"
 import { NetworkStore } from "../integrations/network-store"
-import { trainModels } from "../agents/ports"
+import { trainModels, conflictWatchPorts } from "../agents/ports"
 
 const runId = "00000000-0000-4000-8000-000000000005"
 const profileEnv = {
@@ -37,6 +44,7 @@ describe("pipeline stress profile", () => {
       introspectWorkflow(env.TRAIN_WORKFLOW),
       introspectWorkflow(env.STATION_WORKFLOW),
       introspectWorkflow(env.INTEGRATION_WORKFLOW),
+      introspectWorkflow(env.CONFLICT_WATCH_WORKFLOW),
     ])
   })
   afterEach(async () => {
@@ -82,6 +90,26 @@ describe("pipeline stress profile", () => {
     const initial = (await store.snapshot(run.networkId))!
     expect(initial.trains).toHaveLength(10)
     expect(initial.lines).toHaveLength(10)
+    const liveRoleEnv = {
+      ...profileEnv,
+      ENGINEER_MODEL: "live",
+      DISPATCHER_MODEL: "live",
+      // Constructor-only regression check; no real service is contacted.
+      ARTIFACTS_ACCOUNT_ID: "unused-test-account",
+      ARTIFACTS_API_TOKEN: "unused-test-token",
+    }
+    const frozen = await trainModels(env, initial.trains[0]!.train.id)
+    const scriptedWatch = conflictWatchPorts(liveRoleEnv, frozen)
+    expect(scriptedWatch.triage).toBeInstanceOf(FakeConflictTriage)
+    expect(scriptedWatch.investigator).toBeInstanceOf(FakeConflictInvestigator)
+    const ordinaryWatch = conflictWatchPorts(liveRoleEnv, {
+      ...frozen,
+      executions: { ...frozen.executions!, pipelineStress: undefined },
+    })
+    expect(ordinaryWatch.triage).toBeInstanceOf(ModelConflictTriage)
+    expect(ordinaryWatch.investigator).toBeInstanceOf(
+      HarnessConflictInvestigator
+    )
     for (const { train } of initial.trains) {
       expect(
         (await trainModels(env, train.id)).executions?.pipelineStress

@@ -34,7 +34,7 @@ describe("Dispatcher activity groups", () => {
     expect(groups.map((g) => g.label)).toEqual([
       "Workspace preparation",
       "Project exploration",
-      "Proposal checks and corrections",
+      "Writing and checking the plan",
       "Project exploration",
     ])
     expect(groups.map((g) => g.entries.map((e) => e.seq))).toEqual([

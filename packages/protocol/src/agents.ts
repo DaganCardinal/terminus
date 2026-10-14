@@ -33,7 +33,11 @@ export const proposalSchema = z.object({
 /** What a Station run reports to its Train when it finishes. */
 export const stationRunResultSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), proposal: proposalSchema }),
-  z.object({ ok: z.literal(false), issues: z.array(issueSchema).min(1) }),
+  z.object({
+    ok: z.literal(false),
+    issues: z.array(issueSchema).min(1),
+    phase: z.string().optional(),
+  }),
 ])
 
 export const stationOutcomeSchema = z.object({

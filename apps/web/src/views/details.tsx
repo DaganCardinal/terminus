@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import type { Line, NetworkSnapshot, Station } from "@terminus/protocol"
 import type { ReactNode } from "react"
 import { useId, useState } from "react"
@@ -22,17 +23,18 @@ import {
   type Fact,
   List,
   ManifestView,
-  Prose,
   TechnicalDetails,
   manifestFacts,
   shortCommit,
 } from "./detail-parts"
 import { describeLocation, namesFor, trainDisplayStatus } from "./describe"
 import { JunctionDetails } from "./junctions"
+import { NamedText } from "./named-text"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
 import { TrainCars } from "./train-cars"
+import { Changes } from "./changes"
 
 type Run = (command: () => Promise<unknown>) => Promise<void>
 
@@ -172,7 +174,7 @@ export function StationDetails({
           <TrainFront size={15} /> Line Train
         </Button>
       </div>
-      <p className="detail-lead">{manifest.goal}</p>
+      <Prose text={manifest.goal} className="detail-lead" />
 
       {(state.status === "signaled" || state.status === "active") && (
         <Callout
@@ -213,7 +215,7 @@ export function StationDetails({
           icon={<RotateCcw size={15} />}
           title="Returned for revision"
         >
-          <p className="callout-lead">{state.feedback.summary}</p>
+          <Prose text={state.feedback.summary} className="callout-lead" />
           <List items={state.feedback.findings} />
           {station.lastReview && (
             <CheckRow checks={station.lastReview.proposal.evidence.checks} />
@@ -231,7 +233,7 @@ export function StationDetails({
       )}
       {state.status === "cancelled" && (
         <Callout tone="idle" icon={<Ban size={15} />} title="Cancelled">
-          <p>{state.reason}</p>
+          <Prose text={state.reason} format="plain" />
         </Callout>
       )}
       {car && (
@@ -240,10 +242,22 @@ export function StationDetails({
           icon={<CircleCheck size={15} />}
           title={`Accepted as Car ${car.position}`}
         >
-          <p className="callout-lead">{car.review.summary}</p>
+          <Prose text={car.review.summary} className="callout-lead" />
           <List items={car.review.findings} />
           <CheckRow checks={car.evidence.checks} />
         </Callout>
+      )}
+
+      {car && (
+        <Changes
+          target={{
+            trainId: car.trainId,
+            carId: car.id,
+            base: car.sourceCommit,
+            head: car.acceptedCommit,
+          }}
+          description="Work accepted into this Car."
+        />
       )}
 
       {report && (
@@ -275,7 +289,7 @@ export function StationDetails({
           {station.lastReview && state.status !== "revising" && (
             <details>
               <summary>Latest Conductor feedback</summary>
-              <p>{station.lastReview.feedback.summary}</p>
+              <Prose text={station.lastReview.feedback.summary} />
               <List items={station.lastReview.feedback.findings} />
               <CheckRow checks={station.lastReview.proposal.evidence.checks} />
             </details>
@@ -406,14 +420,27 @@ export function TrainDetails({
               </span>
             </div>
             <p className="detail-lead">
-              {describeLocation(
-                train.state,
-                name,
-                train.destination,
-                snapshot.stations
-              )}
+              <NamedText
+                describe={(named) =>
+                  describeLocation(
+                    train.state,
+                    named,
+                    train.destination,
+                    snapshot.stations
+                  )
+                }
+                name={name}
+              />
             </p>
             <TrainPreviewButton trainId={train.id} commit={train.headCommit} />
+            <Changes
+              target={{
+                trainId: train.id,
+                base: train.terminusBaseline,
+                head: train.headCommit,
+              }}
+              description="All accepted changes since the frozen Terminus baseline, including work picked up from other Lines."
+            />
             {train.destination?.kind !== "junction" && (
               <UnloadModeSwitch
                 mode={policy?.mode ?? "auto"}
@@ -500,7 +527,7 @@ export function TrainDetails({
             )}
             {train.state.status === "siding" && (
               <Section title="On the siding">
-                <p>{train.state.reason}</p>
+                <Prose text={train.state.reason} format="plain" />
               </Section>
             )}
             <Crossings

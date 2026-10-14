@@ -28,3 +28,6 @@ export * from "./line-identity"
 export * from "./perf-log"
 export * from "./stress-test"
 export * from "./stress-report"
+
+export * from "./engineer"
+export * from "./conflict-watch"

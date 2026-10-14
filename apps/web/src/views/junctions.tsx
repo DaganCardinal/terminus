@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import { useEffect, useState } from "react"
 import type {
   Junction,
@@ -80,7 +81,7 @@ export function JunctionDetails({
     })
   return (
     <>
-      <p className="detail-lead">{j.brief.goal}</p>
+      <Prose text={j.brief.goal} className="detail-lead" />
       <p>
         {j.state.status === "ready"
           ? "The complete feature is accepted and waiting for your release."
@@ -125,7 +126,9 @@ export function JunctionDetails({
         <h3>Feature acceptance</h3>
         <ul>
           {j.brief.acceptanceCriteria.map((criterion, i) => (
-            <li key={i}>{criterion}</li>
+            <li key={i}>
+              <Prose text={criterion} />
+            </li>
           ))}
         </ul>
         <details>
@@ -136,17 +139,21 @@ export function JunctionDetails({
               ...j.brief.invariants,
               ...j.brief.contracts.map((c) => `${c.name}: ${c.change}`),
             ].map((text, i) => (
-              <li key={i}>{text}</li>
+              <li key={i}>
+                <Prose text={text} />
+              </li>
             ))}
           </ul>
         </details>
         {j.acceptance && (
           <>
             <CheckRow checks={j.acceptance.evidence.checks} />
-            <p>{j.acceptance.review.summary}</p>
+            <Prose text={j.acceptance.review.summary} />
             <ul>
               {j.acceptance.review.findings.map((f, i) => (
-                <li key={i}>{f}</li>
+                <li key={i}>
+                  <Prose text={f} />
+                </li>
               ))}
             </ul>
             <details>
@@ -192,7 +199,9 @@ export function JunctionDetails({
           <h3>Needs intervention</h3>
           <ul>
             {j.state.issues.map((i, n) => (
-              <li key={n}>{i.detail}</li>
+              <li key={n}>
+                <Prose text={i.detail} />
+              </li>
             ))}
           </ul>
           <Button
@@ -262,12 +271,14 @@ export function JunctionDetails({
                   · {shortCommit(c.acceptedCommit)}
                   {c.originCarId && " · inherited Car"}
                 </summary>
-                <p>{c.manifest.goal}</p>
+                <Prose text={c.manifest.goal} />
                 <CheckRow checks={c.evidence.checks} />
-                <p>{c.review.summary}</p>
+                <Prose text={c.review.summary} />
                 <ul>
                   {c.review.findings.map((f, i) => (
-                    <li key={i}>{f}</li>
+                    <li key={i}>
+                      <Prose text={f} />
+                    </li>
                   ))}
                 </ul>
                 <p>Accepted {c.acceptedAt}</p>
@@ -328,10 +339,12 @@ export function JunctionDetails({
             Input integration · {a.status} · {shortCommit(a.input.trainCommit)}
           </summary>
           {a.evidence && <CheckRow checks={a.evidence.checks} />}
-          <p>{a.review?.summary}</p>
+          <Prose text={a.review?.summary ?? ""} />
           <ul>
             {a.review?.findings.map((f, i) => (
-              <li key={i}>{f}</li>
+              <li key={i}>
+                <Prose text={f} />
+              </li>
             ))}
           </ul>
           <pre className="unload-diff">{a.diff}</pre>
@@ -340,7 +353,7 @@ export function JunctionDetails({
       {details?.repairs.map((r) => (
         <details key={r.id}>
           <summary>Technician repair · {r.state.status}</summary>
-          <p>{r.description}</p>
+          <Prose text={r.description} format="plain" />
           <ul>
             {r.scope.map((p) => (
               <li key={p}>{p}</li>
@@ -352,7 +365,7 @@ export function JunctionDetails({
               <pre className="unload-diff">{r.state.repairDiff}</pre>
             </>
           )}
-          {"review" in r.state && <p>{r.state.review.summary}</p>}
+          {"review" in r.state && <Prose text={r.state.review.summary} />}
           {r.state.status === "ready" && (
             <Button
               disabled={pending}

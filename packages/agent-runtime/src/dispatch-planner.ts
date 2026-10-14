@@ -6,6 +6,8 @@ import type {
 import type { ValidationCommand, ActivityObserver } from "@terminus/protocol"
 
 export interface DispatchPlanningInput {
+  /** Stable execution address for backend cancellation. */
+  planId?: string
   goal: string
   network: PlanningContext
   /** The exact Terminus snapshot the plan is reviewed against. */
@@ -33,7 +35,7 @@ export class FakeDispatchPlanner implements DispatchPlanner {
   readonly model = "fake"
   async plan(input: DispatchPlanningInput): Promise<DispatchPlanResult> {
     input.onActivity?.({ kind: "phase", phase: "simulation" })
-    const evidence = input.network.validationNames
+    const evidence = input.network.projectChecks.map((check) => check.name)
     const proposal: DispatchProposal = {
       summary:
         "Simulated plan for offline development. Real planning uses the configured Dispatcher model.",

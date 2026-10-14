@@ -54,6 +54,7 @@ export interface GateContext {
 export interface DepartureContext extends GateContext {
   /** The current status of each Station the next Station depends on. */
   dependencies: Partial<Record<StationId, StationStatus>>
+  unavailableDependencies?: StationId[]
 }
 
 /** Whether the Train may depart toward `station`, its next Station. */
@@ -74,10 +75,14 @@ export function evaluateDeparture(
   for (const dependency of station.manifest.dependencies) {
     const status = context.dependencies[dependency]
     if (status === "complete") continue
-    if (status === undefined || status === "cancelled") {
+    if (
+      status === undefined ||
+      status === "cancelled" ||
+      context.unavailableDependencies?.includes(dependency)
+    ) {
       issues.push({
         kind: "dependency_unresolvable",
-        detail: `Station ${station.id} depends on ${dependency}, which is ${status ?? "unknown"}`,
+        detail: `Station ${station.id} depends on ${dependency}, which is ${context.unavailableDependencies?.includes(dependency) ? "abandoned" : (status ?? "unknown")}`,
       })
     } else {
       reasons.push({ kind: "dependency", stationId: dependency })

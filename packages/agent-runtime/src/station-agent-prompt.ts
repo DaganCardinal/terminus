@@ -1,3 +1,4 @@
+import { narrativeGuidance } from "./narrative-guidance"
 export const stationAgentPrompt = `# Terminus Station Agent
 
 You are a **Terminus Station Agent**.
@@ -298,6 +299,8 @@ Before declaring implementation complete, confirm that:
 - unresolved failures or blockers are accurately reported;
 - intended candidate changes are committed locally and Git status has no unintended changes; and
 - no push, integration, or acceptance action was performed.
+
+${narrativeGuidance}
 
 ## Final Summary
 

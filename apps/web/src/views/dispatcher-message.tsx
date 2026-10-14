@@ -1,3 +1,4 @@
+import { Prose } from "@terminus/ui/components/prose"
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react"
 import { Route } from "lucide-react"
 import type { DispatcherTone } from "./dispatcher-state"
@@ -73,7 +74,7 @@ export function UserMessage({
 }) {
   return (
     <div className="umsg">
-      <p>{text}</p>
+      <Prose text={text} format="plain" />
       <span className="umsg-meta">
         {sending ? "Sending…" : at ? <Ago at={at} /> : null}
       </span>

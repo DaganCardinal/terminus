@@ -65,3 +65,24 @@ describe("dispatcher indicator", () => {
     expect(tone({ plans: ["failed", "planning"] })).toBe("working")
   })
 })
+
+it("treats a user stop as idle instead of an intervention alert", () => {
+  const current = snapshot({})
+  current.plans = [
+    { state: { status: "failed", reason: "cancelled", message: "Stopped" } },
+  ] as NetworkSnapshot["plans"]
+  expect(dispatcherIndicator(current)).toEqual({
+    tone: "idle",
+    label: "Planning stopped",
+  })
+  current.plans[0]!.state = {
+    status: "failed",
+    reason: "cancelled",
+    message: "Stopped",
+    cleanupPending: true,
+  }
+  expect(dispatcherIndicator(current)).toEqual({
+    tone: "working",
+    label: "Stopping planning",
+  })
+})

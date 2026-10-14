@@ -1,3 +1,4 @@
+import { StationExecutionError } from "../integrations/station-runner"
 import type { StationRunResult } from "@terminus/agent-runtime"
 import { timedStep, type StationOutcome } from "@terminus/protocol"
 import {
@@ -32,6 +33,7 @@ export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
     const ports = stationPorts(this.env, models)
 
     let result: StationRunResult
+    let phase = "prepare workspace"
     try {
       await step.do(
         "prepare workspace",
@@ -40,6 +42,7 @@ export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
           prepareStation(ports, params)
         )
       )
+      phase = "run station agent"
       result = await step.do(
         "run station agent",
         {
@@ -57,6 +60,7 @@ export class StationWorkflow extends WorkflowEntrypoint<Env, StationRunParams> {
     } catch (error) {
       result = {
         ok: false,
+        phase: error instanceof StationExecutionError ? error.phase : phase,
         issues: [
           {
             kind: "station_failed",

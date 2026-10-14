@@ -60,6 +60,26 @@ const danger = (icon: LucideIcon) => ({ icon, tone: "danger" }) as const
 
 export function presentEvent(event: DomainEvent): EventPresentation {
   switch (event.type) {
+    case "engineer.assessed":
+      return routine(Bot)
+    case "dispatcher.engineer_notice_raised":
+      return warning(Radio)
+    case "dispatcher.engineer_notice_acknowledged":
+      return routine(BadgeCheck)
+    case "dispatcher.engineer_notice_resolved":
+      return success(CircleCheck)
+    case "dispatcher.conflict_investigating":
+      return info(ScanEye)
+    case "dispatcher.conflict_reported":
+      return warning(GitMergeConflict)
+    case "dispatcher.conflict_cleared":
+      return success(GitMerge)
+    case "dispatcher.conflict_investigation_failed":
+      return routine(TriangleAlert)
+    case "dispatcher.conflict_acknowledged":
+      return routine(BadgeCheck)
+    case "station.run_failed":
+      return warning(TriangleAlert)
     case "line.created":
     case "dispatcher.lines_laid":
       return routine(Waypoints)
@@ -151,6 +171,9 @@ export function presentEvent(event: DomainEvent): EventPresentation {
       return routine(Rocket)
     case "dispatcher.plan_launched":
       return success(Rocket)
+    case "dispatcher.plan_stopped":
+    case "dispatcher.plan_cancelled":
+      return routine(Info)
     case "dispatcher.plan_failed":
       return danger(OctagonAlert)
     case "dispatcher.baseline_fix_selected":
