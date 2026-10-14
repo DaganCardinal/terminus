@@ -63,13 +63,12 @@ describe("permanent Network deletion", () => {
       .bind("plan-delete", f.network.id)
       .run()
     await deleteNetwork(infra.env, f.network.id)
-    expect(infra.order).toContain(`stop:${f.line.train.id}`)
+    expect(infra.order).toContain(`delete:${f.line.train.id}`)
     expect(infra.order).toContain("delete:plan-delete")
-    for (const run of f.ports.runs) {
-      expect(infra.order.indexOf(`stop:${run.runId}`)).toBeLessThan(
-        infra.order.indexOf(`delete:${run.runId}`)
-      )
-    }
+    for (const run of f.ports.runs)
+      expect(infra.order).toContain(`delete:${run.runId}`)
+    // Deleting stops a running instance, so none is terminated first.
+    expect(infra.order.filter((entry) => entry.startsWith("stop:"))).toEqual([])
     expect(await f.ports.store.network(f.network.id)).toBeNull()
     for (const table of [
       "lines",
@@ -126,7 +125,37 @@ describe("permanent Network deletion", () => {
     expect(await f.ports.store.network(f.network.id)).toBeNull()
   })
 
-  it("purges registered random containers and previews before removing repositories and metadata", async () => {
+  it("counts a Workflow that is already gone as deleted, and reports any other failure", async () => {
+    const f = await fixture()
+    const infra = workflows()
+    await env.DB.prepare(
+      "INSERT INTO dispatch_plans VALUES (?, ?, 'planning', '{}', 0)"
+    )
+      .bind("plan-stuck", f.network.id)
+      .run()
+    const gone = () => {
+      throw new Error("Instance does not exist")
+    }
+    vi.mocked(infra.env.TRAIN_WORKFLOW.get).mockImplementationOnce(gone)
+    // Gone between lookup and deletion, such as after an earlier attempt.
+    vi.mocked(infra.env.STATION_WORKFLOW.get).mockResolvedValue({
+      delete: async () => gone(),
+    } as unknown as WorkflowInstance)
+    vi.mocked(infra.env.DISPATCH_WORKFLOW.get).mockResolvedValueOnce({
+      delete: async () => {
+        throw new Error("Cloudflare unavailable")
+      },
+    } as unknown as WorkflowInstance)
+    await expect(deleteNetwork(infra.env, f.network.id)).rejects.toMatchObject({
+      status: 503,
+      details: [{ resource: "plan-stuck", action: "stop and delete Workflow" }],
+    })
+    await deleteNetwork(infra.env, f.network.id)
+    expect(infra.order).toContain("delete:plan-stuck")
+    expect(await f.ports.store.network(f.network.id)).toBeNull()
+  })
+
+  it("purges only registered Sandboxes before removing repositories and metadata", async () => {
     const f = await fixture()
     await env.DB.prepare(
       "INSERT INTO network_sandboxes (object_id, namespace) VALUES ('random-conductor', ?)"
@@ -141,7 +170,6 @@ describe("permanent Network deletion", () => {
     const infra = workflows()
     const purged: string[] = []
     const stub = (binding: string, id: string) => ({
-      id: { toString: () => `${binding}:${id}` },
       purge: vi.fn(async () => {
         purged.push(`${binding}:${id}`)
       }),
@@ -159,28 +187,26 @@ describe("permanent Network deletion", () => {
         return id
       },
       get: () => saved,
-      getByName: (name: string) => stub(binding, name),
+      // A Sandbox addressed by a guessed name, such as a Station's or a
+      // preview's, wakes its containers even if it never ran.
+      getByName: vi.fn(),
     })
+    const SANDBOX = namespace("SANDBOX", "random-conductor", random)
+    const WORKSPACE_SANDBOX = namespace("WORKSPACE_SANDBOX", "random-git")
     const testEnv = {
       ...infra.env,
       REPOSITORY_MODE: "artifacts",
       ARTIFACTS_ACCOUNT_ID: "test-account",
       ARTIFACTS_API_TOKEN: "test-token",
-      SANDBOX: namespace("SANDBOX", "random-conductor", random),
-      WORKSPACE_SANDBOX: namespace("WORKSPACE_SANDBOX", "random-git"),
+      SANDBOX,
+      WORKSPACE_SANDBOX,
     } as unknown as Env
     const removeRepositories = vi
       .spyOn(ArtifactsRestClient.prototype, "deleteRepositories")
       .mockImplementation(async (namespace) => {
         expect(namespace).toBe(f.namespace)
-        expect(purged).toContain("SANDBOX:random-conductor")
-        expect(purged).toContain("WORKSPACE_SANDBOX:random-git")
-        // Previews run in agentless Sandboxes, Stations in agent ones.
-        expect(
-          purged.some((id) => id.startsWith("WORKSPACE_SANDBOX:preview-"))
-        ).toBe(true)
-        expect(purged.some((id) => id.startsWith("SANDBOX:preview-"))).toBe(
-          false
+        expect(new Set(purged)).toEqual(
+          new Set(["SANDBOX:random-conductor", "WORKSPACE_SANDBOX:random-git"])
         )
         expect(await f.ports.store.network(f.network.id)).not.toBeNull()
       })
@@ -190,6 +216,8 @@ describe("permanent Network deletion", () => {
     expect(removeRepositories).not.toHaveBeenCalled()
     await deleteNetwork(testEnv, f.network.id)
     expect(removeRepositories).toHaveBeenCalledOnce()
+    expect(SANDBOX.getByName).not.toHaveBeenCalled()
+    expect(WORKSPACE_SANDBOX.getByName).not.toHaveBeenCalled()
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) FROM network_sandboxes WHERE namespace=?"
@@ -197,6 +225,50 @@ describe("permanent Network deletion", () => {
         .bind(f.namespace)
         .first("COUNT(*)")
     ).toBe(0)
+    expect(await f.ports.store.network(f.network.id)).toBeNull()
+  })
+
+  it("purges registered Sandboxes a few at a time", async () => {
+    const f = await fixture()
+    const ids = Array.from({ length: 20 }, (_, at) => `sandbox-${at}`)
+    await env.DB.batch(
+      ids.map((id) =>
+        env.DB.prepare(
+          "INSERT INTO network_sandboxes (object_id, namespace) VALUES (?, ?)"
+        ).bind(id, f.namespace)
+      )
+    )
+    const purged: string[] = []
+    let active = 0
+    let peak = 0
+    const sandboxes = {
+      idFromString: (id: string) => id,
+      get: (id: string) => ({
+        purge: async () => {
+          peak = Math.max(peak, ++active)
+          await new Promise((resolve) => setTimeout(resolve, 5))
+          active--
+          purged.push(id)
+        },
+      }),
+    }
+    vi.spyOn(
+      ArtifactsRestClient.prototype,
+      "deleteRepositories"
+    ).mockResolvedValue()
+    await deleteNetwork(
+      {
+        ...workflows().env,
+        REPOSITORY_MODE: "artifacts",
+        ARTIFACTS_ACCOUNT_ID: "test-account",
+        ARTIFACTS_API_TOKEN: "test-token",
+        SANDBOX: sandboxes,
+        WORKSPACE_SANDBOX: sandboxes,
+      } as unknown as Env,
+      f.network.id
+    )
+    expect(purged.sort()).toEqual(ids.sort())
+    expect(peak).toBe(6)
     expect(await f.ports.store.network(f.network.id)).toBeNull()
   })
 

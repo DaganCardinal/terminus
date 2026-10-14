@@ -8,9 +8,12 @@ export interface DispatchValidationIssue {
 /** Safe field locations and codes only; never put model output or Zod messages in diagnostics. */
 export class DispatchProposalError extends Error {
   readonly issues: readonly DispatchValidationIssue[]
-  constructor(issues: readonly DispatchValidationIssue[]) {
+  constructor(
+    issues: readonly DispatchValidationIssue[],
+    limit: "corrections" | "tool_rejections" = "corrections"
+  ) {
     super(
-      `Dispatcher proposal failed validation after three attempts: ${issues.map((issue) => `${issue.path} (${issue.code})`).join("; ")}`
+      `Dispatcher proposal failed validation ${limit === "tool_rejections" ? "after repeated rejected plan tool calls" : "after three attempts"}: ${issues.map((issue) => `${issue.path} (${issue.code})`).join("; ")}`
     )
     this.name = "DispatchProposalError"
     this.issues = issues
@@ -29,6 +32,16 @@ export class ProposalSubmissionsExhausted extends Error {
     super("Dispatcher stopped after repeated rejected proposal submissions")
     this.name = "ProposalSubmissionsExhausted"
     this.submission = submission
+  }
+}
+
+/** The live runner paused a format-error loop; a bounded session correction may follow. */
+export class PlanToolFormatStalled extends Error {
+  constructor() {
+    super(
+      "Dispatcher plan tool arguments repeatedly failed to parse or match the schema"
+    )
+    this.name = "PlanToolFormatStalled"
   }
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { z } from "zod"
 import type { BaselineReport } from "@terminus/domain"
 import {
   dispatchProposalSchema,
@@ -623,7 +624,7 @@ describe("finalize_plan", () => {
 
 describe("plan tools", () => {
   it("lists four tools, with flat Station arguments", () => {
-    const tools = planTools(true)
+    const tools = planTools(false)
     expect(tools.map((t) => t.name)).toEqual([
       "set_plan_outline",
       "put_station",
@@ -631,11 +632,15 @@ describe("plan tools", () => {
       "finalize_plan",
     ])
     const stationSchema = tools[1]!.inputSchema as {
-      properties: Record<string, { type?: string }>
+      properties: Record<string, { anyOf?: { type?: string }[] }>
       required: string[]
     }
     expect(stationSchema.properties.changeKind).toBeDefined()
-    expect(stationSchema.properties.scope!.type).toBe("array")
+    expect(stationSchema.properties.scope!.anyOf?.map((s) => s.type)).toEqual([
+      "array",
+      "string",
+    ])
+    expect(planTools(true)[1]).toEqual(planTools(false)[1])
     expect(stationSchema.required).toEqual(
       expect.arrayContaining(["key", "name", "goal", "scope"])
     )
@@ -657,4 +662,98 @@ describe("plan tools", () => {
     expect(outlineArg(true)).toBe("string")
     expect(outlineArg(false)).toBe("object")
   })
+
+  it.each([false, true])(
+    "accepts arrays and text through the same Station schema (outline as text: %s)",
+    (asText) => {
+      const schema = z.fromJSONSchema(
+        planTools(asText)[1]!.inputSchema as Parameters<
+          typeof z.fromJSONSchema
+        >[0]
+      )
+      const args = {
+        ...station("a1"),
+        scope: "Selection covers the current page.\nKeep sorting unchanged.",
+        expectedAreas: "src/a1.ts\nsrc/a1.test.ts",
+        avoidAreas: "",
+        contracts: '[{"name":"a1 API","kind":"api","change":"adds"}]',
+        invariants: "",
+        dependencies: "",
+        acceptanceCriteria: 'Show "N selected".\nSelect all visible rows.',
+        expectedEvidence: "",
+        projectFacts: "Tests use the node environment (vite.config.ts).",
+      }
+      expect(schema.parse(args)).toEqual(args)
+      const arrayArgs = {
+        ...station("a2"),
+        contracts: [{ name: "a2 API", kind: "api", change: "adds" }],
+      }
+      expect(schema.parse(arrayArgs)).toEqual(arrayArgs)
+      const mixedArgs = { ...station("b1"), scope: "Only the b1 behavior" }
+      expect(schema.parse(mixedArgs)).toEqual(mixedArgs)
+      const { replies, draft } = run([
+        setOutline(outline),
+        put(args),
+        put(arrayArgs),
+        put(mixedArgs),
+        finalize,
+      ])
+      expect(replies[1]!.outcome).toBe("saved")
+      expect(replies.at(-1)!.outcome).toBe("accepted")
+      expect(draft.stations.a1).toMatchObject({
+        scope: [
+          "Selection covers the current page.",
+          "Keep sorting unchanged.",
+        ],
+        expectedAreas: ["src/a1.ts", "src/a1.test.ts"],
+        avoidAreas: [],
+        contracts: [{ name: "a1 API", kind: "api", change: "adds" }],
+        invariants: [],
+        dependencies: [],
+        acceptanceCriteria: ['Show "N selected".', "Select all visible rows."],
+        expectedEvidence: [],
+        projectFacts: ["Tests use the node environment (vite.config.ts)."],
+      })
+      expect(
+        replies.at(-1)!.proposal!.lines[0]!.stations[0]!.manifest
+      ).toMatchObject({
+        invariants: ["Everything stays client-side"],
+        expectedEvidence: ["test"],
+      })
+
+      // Transport strings cannot bypass the full server-side schema or assessment.
+      const invalid = planToolReply(
+        planToolNames.station,
+        { ...args, expectedAreas: "../outside.ts" },
+        draft,
+        context
+      )
+      expect(invalid.outcome).toBe("rejected")
+      expect(invalid.draft).toBe(draft)
+      const unknownCheck = planToolReply(
+        planToolNames.station,
+        { ...args, expectedEvidence: "unconfigured-check" },
+        draft,
+        context
+      )
+      expect(reviewPlanDraft(unknownCheck.draft, context).kind).toBe(
+        "assessment"
+      )
+      for (const invalidFields of [
+        { scope: "" },
+        { scope: '["broken JSON"' },
+        { scope: [42] },
+        { contracts: "an API contract" },
+      ]) {
+        expect(
+          planToolReply(
+            planToolNames.station,
+            { ...args, ...invalidFields },
+            draft,
+            context
+          ).outcome
+        ).toBe("rejected")
+      }
+    }
+  )
 })

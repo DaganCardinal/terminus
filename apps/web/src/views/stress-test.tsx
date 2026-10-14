@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react"
-import { CheckCircle2, Download, LoaderCircle, Play } from "lucide-react"
-import type {
-  NetworkSnapshot,
-  StressLaunch,
-  StressReport,
+import {
+  CheckCircle2,
+  Download,
+  LoaderCircle,
+  Play,
+  XCircle,
+} from "lucide-react"
+import {
+  stressReportPending,
+  type NetworkSnapshot,
+  type StressLaunch,
+  type StressReport,
 } from "@terminus/protocol"
 import { Button, buttonVariants } from "@terminus/ui/components/button"
 import { AppNav } from "@/components/app-nav"
@@ -123,10 +130,12 @@ export function StressTestPage({ networkId }: { networkId?: string }) {
         train.state.status === "returning" &&
         train.state.phase === "awaiting_clearance"
     ).length ?? 0
-  const canVerify =
-    unloaded === 10 &&
-    resources?.leases === 0 &&
-    resources.activeIntegrations === 0
+  // The same rule the report command applies; a failed run still gets a report.
+  const pending =
+    snapshot && resources
+      ? stressReportPending(snapshot, resources)
+      : "Loading progress"
+  const canVerify = !pending
   return (
     <>
       <AppNav
@@ -214,7 +223,8 @@ export function StressTestPage({ networkId }: { networkId?: string }) {
               {blocked > 0 && (
                 <p role="status">
                   {blocked} Train{blocked === 1 ? " needs" : "s need"}{" "}
-                  attention. Open the map to inspect the failure.
+                  attention. Open the map to inspect the failure, or verify once
+                  every Train has stopped to download a failure report.
                 </p>
               )}
               <div className="flex flex-wrap gap-3">
@@ -236,25 +246,45 @@ export function StressTestPage({ networkId }: { networkId?: string }) {
                 </Button>
               </div>
               <p className="max-w-prose text-sm text-muted-foreground">
-                Execution continues if you close this page. Come back when all
-                ten Trains have unloaded to verify the result and download the
-                timing report.
+                {pending && !report ? `${pending}. ` : ""}
+                Execution continues if you close this page. Come back when every
+                Train has stopped to verify the result and download the timing
+                report.
               </p>
             </>
           )}
           {report && (
             <div className="space-y-2" role="status">
               <p className="flex items-center gap-2 font-medium">
-                <CheckCircle2 size={18} />
-                {report.mode === "artifacts"
-                  ? "Full verification passed"
-                  : "Local rehearsal passed"}
+                {report.passed ? (
+                  <CheckCircle2 size={18} />
+                ) : (
+                  <XCircle size={18} />
+                )}
+                {report.passed
+                  ? report.mode === "artifacts"
+                    ? "Full verification passed"
+                    : "Local rehearsal passed"
+                  : "Verification failed"}
               </p>
-              <p className="text-sm text-muted-foreground">
-                {report.verification
-                  ? "Twenty files, ten accepted Car commits, ten canonical merges, and resource cleanup verified."
-                  : "Ten simulated Trains completed. Cloudflare and final Git verification are not included in this rehearsal."}
-              </p>
+              {report.passed ? (
+                <p className="text-sm text-muted-foreground">
+                  {report.verification
+                    ? "Twenty files, ten accepted Car commits, ten canonical merges, and resource cleanup verified."
+                    : "Ten simulated Trains completed. Cloudflare and final Git verification are not included in this rehearsal."}
+                </p>
+              ) : (
+                <ul className="list-disc space-y-1 pl-5 text-sm">
+                  {report.findings.map((finding, index) => (
+                    <li key={index}>{finding}</li>
+                  ))}
+                </ul>
+              )}
+              {report.warnings.map((warning) => (
+                <p key={warning} className="text-sm text-muted-foreground">
+                  {warning}
+                </p>
+              ))}
               <p className="text-sm">
                 Peak integration queue: {report.timings.maxQueueDepth} · Queue
                 drained in{" "}

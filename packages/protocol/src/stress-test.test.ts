@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { layLineRequestSchema } from "./api"
-import { stressFiles, stressLines, stressTask } from "./stress-test"
+import { layLineRequestSchema, type NetworkSnapshot } from "./api"
+import {
+  stressFiles,
+  stressLines,
+  stressReportPending,
+  stressTask,
+} from "./stress-test"
 
 const runId = "00000000-0000-4000-8000-000000000001"
 describe("versioned ten-Train fixture", () => {
@@ -26,5 +31,28 @@ describe("versioned ten-Train fixture", () => {
     )
     expect(() => stressFiles({ runId: "../../secrets", train: 1 })).toThrow()
     expect(() => stressFiles({ runId, train: 11 })).toThrow()
+  })
+  it("waits until every Train stops and capacity drains, ignoring expired lease rows", () => {
+    const trains = (...statuses: string[]) => ({
+      trains: statuses.map((status) => ({
+        train: { state: { status } },
+      })) as unknown as NetworkSnapshot["trains"],
+    })
+    const idle = { leases: 0, expiredLeases: 3, activeIntegrations: 0 }
+    expect(stressReportPending(trains("unloaded", "in_transit"), idle)).toBe(
+      "1 Train is still running"
+    )
+    expect(
+      stressReportPending(trains("unloaded", "blocked", "siding"), idle)
+    ).toBeNull()
+    expect(
+      stressReportPending(trains("unloaded"), {
+        ...idle,
+        activeIntegrations: 1,
+      })
+    ).toBe("An integration into Terminus is still active")
+    expect(
+      stressReportPending(trains("unloaded"), { ...idle, leases: 2 })
+    ).toBe("2 Sandboxes are still running")
   })
 })

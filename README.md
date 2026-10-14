@@ -50,7 +50,61 @@ This runs the local ten-Train Workflow rehearsal and real local Git oracle, with
 
 Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default preset uses `@cf/zai-org/glm-5.3-flash` for every role.
 
-See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness and provider configuration, troubleshooting and deployment, and [Private beta deployment](docs/private-beta-deployment.md) for the live beta. Deployment is a maintainer action.
+See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness and provider configuration, troubleshooting and temporary performance logging.
+
+## Deployment
+
+One Worker hosts the React assets, API and Workflows, with separate agent and agentless Sandbox images. Deployment needs Node 24, Docker, a Cloudflare account with Workers Paid and Artifacts/Sandboxes available, an authenticated AI Gateway, and Zero Trust Access. Run `npm ci` from the repository root first. Deployment is a maintainer action.
+
+### Configure account resources
+
+In `apps/worker/wrangler.jsonc`, set `account_id`, `ARTIFACTS_ACCOUNT_ID` and `AI_GATEWAY_ACCOUNT_ID` to your account, and `AI_GATEWAY_ID` to your Gateway. Replace the app/Access origins, audience, preview domain and zone route with your own values; these are specific to each deployment. Do the same for `account_id` in `apps/perf-tail/wrangler.jsonc` while temporary logging remains enabled.
+
+From `apps/worker`, authenticate and create resources you have not already provisioned:
+
+```sh
+npx wrangler login
+npx wrangler whoami
+npx wrangler d1 create terminus
+npx wrangler r2 bucket create terminus-dependency-cache
+npx wrangler r2 bucket lifecycle add terminus-dependency-cache expire-cache --expire-days 30
+```
+
+Copy the returned D1 `database_id` into the top-level `d1_databases` entry, leaving `env.fake` local-only. The dependency bucket holds disposable npm caches; expired entries are rebuilt. Provision and deploy the temporary Perf Tail resources as described in [Live setup](docs/live-setup.md#deployment) before deploying the main Worker.
+
+### Bootstrap and protect the Worker
+
+Configure these Worker secrets; local `.dev.vars` are not deployed:
+
+| Secret | Required value |
+| --- | --- |
+| `ARTIFACTS_API_TOKEN` | Account-scoped token with Artifacts Read and Edit |
+| `AI_GATEWAY_TOKEN` | Account-scoped token with Workers AI Read, plus AI Gateway Run for native Anthropic/OpenAI routes |
+| `ACCESS_ALLOWED_EMAILS` | Comma-separated emails permitted to use the app |
+
+For a first deployment, put all three in a temporary `NAME=value` secrets file outside the repository. Leave `APP_ORIGIN`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` empty until Access is configured; public requests fail closed. From the repository root:
+
+```sh
+npm run deploy -- --secrets-file /path/outside/repo/terminus-secrets.env
+```
+
+The deploy command applies remote D1 migrations, builds the web assets and deploys the Worker, Workflows and both container images. Delete the temporary secrets file afterward. Later deployments retain the stored secrets; change one with `npx wrangler secret put NAME` from `apps/worker`.
+
+Protect the Worker behind Cloudflare Access for all traffic, with an Allow policy limited to the intended emails. Then set:
+
+- `APP_ORIGIN`: the exact public HTTPS origin, without a path.
+- `ACCESS_TEAM_DOMAIN`: your `https://YOUR_TEAM.cloudflareaccess.com` origin.
+- `ACCESS_AUD`: the Access application's Application Audience tag; multiple configured audiences are comma-separated.
+
+Deploy again and sign in. Verify that logged-out requests to `/` and `/api/networks` require authentication. The Worker independently checks the Access JWT and allowed email; missing configuration returns 503 and rejected credentials return 403. Service tokens have no user email and cannot use this authentication path. Keep `ACCESS_REQUIRED` enabled in live deployments and `preview_urls: false`. Use `workers_dev: true` for the regular Worker URL, or a custom domain with `workers_dev: false`.
+
+Application previews need additional wildcard DNS, TLS, routing and Access protection; see [Previews](docs/previews.md#deployment). Publishing managed project code is a separate explicit action through [Workers Builds](docs/publishing.md).
+
+### Updates and verification
+
+Run the [normal checks](#checks), finish active work before changing container images, then run `npm run deploy`. Migrations apply before deployment; deployment does not reset D1. Resetting D1 alone does not stop Workflows or remove containers and Artifacts repositories.
+
+For a smoke test, import a public npm project, run two concurrent Lines, inspect accepted Cars and both integrations, test human unloading approval, and reload during execution. If previews are configured, verify the selected accepted snapshots and logged-out protection. The default Sandbox limits are ten agent and ten agentless containers; adjust them through Settings rather than assuming a shared fixed cap. See [Harness selection](docs/harness-selection.md#release-verification) for outstanding provider checks.
 
 ## Guides
 
@@ -70,6 +124,6 @@ See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness
 | [API examples](docs/api.md) | Creating networks, validation commands, snapshots and events |
 | [Pipeline stress test](docs/pipeline-stress-test.md) | Ten scripted Trains, real Git/Sandbox pipeline, correctness oracle and timing report |
 | [Harness selection](docs/harness-selection.md) | Per-role harnesses, frozen configuration, release verification |
-| [Browser Run transport gate](docs/browser-run.md) | Browser testing design, reproducible probes, current transport blockers |
+| [Browser Run transport gate](docs/browser-run.md) | Passed hosted transport proof, reproducible probes and remaining browser release requirements |
 
 Architecture and ownership rules are in [AGENTS.md](./AGENTS.md), [the outline](./docs/outline-updated.md), and [technology architecture](./docs/technology-architecture.md).

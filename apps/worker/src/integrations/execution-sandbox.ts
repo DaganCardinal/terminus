@@ -54,6 +54,25 @@ const leaseRenewalMs = 60_000
 /** Workflow callers wait this long for a free Sandbox before failing their
  * step, which then retries; previews, behind a person, never wait. */
 const capacityWaitMs = 10 * 60_000
+/** Callers that may wait retry a start Cloudflare could not place for this
+ * long, pausing 5, 10, 20, then 30 seconds at a time. */
+const placementWaitMs = 5 * 60_000
+const placementPauseMs = 5_000
+const maxPlacementPauseMs = 30_000
+
+/**
+ * Cloudflare had no container to give this start ("There is no container
+ * instance that can be provided to this Durable Object, try again later").
+ * The message is the runtime's only signal; `@cloudflare/containers` retries
+ * on the same text. Nothing ran in the container, so starting again is safe.
+ */
+function isPlacementFailure(error: unknown): boolean {
+  return (error instanceof Error ? error.message : String(error))
+    .toLowerCase()
+    .includes(
+      "there is no container instance that can be provided to this durable object"
+    )
+}
 
 /** The Durable Object bindings callers address Sandboxes by, one per kind,
  * as recorded for deletion. */
@@ -170,16 +189,27 @@ export class ExecutionSandbox extends DurableObject<Env> {
     }
   }
 
-  /** Permanent deletion purges every size's container, since earlier starts
-   * may have used another size, and then this address's own storage. */
+  /** Permanent deletion purges the container of every size this address
+   * has started, since earlier starts may have used another size, and then
+   * this address's own storage. An address that never started a container
+   * wakes none. */
   async purge(): Promise<void> {
     this.#purged = true
     await this.#choosing.catch(() => {})
     const name = await this.name()
     // Without a name, no container was ever started from here.
     if (name)
-      for (const size of SANDBOX_SIZES) await this.container(size, name).purge()
+      for (const size of await this.startedSizes())
+        await this.container(size, name).purge()
     await this.ctx.storage.deleteAll()
+  }
+
+  /** The sizes this address has chosen a container at. One chosen before
+   * these were recorded may have used any size. */
+  private async startedSizes(): Promise<SandboxSize[]> {
+    const sizes = await this.ctx.storage.get<SandboxSize[]>("sizes")
+    if (sizes) return sizes
+    return (await this.ctx.storage.get("size")) ? [...SANDBOX_SIZES] : []
   }
 
   /** The container to start work in: the one already running, else one of
@@ -209,7 +239,11 @@ export class ExecutionSandbox extends DurableObject<Env> {
         const size = (await sandboxLimits(this.env.DB, namespace)).sizes[
           sandboxKind[this.binding]
         ]
-        await this.ctx.storage.put("size", size)
+        const sizes = await this.startedSizes()
+        await this.ctx.storage.put({
+          size,
+          sizes: sizes.includes(size) ? sizes : [...sizes, size],
+        })
         perf("sandbox.choose", { sandbox: name, binding: this.binding, size })
         return this.container(size, name)
       })
@@ -487,7 +521,8 @@ export abstract class SandboxContainer extends DurableObject<Env> {
     try {
       await this.applyNetwork(
         { repositories: [], allowModel: false, allowBrowser: true },
-        0
+        0,
+        true
       )
       await this.container().setInactivityTimeout(browserProofIdleTimeoutMs)
       this.#leaseTtlMs = browserProofIdleTimeoutMs + leaseMarginMs
@@ -621,16 +656,23 @@ export abstract class SandboxContainer extends DurableObject<Env> {
   }
 
   /** Configures capabilities and starts the container, waiting up to
-   * `waitMs` for the network to have a free Sandbox of this kind. */
+   * `waitMs` for the network to have a free Sandbox of this kind. Only the
+   * Browser Run proof runs `networkless`. */
   protected async applyNetwork(
     network: SandboxNetwork,
-    waitMs: number
+    waitMs: number,
+    networkless = false
   ): Promise<void> {
     await this.assertActive()
     const parsed = sandboxNetworkSchema.parse(network)
     for (const repo of parsed.repositories) await this.register(repo.remote)
     await this.register()
     if (this.#purged) throw new Error("Sandbox was deleted")
+    // A container starts only for a network, so deletion's fence and registry
+    // cover it. Purging erases the namespace, so a call arriving after a
+    // purge, once the in-memory flag is gone, cannot start one unfenced.
+    if (!this.#namespace && !networkless)
+      throw new Error("Sandbox belongs to no network")
     await this.assertActive()
     this.#network = parsed
     this.#setup = null
@@ -896,70 +938,136 @@ export abstract class SandboxContainer extends DurableObject<Env> {
     if (!this.#network)
       throw new Error("Sandbox network capabilities have not been configured")
     if (!this.#setup || !this.container().running) {
-      const network = this.#network
-      this.#setup = (async () => {
-        const container = this.container()
-        const setupStarted = Date.now()
-        const cold = !container.running
-        let leaseMs = 0
-        if (!container.running) {
-          await this.acquireLease(waitMs)
-          await this.assertActive()
-          leaseMs = Date.now() - setupStarted
-          container.start({ enableInternet: false })
-          this.#coldStartedAt = Date.now()
-        } else await this.renewLease(true)
-        this.watchExit(container)
-        // Install the idle limit before network setup, which may fail or hang.
-        await container.setInactivityTimeout(idleTimeoutMs)
-        // One affinity per Sandbox keeps a harness session's turns on one
-        // model instance, which caches their shared prompt prefix.
-        const outbound = this.ctx.exports.SandboxOutbound({
-          props: {
-            ...network,
-            ...(this.ctx.id.name?.startsWith("dispatch-")
-              ? {
-                  outboundSandbox: {
-                    binding: this.self,
-                    sandbox: this.ctx.id.toString(),
-                  },
-                }
-              : {}),
-            sessionAffinity: `ses_${this.ctx.id.toString()}`,
-            ...(network.allowBrowser
-              ? {
-                  browserSandbox: {
-                    binding: this.self,
-                    sandbox: this.ctx.id.toString(),
-                  },
-                }
-              : {}),
-          },
-        })
-        await this.assertActive()
-        await container.interceptAllOutboundHttp(outbound)
-        await container.interceptOutboundHttps("*", outbound)
-        perf("sandbox.setup", {
-          sandbox: this.ctx.id.name,
-          binding: this.binding,
-          cold,
-          leaseMs,
-          setupMs: Date.now() - setupStarted,
-          allowModel: network.allowModel,
-          repositories: network.repositories.length,
-          affinity: `ses_${this.ctx.id.toString()}`.slice(0, 16),
-        })
-      })().catch(async (error: unknown) => {
-        this.#setup = null
-        await this.container().destroy()
-        await this.releaseLease()
-        throw error
-      })
+      this.#setup = this.setUp(this.#network, waitMs).catch(
+        (error: unknown) => {
+          this.#setup = null
+          throw error
+        }
+      )
     }
     await this.#setup
     await this.assertActive()
     await this.renewLease()
     await this.assertActive()
+  }
+
+  /**
+   * Starts the container, or attaches to the running one. Callers that may
+   * wait retry a start Cloudflare could not place, freeing the network's
+   * slot while they pause, so a Station or integration doesn't fail on it.
+   */
+  private async setUp(network: SandboxNetwork, waitMs: number): Promise<void> {
+    const retry = waitMs > 0
+    // Counted from the first unplaced start, not from any wait for a slot.
+    let deadline: number | undefined
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.setUpOnce(network, waitMs, retry)
+      } catch (error) {
+        await this.container().destroy()
+        await this.releaseLease()
+        if (!retry || !isPlacementFailure(error)) throw error
+        deadline ??= Date.now() + placementWaitMs
+        const pauseMs = Math.min(
+          placementPauseMs * 2 ** (attempt - 1),
+          maxPlacementPauseMs
+        )
+        if (Date.now() + pauseMs > deadline)
+          throw new Error(
+            `Cloudflare could not provide a Sandbox container after ${attempt} attempts: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+          )
+        console.warn("Sandbox container could not be placed; retrying", {
+          sandbox: this.ctx.id.name,
+          attempt,
+          pauseMs,
+        })
+        perf("sandbox.placement_retry", {
+          sandbox: this.ctx.id.name,
+          binding: this.binding,
+          attempt,
+          pauseMs,
+        })
+        await this.pause(pauseMs)
+        await this.assertActive()
+      }
+    }
+  }
+
+  private async setUpOnce(
+    network: SandboxNetwork,
+    waitMs: number,
+    confirmPlacement: boolean
+  ): Promise<void> {
+    const container = this.container()
+    const setupStarted = Date.now()
+    const cold = !container.running
+    let leaseMs = 0
+    if (!container.running) {
+      await this.acquireLease(waitMs)
+      await this.assertActive()
+      leaseMs = Date.now() - setupStarted
+      container.start({ enableInternet: false })
+      this.#coldStartedAt = Date.now()
+    } else await this.renewLease(true)
+    this.watchExit(container)
+    // Install the idle limit before network setup, which may fail or hang.
+    await container.setInactivityTimeout(idleTimeoutMs)
+    // One affinity per Sandbox keeps a harness session's turns on one
+    // model instance, which caches their shared prompt prefix.
+    const outbound = this.ctx.exports.SandboxOutbound({
+      props: {
+        ...network,
+        ...(this.ctx.id.name?.startsWith("dispatch-")
+          ? {
+              outboundSandbox: {
+                binding: this.self,
+                sandbox: this.ctx.id.toString(),
+              },
+            }
+          : {}),
+        sessionAffinity: `ses_${this.ctx.id.toString()}`,
+        ...(network.allowBrowser
+          ? {
+              browserSandbox: {
+                binding: this.self,
+                sandbox: this.ctx.id.toString(),
+              },
+            }
+          : {}),
+      },
+    })
+    await this.assertActive()
+    await container.interceptAllOutboundHttp(outbound)
+    await container.interceptOutboundHttps("*", outbound)
+    if (cold && confirmPlacement) {
+      // start() reports nothing, and an unplaced start fails the first
+      // command. Fail it here instead, where it can be retried before any
+      // caller's command has run.
+      const probe = await container.exec(["true"], {
+        stdin: new ReadableStream({
+          start: (controller) => controller.close(),
+        }),
+        stdout: "ignore",
+        stderr: "ignore",
+      })
+      await probe.exitCode
+    }
+    perf("sandbox.setup", {
+      sandbox: this.ctx.id.name,
+      binding: this.binding,
+      cold,
+      leaseMs,
+      setupMs: Date.now() - setupStarted,
+      allowModel: network.allowModel,
+      repositories: network.repositories.length,
+      affinity: `ses_${this.ctx.id.toString()}`.slice(0, 16),
+    })
+  }
+
+  /** A pause between start attempts; tests replace it. */
+  protected async pause(ms: number): Promise<void> {
+    await scheduler.wait(ms)
   }
 
   #lease() {
@@ -1072,11 +1180,12 @@ export abstract class WorkspaceSandboxContainer extends SandboxContainer {
 
   protected override async applyNetwork(
     network: SandboxNetwork,
-    waitMs: number
+    waitMs: number,
+    networkless = false
   ): Promise<void> {
     if (sandboxNetworkSchema.parse(network).allowModel)
       throw new Error("Workspace Sandboxes are never granted model access")
-    await super.applyNetwork(network, waitMs)
+    await super.applyNetwork(network, waitMs, networkless)
   }
 }
 

@@ -24,7 +24,7 @@ async function fixture(failLine = false) {
       const json = (data) => Response.json(data);
       if (path === "/api/stress-test") return json({profile: "ten-trains-v1", repositoryMode: "artifacts"});
       if (path === "/api/stress-tests") {
-        ${failLine ? 'return new Response("failed", {status: 503});' : 'released = true; lines.push(...Array.from({length: 10}, () => ({}))); return json({profile: "ten-trains-v1", runId: JSON.parse(init.body).requestId, networkId: "n", baseline, mode: "artifacts"});'}
+        ${failLine ? 'return new Response(JSON.stringify({error: "Artifacts unavailable"}), {status: 503});' : 'released = true; lines.push(...Array.from({length: 10}, () => ({}))); return json({profile: "ten-trains-v1", runId: JSON.parse(init.body).requestId, networkId: "n", baseline, mode: "artifacts"});'}
       }
       if (path.endsWith("/stress-test/verify")) return json({commit: "b".repeat(40), files: 20, reachableCars: 10, mergeCommits: Array.from({length: 10}, (_, i) => String(i).padStart(40, "0"))});
       if (path.endsWith("/stress-test")) return json({profile: "ten-trains-v1", leases: 0, expiredLeases: 0, activeIntegrations: 0, completedIntegrations: released ? 10 : 0, failedIntegrations: 0});
@@ -103,7 +103,7 @@ it("journals a failed launch and never automatically retries the mutation", asyn
       JSON.parse(await readFile(join(f.output, "report.json"), "utf8"))
     ).toMatchObject({
       passed: false,
-      failure: "POST /stress-tests returned 503",
+      failure: "POST /stress-tests returned 503:\n  Artifacts unavailable",
     })
   } finally {
     await rm(f.root, { recursive: true, force: true })

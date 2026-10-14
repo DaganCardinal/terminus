@@ -49,7 +49,9 @@ Integration references: [Cloudflare Claude Code](https://developers.cloudflare.c
 
 ## Release verification
 
-`ALTERNATIVE_HARNESSES_ENABLED` is `true` in the real deployment and `false` in fake mode, where it is not consulted. When `false`, real settings disable alternatives; the API rejects bypass attempts, and preparation checks again before execution. External-provider models under OpenCode are also gated. Fake mode accepts every combination without starting CLIs or calling a provider.
+`ALTERNATIVE_HARNESSES_ENABLED` is `true` in the real deployment and `false` in fake mode, where it is not consulted. When `false`, real settings disable alternatives; the API rejects bypass attempts, and preparation checks again before execution. Fake mode accepts every combination without starting CLIs or calling a provider.
+
+Anthropic and OpenAI models under OpenCode need `OPENCODE_EXTERNAL_PROVIDERS_ENABLED=true` as well, and it is `false` in the real deployment. Their configuration is covered by unit tests (`opencode.test.ts` checks that each provider block resolves to the exact gateway route the outbound handler grants, with native model IDs), but no OpenCode run has called those providers live. Unverified: whether OpenCode 1.18.32 bundles `@ai-sdk/anthropic` and `@ai-sdk/openai` or fetches them from npm, whether its OpenAI handling (Responses API, `store`, encrypted reasoning) applies to the custom `terminus` provider, and how well these models work without extended thinking and with the 131k context limit. Until then, Claude Code and Codex serve those providers, and Settings falls back to a Workers AI model when a role is switched to OpenCode. Turn the gate on only after step 4 of the checklist below passes for OpenCode with Claude Haiku 4.5 and GPT-6 Luna.
 
 The automated suite is credential-free. It covers catalog compatibility, legacy settings, all twelve role/harness command and continuation fixtures, outcome failures, event filtering, immutable D1 configuration, checkpoint mismatches, offline execution, exact routing, header replacement, streaming and upstream failure handling.
 

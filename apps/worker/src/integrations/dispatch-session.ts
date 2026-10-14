@@ -31,7 +31,7 @@ type OpenInput = FactoryInput & {
   label?: string
 }
 /** The plan whose draft the plan tools write is always known in a session. */
-type SessionInput = OpenInput & { planId: string }
+type SessionInput = OpenInput & { planId: string; persistent: boolean }
 
 export class SandboxDispatchSessions implements DispatchSessionFactory {
   private readonly env: Env
@@ -59,6 +59,7 @@ export class SandboxDispatchSessions implements DispatchSessionFactory {
       {
         ...input,
         planId: id,
+        persistent: input.planId !== undefined,
         execution: this.execution,
         label: `dispatch-${id}`,
       }
@@ -93,6 +94,7 @@ class SandboxDispatchSession implements DispatchSession {
   readonly #harness: HarnessSession
   readonly #drafts: DispatchDraftStore
   #access: RepositoryAccess | undefined
+  #usedSandbox = false
   /** TEMPORARY benchmark instrumentation. */
   readonly #phases: PerfPhases
   #resumes = 0
@@ -129,15 +131,45 @@ class SandboxDispatchSession implements DispatchSession {
     return loggedWorkspace(this.#sandbox, "Dispatcher", phase)
   }
 
+  #context(): string {
+    return JSON.stringify({
+      version: 1,
+      repository: this.#input.repository,
+      checkBaseline: this.#input.checkBaseline,
+      validation: validationCommandsSchema.parse(this.#input.validation),
+      model: this.#input.model,
+      execution: this.#input.execution ?? null,
+    })
+  }
+
+  async restore() {
+    if (!this.#input.persistent) return null
+    const saved = await this.#drafts.restore(
+      this.#input.planId,
+      this.#context()
+    )
+    // Baseline evidence must agree with the exact commit and requested option.
+    if (
+      saved &&
+      (this.#input.checkBaseline
+        ? saved.baseline?.commit !== this.#input.repository.commit
+        : saved.baseline !== null)
+    )
+      return null
+    return saved
+  }
+
   async prepare(): Promise<BaselineReport | null> {
     const { repository, checkBaseline, model } = this.#input
     gatewayConfig(this.#env, model)
     const validation = validationCommandsSchema.parse(this.#input.validation)
+    const saved = await this.restore()
     this.#phases.enter("access")
     this.#input.onActivity?.({ kind: "phase", phase: "preparing_workspace" })
     this.#access = await this.#repositories.access(repository.repoId, "read")
     this.#phases.enter("configure (container start)")
     this.#input.onActivity?.({ kind: "phase", phase: "waiting_for_sandbox" })
+    this.#usedSandbox = true
     await this.#sandbox.configure({
       repositories: [
         {
@@ -156,24 +188,26 @@ class SandboxDispatchSession implements DispatchSession {
       repository.commit
     )
     this.#phases.enter("baseline checks")
-    if (checkBaseline)
+    if (checkBaseline && !saved)
       this.#input.onActivity?.({ kind: "phase", phase: "checking_baseline" })
-    const baseline = checkBaseline
-      ? baselineReport(
-          repository.commit,
-          await runProjectChecks(
-            this.#workspace("baseline"),
-            validation,
-            sealedDirectory
+    const baseline = saved
+      ? saved.baseline
+      : checkBaseline
+        ? baselineReport(
+            repository.commit,
+            await runProjectChecks(
+              this.#workspace("baseline"),
+              validation,
+              sealedDirectory
+            )
           )
-        )
-      : null
+        : null
+    if (this.#input.persistent)
+      await this.#drafts.begin(this.#input.planId, this.#context(), baseline)
     this.#phases.enter("seal")
     this.#input.onActivity?.({ kind: "phase", phase: "sealing_workspace" })
     await sealWorkspace(this.#workspace("seal"))
     this.#phases.enter("grant model")
-    // A retried attempt starts its plan again.
-    await this.#drafts.clear(this.#input.planId)
     // Exploration needs no repository access; only the configured model and
     // the plan tools, which answer inside the outbound handler, are reachable.
     await this.#sandbox.configure({
@@ -212,6 +246,8 @@ class SandboxDispatchSession implements DispatchSession {
   }
 
   async close(): Promise<void> {
+    // Restoring a complete draft never starts or touches its named Sandbox.
+    if (!this.#usedSandbox && !this.#access) return
     this.#phases.enter("close")
     this.#input.onActivity?.({ kind: "phase", phase: "closing_workspace" })
     const results = await Promise.allSettled([

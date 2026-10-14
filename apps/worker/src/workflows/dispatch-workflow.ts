@@ -41,12 +41,12 @@ export class DispatchWorkflow extends WorkflowEntrypoint<
     let phase: "planning" | "launching" = "planning"
     try {
       // Model output is saved before this step returns; retries reuse a saved proposal.
-      // Each attempt is a full exploration session, so it gets one retry.
+      // An interrupted session gets one retry, reusing its trusted baseline
+      // and saved draft rather than repeating completed planning work.
       // The timeout outlasts the session's own limits (a Sandbox capacity
       // wait of up to 10 minutes, a 15-minute run and two 5-minute
       // corrections) and leaves 25 minutes for checkout and baseline checks.
-      // A retry started while the first session still ran would reuse its
-      // Sandbox and clear its draft.
+      // The timeout also keeps a retry from overlapping a still-running session.
       await step.do(
         "prepare proposal",
         { retries: { ...retries, limit: 1 }, timeout: "60 minutes" },

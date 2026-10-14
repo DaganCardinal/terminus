@@ -1,14 +1,74 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { it, expect } from "vitest"
 import { stressFiles } from "@terminus/protocol"
-import { verifyStressGit } from "./stress-git"
+import {
+  checkStressFiles,
+  StressGitMismatchError,
+  verifyStressGit,
+  writeStressFiles,
+} from "./stress-git"
 import type { GitWorkspace, RepositoryAccess } from "./git"
 
 const exec = promisify(execFile)
+
+it("writes and checks fixture files with real node, repeats revisions, and refuses symlinks or other contents", async () => {
+  const root = await mkdtemp(join(tmpdir(), "terminus-stress-files-"))
+  const workspace: GitWorkspace = {
+    run: async (command, cwd) => {
+      try {
+        return {
+          exitCode: 0,
+          ...(await exec(command[0]!, command.slice(1), { cwd })),
+        }
+      } catch (error) {
+        return { exitCode: 1, stdout: "", stderr: String(error) }
+      }
+    },
+    close: async () => {},
+  }
+  const runId = "00000000-0000-4000-8000-000000000006"
+  const files = stressFiles({ runId, train: 3 })
+  const [checkpoint] = Object.keys(files)
+  try {
+    const checkout = join(root, "checkout")
+    await mkdir(checkout)
+    await writeStressFiles(workspace, files, checkout)
+    await checkStressFiles(workspace, files, checkout)
+    // A revision starts from the earlier candidate, which already holds the files.
+    await writeStressFiles(workspace, files, checkout)
+    await checkStressFiles(workspace, files, checkout)
+    await writeFile(join(checkout, checkpoint!), "tampered\n")
+    await expect(writeStressFiles(workspace, files, checkout)).rejects.toThrow(
+      "Scripted stress edit failed"
+    )
+    await expect(checkStressFiles(workspace, files, checkout)).rejects.toThrow(
+      "independent fixture verification"
+    )
+    const linked = join(root, "linked")
+    await mkdir(join(linked, "src"), { recursive: true })
+    await symlink(root, join(linked, "src/terminus-stress"))
+    await expect(writeStressFiles(workspace, files, linked)).rejects.toThrow(
+      "Scripted stress edit failed"
+    )
+    const linkedFile = join(root, "linked-file")
+    await mkdir(linkedFile)
+    await writeStressFiles(workspace, files, linkedFile)
+    await rm(join(linkedFile, checkpoint!))
+    await symlink(join(checkout, checkpoint!), join(linkedFile, checkpoint!))
+    await expect(
+      writeStressFiles(workspace, files, linkedFile)
+    ).rejects.toThrow("Scripted stress edit failed")
+    await expect(
+      checkStressFiles(workspace, files, linkedFile)
+    ).rejects.toThrow("independent fixture verification")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 it("verifies actual ten-Train merge history, files and Car ancestry, and detects corruption", async () => {
   const root = await mkdtemp(join(tmpdir(), "terminus-stress-"))
   const repository = join(root, "canonical")
@@ -95,13 +155,25 @@ it("verifies actual ten-Train merge history, files and Car ancestry, and detects
     })
     expect(result.mergeCommits).toHaveLength(10)
     await rm(join(root, "oracle"), { recursive: true })
-    const first = Object.keys(files)[0]!
-    await expect(
-      verifyStressGit(workspace, access, {
-        ...input,
-        files: { ...files, [first]: "corrupted\n" },
-      })
-    ).rejects.toThrow("Incorrect canonical")
+    const [first, second] = Object.keys(files).sort()
+    const unrelated = await git(
+      "commit-tree",
+      "-m",
+      "unrelated",
+      `${baseline}^{tree}`
+    )
+    const mismatch = await verifyStressGit(workspace, access, {
+      ...input,
+      files: { ...files, [first!]: "corrupted\n", [second!]: "corrupted\n" },
+      acceptedCommits: [...acceptedCommits.slice(1), unrelated],
+    }).catch((error: unknown) => error)
+    // Every difference is reported, not only the first.
+    expect(mismatch).toBeInstanceOf(StressGitMismatchError)
+    expect((mismatch as StressGitMismatchError).findings).toEqual([
+      `Incorrect canonical stress file: ${first}`,
+      `Incorrect canonical stress file: ${second}`,
+      `Accepted Car commit ${unrelated} is not reachable from the canonical head`,
+    ])
   } finally {
     await rm(root, { recursive: true, force: true })
   }

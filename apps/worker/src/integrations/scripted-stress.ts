@@ -1,5 +1,4 @@
 import {
-  commandResultSchema,
   proposalSchema,
   scriptedStressAgent,
   stressFiles,
@@ -8,7 +7,11 @@ import {
 } from "@terminus/protocol"
 import { z } from "zod"
 import type { WorkManifest } from "@terminus/domain"
-import type { GitWorkspace } from "@terminus/artifacts"
+import {
+  checkStressFiles,
+  writeStressFiles,
+  type GitWorkspace,
+} from "@terminus/artifacts"
 
 /** No client commands, repository instructions, or model calls are involved. */
 export async function runStressStation(
@@ -16,26 +19,11 @@ export async function runStressStation(
   manifest: WorkManifest,
   directory: string
 ): Promise<string> {
-  const files = stressFiles(stressTask(manifest))
-  // Refuse existing paths and symlink parents, including those introduced by install scripts.
-  const script = `const fs = require("node:fs"); const path = require("node:path");
-    const files = JSON.parse(process.argv[1]);
-    for (const [file, contents] of Object.entries(files)) {
-      let current = process.cwd();
-      for (const part of file.split("/").slice(0, -1)) {
-        current = path.join(current, part);
-        try { if (!fs.lstatSync(current).isDirectory()) throw new Error("Unsafe stress directory"); }
-        catch (error) { if (error.code !== "ENOENT") throw error; fs.mkdirSync(current); }
-      }
-      fs.writeFileSync(file, contents, { flag: "wx" });
-    }`
-  const result = commandResultSchema.parse(
-    await workspace.run(
-      ["node", "-e", script, JSON.stringify(files)],
-      directory
-    )
+  await writeStressFiles(
+    workspace,
+    stressFiles(stressTask(manifest)),
+    directory
   )
-  if (result.exitCode !== 0) throw new Error("Scripted stress edit failed")
   return "Versioned stress fixture wrote its checkpoint and contract test"
 }
 
@@ -74,23 +62,7 @@ export async function reviewStressStation(
     )
   )
     throw new Error("Stress candidate lacks passing independent evidence")
-  const script = `const fs = require("node:fs"); const path = require("node:path");
-    for (const [file, contents] of Object.entries(JSON.parse(process.argv[1]))) {
-      let current = process.cwd();
-      for (const part of file.split("/")) {
-        current = path.join(current, part);
-        if (fs.lstatSync(current).isSymbolicLink()) throw new Error("Symlink in stress candidate");
-      }
-      if (fs.readFileSync(file, "utf8") !== contents) throw new Error("Incorrect stress checkpoint");
-    }`
-  const result = commandResultSchema.parse(
-    await workspace.run(
-      ["node", "-e", script, JSON.stringify(files)],
-      directory
-    )
-  )
-  if (result.exitCode !== 0)
-    throw new Error("Stress candidate failed independent fixture verification")
+  await checkStressFiles(workspace, files, directory)
   return JSON.stringify({
     verdict: "accept",
     summary:

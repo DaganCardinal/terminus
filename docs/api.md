@@ -14,6 +14,8 @@ The explicit [ten-Train stress-test command](pipeline-stress-test.md) creates it
 
 ## Browsing accepted changes
 
+Repository overviews and individual files read immutable Artifacts trees and blobs directly in the Worker, without a Sandbox or repository token. Overviews retain the 5,000-file inventory, ranked selection of 40 documents, secret/symlink/submodule exclusions, and 200,000-character document limit. Tree traversal is capped at 1,000 trees and 64 directory levels; incomplete inventories set `filesTruncated`. File-size requests use bounded concurrency, repeated blobs share a size read, and D1 caches each overview by repository and exact commit.
+
 Train and Car panels fetch comparisons from Artifacts on demand. These reads do not write D1 or start a Sandbox. Existing persisted review diffs are retained.
 
 | Read | Endpoint |
@@ -37,7 +39,7 @@ Deletion fences the Network against new commands and persisted writes, terminate
 
 Successful deletion returns `204`, including repeated requests after removal. A cleanup failure returns `503` and leaves the Network fenced with `deleting: true` in its summary. Retry **Delete Network** to finish; external resources may already have been deleted. The remaining records exist only to finish cleanup and are erased on success.
 
-Before deploying migration `0015_network_deletion.sql`, drain existing Workflows and clean up leftover random Git, Conductor, Dispatcher and Technician containers. Older code did not persist their identities, so they cannot be attributed safely to a Network retroactively. Named Station runs and historical previews can be reconstructed; all sessions started by the new code register ownership before starting a container. Verify deletion of a disposable live Network with every role and preview active before relying on it in production; offline tests never call providers.
+Before deploying migration `0015_network_deletion.sql`, drain existing Workflows and clean up leftover random Git, Conductor, Dispatcher, Technician, Station and preview containers. Older code did not persist their identities, so they cannot be attributed safely to a Network retroactively. All sessions started by the new code, including Station runs and previews, register ownership before starting a container. Deletion purges only those registered Sandboxes, at the sizes each one started. It never addresses a Sandbox by a reconstructed Station or preview name, because purging an address that never ran still wakes its containers' Durable Objects. Verify deletion of a disposable live Network with every role and preview active before relying on it in production; offline tests never call providers.
 
 ## Creating a network
 

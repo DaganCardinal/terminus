@@ -382,7 +382,7 @@ function hedgedSend(
   return new Promise((resolve, reject) => {
     const finish = (response: Response, index: number) => {
       settled = true
-      clearTimeout(timer)
+      if (timer !== null) clearTimeout(timer)
       controllers.forEach((controller, i) => {
         if (i !== index) controller.abort()
       })
@@ -420,7 +420,7 @@ function hedgedSend(
           if (pending > 0) return
           if (fallback) return finish(fallback.response, fallback.index)
           settled = true
-          clearTimeout(timer)
+          if (timer !== null) clearTimeout(timer)
           reject(failure)
         }
       )

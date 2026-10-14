@@ -302,6 +302,7 @@ export function roleModels(settings: ModelSettings): RoleModels {
 export const generalModelSettingsSchema = z.strictObject({
   settings: modelSettingsSchema,
   alternativeHarnessesEnabled: z.boolean().optional(),
+  opencodeExternalProvidersEnabled: z.boolean().optional(),
   /** Null until someone saves; the defaults apply until then. */
   updatedAt: z.iso.datetime().nullable(),
 })
@@ -309,6 +310,7 @@ export type GeneralModelSettings = z.infer<typeof generalModelSettingsSchema>
 
 export const networkModelSettingsSchema = z.strictObject({
   alternativeHarnessesEnabled: z.boolean().optional(),
+  opencodeExternalProvidersEnabled: z.boolean().optional(),
   /** Null follows the General settings. */
   override: modelSettingsSchema.nullable(),
   general: modelSettingsSchema,

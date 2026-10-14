@@ -6,7 +6,7 @@ import {
   conductorHarnessAgent,
 } from "@terminus/agent-runtime"
 import { HARNESS_CATALOG, type Harness } from "@terminus/protocol"
-import { HarnessSession } from "./harness"
+import { HarnessSession, prepareHarness } from "./harness"
 import type { StationSandbox } from "./station-runner"
 
 const models: Record<Harness, string> = {
@@ -122,4 +122,48 @@ describe("shared Sandbox harness session", () => {
       )
     }
   )
+})
+
+describe("OpenCode external-provider gate", () => {
+  const prepare = (gate: string) => {
+    const write = vi.fn(async () => {})
+    const run = vi.fn(async (command: string[]) => ({
+      stdout: command[1] === "--version" ? HARNESS_CATALOG[0].version : "",
+      stderr: "",
+      exitCode: 0,
+    }))
+    const model = "anthropic/claude-haiku-4-5-20251001"
+    return {
+      run,
+      prepared: prepareHarness(
+        {
+          ...env,
+          ALTERNATIVE_HARNESSES_ENABLED: "true",
+          OPENCODE_EXTERNAL_PROVIDERS_ENABLED: gate,
+          AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
+          AI_GATEWAY_ID: "gateway",
+          AI_GATEWAY_TOKEN: "worker-only-secret",
+        },
+        { write },
+        { run },
+        {
+          model,
+          execution: executionConfig(model, "opencode"),
+          agent: conductorHarnessAgent("Review"),
+          directory: "/workspace/repo",
+          assignment: "assignment",
+        }
+      ),
+    }
+  }
+
+  it("refuses Anthropic or OpenAI under OpenCode before touching the Sandbox", async () => {
+    const { run, prepared } = prepare("false")
+    await expect(prepared).rejects.toThrow(/disabled/)
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it("prepares them once the gate is on", async () => {
+    expect((await prepare("true").prepared).harness).toBe("opencode")
+  })
 })

@@ -69,6 +69,14 @@ describe("live harness activity transport", () => {
     expect(
       await consumeHarnessActivity(
         stream([
+          '{"type":"harness_exit","exitCode":0,"stopped":"proposal_stalled","arguments":"PRIVATE"}\n',
+        ]),
+        () => {}
+      )
+    ).toEqual({ exitCode: 0, stopped: "proposal_stalled" })
+    expect(
+      await consumeHarnessActivity(
+        stream([
           '{"type":"harness_exit","exitCode":0,"stopped":"proposal_accepted","extra":"PRIVATE"}\n',
         ]),
         () => {}

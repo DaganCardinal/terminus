@@ -1,4 +1,4 @@
-import { planLimits } from "@terminus/protocol"
+import { planLimits, type PlanStation } from "@terminus/protocol"
 import { narrativeGuidance } from "./narrative-guidance"
 import {
   maxRejectedFinalizations,
@@ -544,15 +544,43 @@ const stationTool = `\`${planToolAgentName(planToolNames.station)}\``
 const inspectTool = `\`${planToolAgentName(planToolNames.inspect)}\``
 const finalizeTool = `\`${planToolAgentName(planToolNames.finalize)}\``
 
+const stationCallExample = {
+  key: "footer-links",
+  name: "Add footer links",
+  goal: "Make help and privacy links available in the footer.",
+  changeKind: "implementation",
+  changeDescription: "Add footer links and tests for their destinations.",
+  scope: ["Footer links and their tests", "Keep the header unchanged"],
+  expectedAreas: ["src/Footer.tsx", "src/Footer.test.tsx"],
+  avoidAreas: [],
+  contracts: [],
+  invariants: ["Existing navigation continues to work"],
+  dependencies: [],
+  acceptanceCriteria: [
+    "Both links have accessible names and correct destinations",
+  ],
+  expectedEvidence: ["test"],
+} satisfies PlanStation
+
 /** Added when the harness offers the plan tools (OpenCode). */
 export const planToolGuidance = (outlineAsText: boolean) => `## Writing the Plan
 
 Write the proposal with the Terminus plan tools. Terminus saves each piece as you send it, checks it at once, and assembles the proposal itself, so a mistake costs one piece, never the whole plan.
 
 - ${outlineTool} saves the layout: \`summary\`, \`findings\`, every Line (key, name, \`unloadRecommendation\`, ordered Station keys, optional \`route\` and \`shared\` values), any \`junctions\`, and an optional \`baselineFix\`. It holds no Manifests. List every Line once in \`lines\`, including Junction and baseline-fix Lines: a Junction names its Lines by key, and so does \`baselineFix.line\`.${outlineAsText ? " Pass the outline as JSON text matching the outline JSON schema below." : ""}
-- ${stationTool} saves one Station: its key, name and every Manifest field as its own argument. \`repositoryChange\` becomes \`changeKind\` and \`changeDescription\`. Every list holds plain strings, except \`contracts\`.
+- ${stationTool} saves one Station: its key, name and every Manifest field as its own argument, matching the Station tool input JSON schema below. Flatten \`repositoryChange\` into \`changeKind\` and \`changeDescription\`; do not nest fields under \`manifest\` or \`station\`. String-list fields accept either arrays of strings or a string with one item per line (JSON array text is also accepted). \`contracts\` accepts an array of objects or JSON array text containing those objects. These formats work for every model; fields may use different formats in the same call.
 - ${finalizeTool} assembles the saved plan and checks it against every launch rule. When it accepts, the plan is your answer.
 - ${inspectTool} lists what is saved, what is missing and every known problem. Every reply already reports progress, so you rarely need it.
+
+### Station call example
+
+The following is the argument object for ${stationTool}, not the whole proposal. It illustrates structure only: use keys from your outline, paths you explored, and evidence names from \`network.validationNames\` instead of copying these example values.
+
+\`\`\`json
+${JSON.stringify(stationCallExample, null, 2)}
+\`\`\`
+
+Equivalently, the example's scope can be sent as \`${JSON.stringify({ scope: stationCallExample.scope.join("\n") })}\`. A single item is a one-element array or a single-line string. An empty list is \`[]\` or \`""\` where allowed; empty contracts are \`[]\` or the JSON text \`"[]"\`. Text still needs valid JSON string quoting and escaping in the tool arguments; never send bare prose after a field name. Terminus converts text to lists and applies the same validation to both formats.
 
 Line-shared values work on every Line, including Junction and baseline-fix Lines.
 

@@ -1,12 +1,21 @@
 import { describe, expect, it, vi } from "vitest"
 import { env } from "cloudflare:test"
 import type { RepositoryAccess } from "@terminus/artifacts"
-import { ProposalSubmissionsExhausted } from "@terminus/agent-runtime"
+import {
+  HarnessDispatcher,
+  PlanToolFormatStalled,
+  ProposalSubmissionsExhausted,
+} from "@terminus/agent-runtime"
 import { seedDispatchPlan } from "../../test/fixtures"
 import { DispatchDraftStore } from "./dispatch-draft-store"
 import { SandboxDispatchSessions } from "./dispatch-session"
 import type { StationSandbox } from "./station-runner"
-import type { ActivityObserver, AgentActivity } from "@terminus/protocol"
+import type {
+  ActivityObserver,
+  AgentActivity,
+  PlanDraft,
+  PlanStation,
+} from "@terminus/protocol"
 
 const model = "@cf/zai-org/glm-5.3"
 const commit = "a".repeat(40)
@@ -14,6 +23,56 @@ const network = {
   projectChecks: [{ name: "test", command: ["npm", "test"] }],
   activeLines: [],
 }
+const savedStation = (key: string): PlanStation => ({
+  key,
+  name: `Station ${key}`,
+  goal: `Deliver ${key}`,
+  changeKind: "implementation",
+  changeDescription: `Implement ${key}`,
+  scope: [`Only ${key}`],
+  expectedAreas: [`src/${key}.ts`],
+  acceptanceCriteria: [`${key} works`],
+  invariants: ["Existing behavior remains"],
+  expectedEvidence: ["test"],
+})
+const partialDraft: PlanDraft = {
+  outline: {
+    summary: "Two Stations",
+    lines: [
+      {
+        key: "feature",
+        name: "Feature",
+        unloadRecommendation: { mode: "auto", reason: "Bounded" },
+        stations: ["a", "b"],
+      },
+    ],
+  },
+  stations: { a: savedStation("a") },
+}
+const completeDraft: PlanDraft = {
+  ...partialDraft,
+  stations: { ...partialDraft.stations, b: savedStation("b") },
+}
+const planningInput = (planId: string, checkBaseline = false) => ({
+  planId,
+  model,
+  repository: { repoId: "n/terminus", commit },
+  checkBaseline,
+  validation: network.projectChecks,
+  network,
+  goal: "Build a feature",
+})
+const stoppedStream = (stopped: string) =>
+  new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        new TextEncoder().encode(
+          `${JSON.stringify({ type: "harness_exit", exitCode: 0, stopped })}\n`
+        )
+      )
+      controller.close()
+    },
+  })
 
 function fixture(
   options: {
@@ -122,7 +181,7 @@ function fixture(
       network,
       onActivity,
     })
-  return { sandbox, repositories, calls, order, open }
+  return { sandbox, repositories, calls, order, open, sessions }
 }
 
 describe("Sandbox Dispatcher session", () => {
@@ -249,7 +308,7 @@ describe("Sandbox Dispatcher session", () => {
     expect(error).toBeInstanceOf(ProposalSubmissionsExhausted)
     expect((error as ProposalSubmissionsExhausted).submission).toBe("answer 1")
   })
-  it("starts each attempt's draft from nothing and reads what the plan tools saved", async () => {
+  it("starts an unverified legacy draft from nothing and reads what the plan tools saved", async () => {
     const plan = await seedDispatchPlan()
     const drafts = new DispatchDraftStore(env.DB)
     const station = {
@@ -275,6 +334,150 @@ describe("Sandbox Dispatcher session", () => {
     expect(await session.draft()).toEqual({ stations: {} })
     await drafts.save(plan.id, { stations: {} }, { stations: { a: station } })
     expect(await session.draft()).toEqual({ stations: { a: station } })
+  })
+
+  it("resumes the recorded native session after a format stall, even without a closing message", async () => {
+    const f = fixture({ finalText: false })
+    f.sandbox.runStream = vi.fn(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                '{"type":"harness_exit","exitCode":0,"stopped":"proposal_stalled"}\n'
+              )
+            )
+            controller.close()
+          },
+        })
+    )
+    const session = f.open()
+    await session.prepare()
+    await expect(session.start("S", "Plan")).rejects.toBeInstanceOf(
+      PlanToolFormatStalled
+    )
+    await expect(session.resume("Use text lists")).rejects.toBeInstanceOf(
+      PlanToolFormatStalled
+    )
+    expect(vi.mocked(f.sandbox.runStream).mock.calls[1]![0]).toEqual(
+      expect.arrayContaining(["--session", "ses_1"])
+    )
+  })
+
+  it("keeps checked baseline evidence and draft pieces when a new session retries", async () => {
+    const plan = await seedDispatchPlan()
+    const f = fixture()
+    const drafts = new DispatchDraftStore(env.DB)
+    const first = f.open(true, undefined, plan.id)
+    const baseline = await first.prepare()
+    const saved = partialDraft
+    // No need for a complete proposal to retain successful draft writes.
+    await drafts.save(plan.id, { stations: {} }, saved)
+    await first.close()
+    vi.mocked(f.sandbox.run).mockClear()
+    vi.mocked(f.sandbox.installDependencies!).mockClear()
+    const retry = f.open(true, undefined, plan.id)
+    expect(await retry.restore()).toEqual({ draft: saved, baseline })
+    expect(await retry.prepare()).toEqual(baseline)
+    expect(await retry.draft()).toEqual(saved)
+    expect(f.sandbox.installDependencies).not.toHaveBeenCalled()
+    expect(
+      vi
+        .mocked(f.sandbox.run)
+        .mock.calls.some(([command]) => command[0] === "npm")
+    ).toBe(false)
+  })
+
+  it("reuses partial draft pieces after a harness stream fails and completes only the missing work", async () => {
+    const plan = await seedDispatchPlan()
+    const f = fixture()
+    const drafts = new DispatchDraftStore(env.DB)
+    f.sandbox.runStream = vi.fn(async () => {
+      await drafts.save(plan.id, { stations: {} }, partialDraft)
+      throw new Error("Lost harness stream")
+    })
+    const dispatcher = new HarnessDispatcher(model, f.sessions)
+    const input = planningInput(plan.id, true)
+    await expect(dispatcher.plan(input)).rejects.toThrow("Lost harness stream")
+    expect(await drafts.read(plan.id)).toEqual(partialDraft)
+    vi.mocked(f.sandbox.runStream).mockImplementationOnce(async (command) => {
+      const saved = command
+        .at(-1)!
+        .split("\n")
+        .find((line) => line.startsWith("{"))!
+      expect(JSON.parse(saved)).toEqual(partialDraft)
+      expect(command.at(-1)).toContain(
+        "These Stations are in the outline but not saved: `b`"
+      )
+      await drafts.save(plan.id, partialDraft, completeDraft)
+      return stoppedStream("proposal_accepted")
+    })
+    const result = await dispatcher.plan(input)
+    expect(result.proposal.lines[0]!.stations.map((s) => s.key)).toEqual([
+      "a",
+      "b",
+    ])
+    expect(f.sandbox.installDependencies).toHaveBeenCalledOnce()
+    expect(f.sandbox.runStream).toHaveBeenCalledTimes(2)
+  })
+
+  it("recovers a finished persisted draft without contacting repositories or the Sandbox", async () => {
+    const plan = await seedDispatchPlan()
+    const first = fixture()
+    const session = first.open(true, undefined, plan.id)
+    const baseline = await session.prepare()
+    await new DispatchDraftStore(env.DB).save(
+      plan.id,
+      { stations: {} },
+      completeDraft
+    )
+    await session.close()
+    const retry = fixture()
+    const result = await new HarnessDispatcher(model, retry.sessions).plan(
+      planningInput(plan.id, true)
+    )
+    expect(result.baseline).toEqual(baseline)
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(retry.repositories.access).not.toHaveBeenCalled()
+    expect(retry.sandbox.configure).not.toHaveBeenCalled()
+    expect(retry.sandbox.run).not.toHaveBeenCalled()
+    expect(retry.sandbox.close).not.toHaveBeenCalled()
+  })
+
+  it("refuses recovery across changed repository, baseline option, checks, model or harness", async () => {
+    const plan = await seedDispatchPlan()
+    const f = fixture()
+    const input = planningInput(plan.id)
+    await f.sessions.open(input).prepare()
+    await new DispatchDraftStore(env.DB).save(
+      plan.id,
+      { stations: {} },
+      partialDraft
+    )
+    for (const changed of [
+      { repository: { ...input.repository, commit: "b".repeat(40) } },
+      { repository: { ...input.repository, repoId: "other/terminus" } },
+      { checkBaseline: true },
+      { validation: [{ name: "test", command: ["npm", "run", "check"] }] },
+      { model: "other-model" },
+    ])
+      expect(
+        await f.sessions.open({ ...input, ...changed }).restore()
+      ).toBeNull()
+    const changedHarness = new SandboxDispatchSessions(
+      env,
+      f.repositories,
+      () => f.sandbox,
+      { harness: "codex", model }
+    )
+    expect(await changedHarness.open(input).restore()).toBeNull()
+    // A changed check configuration gets a clean draft only after preparing successfully.
+    const changed = f.sessions.open({
+      ...input,
+      validation: [{ name: "test", command: ["npm", "run", "check"] }],
+    })
+    await changed.prepare()
+    expect(await changed.draft()).toEqual({ stations: {} })
   })
   it("checks out read-only, seals secrets and history, then allows only the model", async () => {
     const f = fixture()

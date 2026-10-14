@@ -922,7 +922,12 @@ describe("Sandbox outbound capabilities", () => {
       result: {
         tools: {
           name: string
-          inputSchema: { properties: Record<string, { type?: string }> }
+          inputSchema: {
+            properties: Record<
+              string,
+              { type?: string; anyOf?: { type?: string }[] }
+            >
+          }
         }[]
       }
     }
@@ -936,6 +941,11 @@ describe("Sandbox outbound capabilities", () => {
     expect(tools.result.tools[0]!.inputSchema.properties.outline!.type).toBe(
       "string"
     )
+    expect(
+      tools.result.tools[1]!.inputSchema.properties.scope!.anyOf?.map(
+        (s) => s.type
+      )
+    ).toEqual(["array", "string"])
 
     type Reply = { result: { content: { text: string }[]; isError?: boolean } }
     const call = async (name: string, args: unknown) =>
@@ -953,11 +963,11 @@ describe("Sandbox outbound capabilities", () => {
       goal: `Deliver ${key}`,
       changeKind: "implementation",
       changeDescription: `Implement ${key}`,
-      scope: [`Only ${key}`],
-      expectedAreas: [`src/${key}.ts`],
-      invariants: ["Existing behavior stays intact"],
-      acceptanceCriteria: [`${key} works`],
-      expectedEvidence: ["test"],
+      scope: `Only ${key}`,
+      expectedAreas: `src/${key}.ts`,
+      invariants: "Existing behavior stays intact",
+      acceptanceCriteria: `${key} works`,
+      expectedEvidence: "test",
     })
     const outline = {
       summary: "One Line.",
@@ -976,7 +986,14 @@ describe("Sandbox outbound capabilities", () => {
     ).toMatch(/^Saved the outline/)
     // Calls in one message arrive together; each saves only its own piece.
     const saved = await Promise.all(
-      ["a", "b", "c"].map((key) => call("put_station", station(key)))
+      ["a", "b", "c"].map((key) =>
+        call("put_station", {
+          ...station(key),
+          ...(key === "b"
+            ? { scope: ["Only b"], expectedAreas: ["src/b.ts"] }
+            : {}),
+        })
+      )
     )
     for (const reply of saved) expect(text(reply)).toMatch(/^Saved Station/)
     const rejected = await call("put_station", { key: "a" })
@@ -989,6 +1006,8 @@ describe("Sandbox outbound capabilities", () => {
     expect(Object.keys(draft.stations)).toEqual(["a", "b", "c"])
     // The rejected call changed nothing.
     expect(draft.stations.a!.goal).toBe("Deliver a")
+    expect(draft.stations.a!.scope).toEqual(["Only a"])
+    expect(draft.stations.b!.scope).toEqual(["Only b"])
 
     expect(
       await rpc({

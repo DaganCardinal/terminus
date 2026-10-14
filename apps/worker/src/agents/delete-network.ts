@@ -1,8 +1,9 @@
 import { ArtifactsRestClient } from "@terminus/artifacts"
-import type { SandboxBinding } from "../integrations/execution-sandbox"
 import { NetworkDeletionStore } from "../integrations/network-deletion-store"
-import { previewSandboxName } from "../integrations/repository-preview"
 import { DispatchError } from "./dispatcher"
+
+/** Sandboxes purged at once. Each purge waits on a container stopping. */
+const PURGE_CONCURRENCY = 6
 
 function missing(error: unknown): boolean {
   return (
@@ -22,91 +23,40 @@ export async function deleteNetwork(
   const store = new NetworkDeletionStore(env.DB)
   const target = await store.begin(networkId)
   if (!target) return
-  const { network, namespace } = target
+  const { namespace } = target
   const inventory = await store.inventory(networkId, namespace)
   const failures: { resource: string; action: string }[] = []
   for (const [binding, ids] of Object.entries(inventory.workflows)) {
     for (const id of ids) {
       try {
-        let instance: WorkflowInstance
-        try {
-          instance =
-            await env[binding as keyof typeof inventory.workflows].get(id)
-        } catch (error) {
-          if (missing(error)) continue
-          throw error
-        }
-        if (
-          !["complete", "errored", "terminated"].includes(
-            (await instance.status()).status
-          )
-        ) {
-          await instance.terminate()
-          if (
-            !["complete", "errored", "terminated"].includes(
-              (await instance.status()).status
-            )
-          )
-            throw new Error("Workflow has not stopped")
-        }
-        await instance.delete()
-      } catch {
-        failures.push({ resource: id, action: "stop and delete Workflow" })
+        // Deleting stops a running instance, without rollback handlers, and
+        // erases its state, so no separate terminate is needed.
+        await (
+          await env[binding as keyof typeof inventory.workflows].get(id)
+        ).delete()
+      } catch (error) {
+        if (!missing(error))
+          failures.push({ resource: id, action: "stop and delete Workflow" })
       }
     }
   }
   if (env.REPOSITORY_MODE !== "fake") {
-    // Named Station containers and historical previews may predate ownership
-    // tracking. Collect them as well as every registered random session.
-    // Stations run in agent Sandboxes; previews in agentless ones.
-    const names = new Map<string, SandboxBinding>(
-      inventory.runIds.map((id) => [`station-${id}`, "SANDBOX"])
+    // Every Sandbox registers itself before its first container starts, so
+    // the registry is the whole set to purge. Purging an address that never
+    // ran wakes its Durable Objects for nothing, so none is guessed.
+    const queue = [...inventory.sandboxes]
+    await Promise.all(
+      Array.from({ length: PURGE_CONCURRENCY }, async () => {
+        for (let next = queue.shift(); next; next = queue.shift()) {
+          const { id, binding } = next
+          try {
+            await env[binding].get(env[binding].idFromString(id)).purge()
+          } catch {
+            failures.push({ resource: id, action: "delete container" })
+          }
+        }
+      })
     )
-    const commits = new Set([
-      network.terminusCommit,
-      ...inventory.trains.map((train) => train.headCommit),
-    ])
-    for (const { event } of inventory.events) {
-      for (const [key, value] of Object.entries(event))
-        if (/commit$/i.test(key) && typeof value === "string")
-          commits.add(value)
-    }
-    for (const commit of commits) {
-      names.set(
-        await previewSandboxName({
-          identity: `terminus:${networkId}`,
-          repoId: network.terminusRepoId,
-          commit,
-        }),
-        "WORKSPACE_SANDBOX"
-      )
-      for (const train of inventory.trains)
-        names.set(
-          await previewSandboxName({
-            identity: train.id,
-            repoId: train.repoId,
-            commit,
-          }),
-          "WORKSPACE_SANDBOX"
-        )
-    }
-    const stubs = new Map(
-      inventory.sandboxes.map(({ id, binding }) => [
-        id,
-        env[binding].get(env[binding].idFromString(id)),
-      ])
-    )
-    for (const [name, binding] of names) {
-      const stub = env[binding].getByName(name)
-      stubs.set(stub.id.toString(), stub)
-    }
-    for (const [id, stub] of stubs) {
-      try {
-        await stub.purge()
-      } catch {
-        failures.push({ resource: id, action: "delete container" })
-      }
-    }
   }
   if (failures.length)
     throw new DispatchError(

@@ -16,6 +16,7 @@ import { NetworkStore } from "../integrations/network-store"
 import { DispatchActivityStore } from "../integrations/dispatch-activity"
 import {
   alternativeHarnessesEnabled,
+  opencodeExternalProvidersEnabled,
   unavailableHarnessSettings,
 } from "../integrations/harness-availability"
 import {
@@ -547,6 +548,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       json({
         ...(await dispatcherPorts(env).store.generalModelSettings()),
         alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+        opencodeExternalProvidersEnabled: opencodeExternalProvidersEnabled(env),
       }),
   ],
   [
@@ -563,6 +565,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       return json({
         ...(await store.setGeneralModelSettings(settings, now())),
         alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+        opencodeExternalProvidersEnabled: opencodeExternalProvidersEnabled(env),
       })
     },
   ],
@@ -575,6 +578,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       return json({
         ...(await store.networkModelSettings(networkId!)),
         alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+        opencodeExternalProvidersEnabled: opencodeExternalProvidersEnabled(env),
       })
     },
   ],
@@ -596,6 +600,7 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       return json({
         ...(await store.setNetworkModelSettings(networkId!, override, now())),
         alternativeHarnessesEnabled: alternativeHarnessesEnabled(env),
+        opencodeExternalProvidersEnabled: opencodeExternalProvidersEnabled(env),
       })
     },
   ],

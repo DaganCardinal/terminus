@@ -12,11 +12,13 @@ import { TechnicianGit, type RepairGitInput } from "./technician-git"
 import { prepareMerge } from "./integration-git"
 import {
   readCommittedFile,
+  readCommittedOverview,
   readRepositoryFile,
   readRepositoryOverview,
   type CommittedObjects,
 } from "./repository-browse"
 import type { HeadReader } from "./smart-http"
+import { GitCapacityError, type RepositoryPromoter } from "./fast-forward"
 import {
   readCommittedChanges,
   readCommittedChangeFile,
@@ -87,17 +89,20 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   private readonly workspaces: GitWorkspaceFactory
   private readonly pause: () => Promise<void>
   private readonly readHead: HeadReader | undefined
+  private readonly promote: RepositoryPromoter | undefined
   /** Without `readHead`, reading a head opens a workspace to run `git ls-remote`. */
   constructor(
     artifacts: ArtifactsNamespaces,
     workspaces: GitWorkspaceFactory,
     pause: () => Promise<void>,
-    readHead?: HeadReader
+    readHead?: HeadReader,
+    promote?: RepositoryPromoter
   ) {
     this.artifacts = artifacts
     this.workspaces = workspaces
     this.pause = pause
     this.readHead = readHead
+    this.promote = promote
   }
 
   async inspectRepair(input: RepairGitInput, candidate: RepoRef) {
@@ -140,6 +145,9 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async readOverview(repoId: string, commit: string) {
+    const { namespace, name } = parseRepoId(repoId)
+    const objects = this.artifacts.namespace(namespace).objects?.(name)
+    if (objects) return readCommittedOverview(objects, commit)
     return this.withWorkspace(
       [{ repoId, scope: "read" }],
       async (workspace, [access]) => {
@@ -529,6 +537,17 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }): Promise<void> {
     requireCommit(input.fromCommit)
     requireCommit(input.toCommit)
+    if (this.promote) {
+      try {
+        await this.promoteWithoutWorkspace(input)
+        return
+      } catch (error) {
+        if (!(error instanceof GitCapacityError)) throw error
+        perf("artifacts.promotion_workspace_fallback", {
+          target: parseRepoId(input.targetRepoId).name,
+        })
+      }
+    }
     const readHead = this.readHead
     // From the Worker when it can, so no head check waits on a Sandbox command.
     const targetHead = (workspace: GitWorkspace, target: RepositoryAccess) =>
@@ -616,6 +635,44 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           return { head: await readHead(target) }
         })
     )
+  }
+
+  private async promoteWithoutWorkspace(input: {
+    sourceRepoId: string
+    targetRepoId: string
+    fromCommit: string
+    toCommit: string
+  }): Promise<void> {
+    const accesses: RepositoryAccess[] = []
+    let cleanupFailed: boolean
+    try {
+      const minted = await Promise.allSettled([
+        this.access(input.sourceRepoId, "read"),
+        this.access(input.targetRepoId, "write"),
+      ])
+      for (const outcome of minted)
+        if (outcome.status === "fulfilled") accesses.push(outcome.value)
+      const refused = minted.find(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === "rejected"
+      )
+      if (refused) throw refused.reason
+      const [source, target] = accesses
+      if (!source || !target || !this.promote)
+        throw new Error("Missing promotion repository access")
+      await this.promote({
+        source,
+        target,
+        fromCommit: input.fromCommit,
+        toCommit: input.toCommit,
+      })
+    } finally {
+      const revoked = await Promise.allSettled(
+        accesses.map((access) => this.revoke(access))
+      )
+      cleanupFailed = revoked.some((result) => result.status === "rejected")
+    }
+    if (cleanupFailed) throw new Error("Repository promotion cleanup failed")
   }
 
   async access(

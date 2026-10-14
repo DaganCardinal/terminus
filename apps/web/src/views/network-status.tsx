@@ -5,8 +5,8 @@ import {
   useState,
   type CSSProperties,
 } from "react"
-import type { NetworkSnapshot } from "@terminus/protocol"
-import { ArrowLeft, CirclePause, Radio } from "lucide-react"
+import { stressTask, type NetworkSnapshot } from "@terminus/protocol"
+import { ArrowLeft, CirclePause, Gauge, Radio } from "lucide-react"
 import { Button } from "@terminus/ui/components/button"
 import { Drawer } from "@/components/drawer"
 import { AppMenu } from "@/components/app-menu"
@@ -36,6 +36,18 @@ const DRAWER_WIDTH = 480
 const GUTTER = 24
 /** Wide enough for the Dispatcher, a drawer and some map side by side. */
 const ROOMY_QUERY = "(min-width: 1180px)"
+
+/** Stress runs are recognised by their versioned fixture manifests. */
+function isStressRun(snapshot: NetworkSnapshot) {
+  const first = snapshot.stations[0]
+  if (!first) return false
+  try {
+    stressTask(first.manifest)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /** The network map is the whole page; everything else floats over it. */
 export function NetworkStatus({ networkId }: { networkId: string }) {
@@ -234,6 +246,15 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
             pending={pending}
             release={(holdId) => run(() => api.releaseHold(networkId, holdId))}
           />
+        )}
+        {isStressRun(snapshot) && (
+          <a
+            className="overlay-button glass"
+            href={routes.stressTest(networkId)}
+          >
+            <Gauge size={16} />
+            <span className="overlay-button-label">Stress test</span>
+          </a>
         )}
         <button
           className="overlay-button glass"

@@ -1,7 +1,8 @@
-import { EllipsisVertical, Moon, Settings } from "lucide-react"
+import { EllipsisVertical, Gauge, Moon, Settings } from "lucide-react"
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react"
 import { cn } from "@terminus/ui/lib/utils"
 import { useTheme } from "@/components/theme-provider"
+import { routes } from "@/state/route"
 import { SettingsDialog } from "@/views/settings"
 import { useMediaQuery } from "@/components/use-media-query"
 
@@ -14,9 +15,12 @@ const DARK_QUERY = "(prefers-color-scheme: dark)"
 export function AppMenu({
   variant,
   settingsNetworkId = null,
+  stressTest = false,
 }: {
   variant: "map" | "nav"
   settingsNetworkId?: string | null
+  /** Offer a link to the stress test page, below Settings. */
+  stressTest?: boolean
 }) {
   const { theme, setTheme } = useTheme()
   const systemDark = useMediaQuery(DARK_QUERY)
@@ -115,6 +119,16 @@ export function AppMenu({
             <Settings size={15} aria-hidden="true" />
             <span>Settings</span>
           </button>
+          {stressTest && (
+            <a
+              role="menuitem"
+              href={routes.stressTest()}
+              className="app-menu-item"
+            >
+              <Gauge size={15} aria-hidden="true" />
+              <span>Stress test</span>
+            </a>
+          )}
         </div>
       )}
       {settingsOpen && (

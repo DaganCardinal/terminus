@@ -5,15 +5,15 @@ import {
 } from "@terminus/artifacts"
 import { cacheOverviews } from "./overview-cache"
 import { SandboxWorkspaces } from "./sandbox-workspaces"
+import { workerGitPromotion } from "./worker-git"
 
 /**
  * Real repositories: Artifacts over its REST API, one namespace per Project,
- * with Git running in Sandboxes. Heads are read over smart HTTP and single
- * files over the REST object endpoints, both from the Worker, so checking a
- * head or opening a file in the reader starts no Sandbox. Overviews still need
- * one, but only the first time each commit is browsed.
+ * with merge Git running in Sandboxes and bounded fast-forward promotion in
+ * the Worker. Heads use smart HTTP; files and overviews use REST object reads.
  */
 export function artifactsRepositories(env: Env): ArtifactsRepositoryHost {
+  const readHead = smartHttpHeadReader()
   const repositories = new ArtifactsRepositoryHost(
     new ArtifactsRestClient({
       accountId: env.ARTIFACTS_ACCOUNT_ID,
@@ -21,7 +21,8 @@ export function artifactsRepositories(env: Env): ArtifactsRepositoryHost {
     }),
     new SandboxWorkspaces(env),
     () => scheduler.wait(1000),
-    smartHttpHeadReader()
+    readHead,
+    workerGitPromotion(readHead)
   )
   cacheOverviews(repositories, env.DB)
   const createTerminus = repositories.createTerminus.bind(repositories)

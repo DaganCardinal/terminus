@@ -11,6 +11,7 @@ import {
 import {
   maxRejectedFinalizations,
   maxRejectedPlanCalls,
+  maxRepeatedPlanFormatFailures,
   notSavedReply,
   planAcceptedReply,
   planToolAgentName,
@@ -261,6 +262,84 @@ describe("filtered harness activity", () => {
     )
   const script = (lines: string[], keepAlive = true) =>
     `${lines.map((line) => `console.log(${line})`).join(";")}; ${keepAlive ? "setInterval(() => {}, 1000)" : "setTimeout(() => {}, 200)"}`
+
+  // OpenCode emits this when malformed arguments never reach the MCP server.
+  const invalidCall = (name = stationTool) =>
+    JSON.stringify(
+      JSON.stringify({
+        type: "tool_use",
+        part: {
+          tool: "invalid",
+          state: {
+            status: "completed",
+            input: {
+              tool: name,
+              error: 'JSON parsing failed: {"scope":Only the footer PRIVATE}',
+            },
+            output: "The arguments provided to the tool are invalid: PRIVATE",
+          },
+        },
+      })
+    )
+
+  it("pauses repeated malformed calls before they reach the plan server", async () => {
+    const { exit, output, events } = await runLive(
+      script(Array<string>(maxRepeatedPlanFormatFailures).fill(invalidCall()))
+    )
+    expect(exit).toEqual({
+      type: "harness_exit",
+      exitCode: 0,
+      stopped: "proposal_stalled",
+    })
+    expect(output).not.toContain("PRIVATE")
+    expect(events).toContain("JSON parsing failed")
+  })
+
+  it("pauses repeated schema-format failures but lets assessment corrections continue", async () => {
+    const stalled = await runLive(
+      script(
+        Array<string>(maxRepeatedPlanFormatFailures).fill(
+          planCall(
+            stationTool,
+            `${notSavedReply} Station does not match the put_station schema. PRIVATE`
+          )
+        )
+      )
+    )
+    expect(stalled.exit?.stopped).toBe("proposal_stalled")
+    const assessment = await runLive(
+      script(
+        Array<string>(maxRepeatedPlanFormatFailures).fill(
+          planCall(
+            planToolAgentName(planToolNames.outline),
+            `${notSavedReply} the outline has problems that would block launch. PRIVATE`
+          )
+        ),
+        false
+      )
+    )
+    expect(assessment.exit).toEqual({ type: "harness_exit", exitCode: 0 })
+  })
+
+  it("resets repeated-format detection when a piece saves or the failing tool changes", async () => {
+    const { exit } = await runLive(
+      script(
+        [
+          ...Array<string>(maxRepeatedPlanFormatFailures - 1).fill(
+            invalidCall()
+          ),
+          planCall(stationTool, "Saved Station `a`."),
+          ...Array<string>(maxRepeatedPlanFormatFailures - 1).fill(
+            invalidCall()
+          ),
+          invalidCall(planToolAgentName(planToolNames.outline)),
+          invalidCall(),
+        ],
+        false
+      )
+    )
+    expect(exit).toEqual({ type: "harness_exit", exitCode: 0 })
+  })
 
   it("stops the harness once the plan is finalized", async () => {
     const started = Date.now()

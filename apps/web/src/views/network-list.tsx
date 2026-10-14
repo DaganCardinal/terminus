@@ -1,5 +1,4 @@
 import type { NetworkListing } from "@terminus/protocol"
-import { buttonVariants } from "@terminus/ui/components/button"
 import { Button } from "@terminus/ui/components/button"
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import { LoaderCircle, Plus, RotateCw, Search, X } from "lucide-react"
@@ -102,14 +101,7 @@ export function NetworkList() {
 
   return (
     <>
-      <AppNav>
-        <a
-          href={routes.stressTest()}
-          className={buttonVariants({ variant: "ghost", size: "sm" })}
-        >
-          Stress test
-        </a>
-      </AppNav>
+      <AppNav stressTest />
       <div className="board-page">
         <header className="board-header">
           <div>

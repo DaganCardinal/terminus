@@ -298,6 +298,104 @@ describe("Sandbox capacity", () => {
   })
 })
 
+describe("Sandbox placement", () => {
+  const network = {
+    repositories: [
+      { remote: saved.remote, token: "t", scope: "read" as const },
+    ],
+    allowModel: false,
+  }
+  const unplaced = () =>
+    new Error(
+      "There is no container instance that can be provided to this Durable Object, try again later"
+    )
+  const leased = (sandbox: SandboxContainer) =>
+    env.DB.prepare("SELECT COUNT(*) FROM sandbox_leases WHERE object_id = ?")
+      .bind(
+        (sandbox as unknown as { ctx: DurableObjectState }).ctx.id.toString()
+      )
+      .first<number>("COUNT(*)")
+  const pause = (sandbox: SandboxContainer) =>
+    vi.spyOn(
+      sandbox as unknown as { pause(ms: number): Promise<void> },
+      "pause"
+    )
+  // A stopped container, as Cloudflare leaves one it could not place.
+  const stopped = (f: ReturnType<typeof fakeContainer>) => {
+    f.container.running = false
+    f.container.destroy.mockImplementation(async () => {
+      f.container.running = false
+    })
+  }
+
+  it("retries a start Cloudflare could not place, freeing its slot while it pauses", async () => {
+    await withSandbox(async (sandbox, f) => {
+      stopped(f)
+      f.container.exec.mockRejectedValueOnce(unplaced())
+      const slots: (number | null)[] = []
+      pause(sandbox).mockImplementation(async () => {
+        slots.push(await leased(sandbox))
+      })
+      await sandbox.configure(network)
+      expect(f.container.start).toHaveBeenCalledTimes(2)
+      // Placement is confirmed before any caller's command runs.
+      expect(f.container.exec.mock.calls.map(([command]) => command)).toEqual([
+        ["true"],
+        ["true"],
+      ])
+      expect(slots).toEqual([0])
+      expect(await leased(sandbox)).toBe(1)
+      await sandbox.close()
+    })
+  })
+
+  it("gives up after five minutes of unplaced starts, holding no slot", async () => {
+    await withSandbox(async (sandbox, f) => {
+      stopped(f)
+      f.container.exec.mockRejectedValue(unplaced())
+      const waited: number[] = []
+      vi.useFakeTimers({ toFake: ["Date"] })
+      try {
+        pause(sandbox).mockImplementation(async (ms) => {
+          waited.push(ms)
+          vi.setSystemTime(Date.now() + ms)
+        })
+        await expect(sandbox.configure(network)).rejects.toThrow(
+          "Cloudflare could not provide a Sandbox container after 12 attempts: There is no container instance"
+        )
+      } finally {
+        vi.useRealTimers()
+      }
+      expect(waited.slice(0, 5)).toEqual([
+        5_000, 10_000, 20_000, 30_000, 30_000,
+      ])
+      expect(waited.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(
+        5 * 60_000
+      )
+      expect(f.container.start).toHaveBeenCalledTimes(12)
+      expect(await leased(sandbox)).toBe(0)
+    })
+  })
+
+  it("fails a start that cannot wait, such as a preview's, at once", async () => {
+    await withSandbox(async (sandbox, f) => {
+      stopped(f)
+      f.container.setInactivityTimeout.mockRejectedValueOnce(unplaced())
+      const paused = pause(sandbox)
+      await expect(
+        (
+          sandbox as unknown as {
+            applyNetwork(network: unknown, waitMs: number): Promise<void>
+          }
+        ).applyNetwork(network, 0)
+      ).rejects.toThrow("There is no container instance")
+      expect(paused).not.toHaveBeenCalled()
+      expect(f.container.start).toHaveBeenCalledOnce()
+      expect(await leased(sandbox)).toBe(0)
+    })
+  })
+})
+
 describe("Sandbox namespaces", () => {
   const registered = (binding: string) =>
     env.DB.prepare(
@@ -337,8 +435,40 @@ describe("Sandbox namespaces", () => {
       expect(f.container.interceptAllOutboundHttp).not.toHaveBeenCalled()
     })
     await withSandbox(async (sandbox, f) => {
-      await sandbox.configure({ repositories: [], allowModel: true })
+      await sandbox.configure({
+        repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
+        allowModel: true,
+      })
       expect(f.container.interceptAllOutboundHttp).toHaveBeenCalledOnce()
+    }, "SANDBOX_STANDARD_2")
+  })
+
+  it("starts a container only for a network, so a call after a purge erased its namespace starts none", async () => {
+    // A fresh Sandbox holds what a purged one does once its instance has
+    // restarted: no namespace, and no in-memory deletion flag.
+    await withSandbox(async (sandbox, f) => {
+      f.container.running = false
+      await expect(
+        sandbox.configure({ repositories: [], allowModel: true })
+      ).rejects.toThrow("Sandbox belongs to no network")
+      expect(f.container.start).not.toHaveBeenCalled()
+      const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+      expect(
+        await env.DB.prepare(
+          "SELECT COUNT(*) FROM sandbox_leases WHERE object_id = ?"
+        )
+          .bind(id.toString())
+          .first("COUNT(*)")
+      ).toBe(0)
+
+      // A Sandbox already serving a network may still drop every repository.
+      await sandbox.configure({
+        repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
+        allowModel: false,
+      })
+      await sandbox.configure({ repositories: [], allowModel: true })
+      expect(f.container.start).toHaveBeenCalledOnce()
+      await sandbox.close()
     }, "SANDBOX_STANDARD_2")
   })
 })
@@ -376,7 +506,10 @@ describe("Sandbox preview routing", () => {
         new Error("Outbound setup failed")
       )
       await expect(
-        sandbox.configure({ repositories: [], allowModel: false })
+        sandbox.configure({
+          repositories: [{ remote: saved.remote, token: "t", scope: "read" }],
+          allowModel: false,
+        })
       ).rejects.toThrow("Outbound setup failed")
       expect(f.container.setInactivityTimeout).toHaveBeenCalledWith(30 * 60_000)
       expect(
@@ -603,30 +736,65 @@ describe("Sandbox sizes", () => {
     })
   })
 
-  it("names every size's container after the Sandbox, and purges them all with its storage", async () => {
-    await withRouter(async (sandbox, containers, state, names) => {
-      await sandbox.configure(network)
-      const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
-      expect([...names]).toEqual([id.name])
+  it("names every size's container after the Sandbox, and purges the sizes it started with its storage", async () => {
+    await useSizes("standard-3")
+    try {
+      await withRouter(async (sandbox, containers, state, names) => {
+        await sandbox.configure(network)
+        const id = (sandbox as unknown as { ctx: DurableObjectState }).ctx.id
+        expect([...names]).toEqual([id.name])
+        await sandbox.close()
+        await useSizes("standard-2")
+        await sandbox.configure(network)
+        await sandbox.purge()
+        expect(Object.keys(containers).sort()).toEqual([
+          "standard-2",
+          "standard-3",
+        ])
+        for (const container of Object.values(containers))
+          expect(container.purge).toHaveBeenCalledOnce()
+        expect(await state.storage.list()).toEqual(new Map())
+        await expect(sandbox.configure(network)).rejects.toThrow(
+          "Sandbox was deleted"
+        )
+      })
+    } finally {
+      await env.DB.prepare("DELETE FROM sandbox_limits").run()
+    }
+  })
+
+  it("wakes no container to purge a Sandbox that never started one", async () => {
+    await withRouter(async (sandbox, containers, state) => {
+      await sandbox.purge()
+      expect(Object.keys(containers)).toEqual([])
+      expect(await state.storage.list()).toEqual(new Map())
+    })
+  })
+
+  it("purges every size of a Sandbox started before its sizes were recorded", async () => {
+    await withRouter(async (sandbox, containers, state) => {
+      await state.storage.put("size", "standard-2")
       await sandbox.purge()
       for (const size of ["standard-1", "standard-2", "standard-3"])
         expect(containers[size]!.purge).toHaveBeenCalledOnce()
       expect(await state.storage.list()).toEqual(new Map())
-      await expect(sandbox.configure(network)).rejects.toThrow(
-        "Sandbox was deleted"
-      )
     })
   })
 })
 
 describe("Browser Run", () => {
   const granted = { repositories: [], allowModel: false, allowBrowser: true }
+  // As the proof starts its Sandbox: outside any network.
   const start = (sandbox: SandboxContainer, network: unknown = granted) =>
     (
       sandbox as unknown as {
-        applyNetwork(network: unknown, waitMs: number): Promise<void>
+        applyNetwork(
+          network: unknown,
+          waitMs: number,
+          networkless: boolean
+        ): Promise<void>
       }
-    ).applyNetwork(network, 0)
+    ).applyNetwork(network, 0, true)
   const upgrade = (path: string) =>
     new Request(`https://browser.terminus.test${path}`, {
       headers: { Upgrade: "websocket" },

@@ -9,8 +9,8 @@ const CHUNK_BYTES = 1_000_000
 
 /**
  * Serves `readOverview` from D1 after the first read of each commit. An
- * overview is addressed by its commit and never changes, so its Sandbox runs
- * once per commit instead of once per page view.
+ * overview is addressed by its commit and never changes, so its object reads
+ * run once per commit instead of once per page view.
  */
 export function cacheOverviews(
   host: RepositoryHost,

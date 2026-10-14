@@ -1,6 +1,6 @@
 import { z } from "zod"
 import type { WorkManifest } from "@terminus/domain"
-import type { LayLineRequest } from "./api"
+import type { LayLineRequest, NetworkSnapshot } from "./api"
 
 /** Explicit, versioned fixture; never an arbitrary script supplied by a client. */
 export const PIPELINE_STRESS_PROFILE = "ten-trains-v1"
@@ -122,6 +122,32 @@ export const stressStatusSchema = z.object({
   completedIntegrations: z.number().int().nonnegative(),
   failedIntegrations: z.number().int().nonnegative(),
 })
+export type StressStatus = z.infer<typeof stressStatusSchema>
+
+/** Trains in these states no longer move without a user's intervention. */
+const stoppedTrainStatuses = new Set(["unloaded", "blocked", "siding"])
+
+/**
+ * Why a report would not yet describe a final state, or null when it would.
+ * Expired lease rows are excluded: they belong to Sandboxes that already
+ * stopped, and capacity no longer counts them.
+ */
+export function stressReportPending(
+  snapshot: Pick<NetworkSnapshot, "trains">,
+  status: Pick<StressStatus, "leases" | "activeIntegrations">
+): string | null {
+  const moving = snapshot.trains.filter(
+    ({ train }) => !stoppedTrainStatuses.has(train.state.status)
+  ).length
+  if (moving)
+    return `${moving} Train${moving === 1 ? " is" : "s are"} still running`
+  if (status.activeIntegrations)
+    return "An integration into Terminus is still active"
+  if (status.leases)
+    return `${status.leases} Sandbox${status.leases === 1 ? " is" : "es are"} still running`
+  return null
+}
+
 export const stressVerificationSchema = z.object({
   commit: z.string().regex(/^[a-f0-9]{40}$/),
   files: z.literal(20),
@@ -132,6 +158,10 @@ export const stressVerificationSchema = z.object({
 export const stressReportSchema = z
   .object({
     passed: z.boolean(),
+    /** Every failed check, naming its Train; empty exactly when passed. */
+    findings: z.array(z.string()),
+    /** Observations that do not fail the run. */
+    warnings: z.array(z.string()),
     mode: z.enum(["artifacts", "fake"]),
     run: stressLaunchSchema,
     verification: stressVerificationSchema.nullable(),

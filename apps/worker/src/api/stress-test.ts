@@ -1,18 +1,30 @@
-import { parseRepoId, verifyStressGit } from "@terminus/artifacts"
+import {
+  parseRepoId,
+  StressGitMismatchError,
+  verifyStressGit,
+} from "@terminus/artifacts"
 import {
   PIPELINE_STRESS_PROFILE,
   scriptedStressAgent,
   stressFiles,
+  stressReportPending,
+  stressInterventions,
+  stressPlacementRetries,
   stressTask,
   stressTimings,
   stressReportSchema,
   type NetworkSnapshot,
+  type StressStatus,
+  type StressTask,
 } from "@terminus/protocol"
+import type { WorkManifest } from "@terminus/domain"
 import { DispatchError } from "../agents/dispatcher"
 import { artifactsRepositories } from "../integrations/artifacts-repositories"
+import type { SandboxBinding } from "../integrations/execution-sandbox"
 import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { stressRun } from "../agents/stress-test"
+import { readPerfLogs } from "./perf-logs"
 
 export function stressRepositoryMode(env: Env): "artifacts" | "fake" {
   if (env.REPOSITORY_MODE !== "artifacts" && env.REPOSITORY_MODE !== "fake")
@@ -20,7 +32,10 @@ export function stressRepositoryMode(env: Env): "artifacts" | "fake" {
   return env.REPOSITORY_MODE
 }
 
-export async function stressStatus(env: Env, networkId: string) {
+export async function stressStatus(
+  env: Env,
+  networkId: string
+): Promise<StressStatus> {
   stressRepositoryMode(env)
   const network = await new NetworkStore(env.DB).network(networkId)
   if (!network) throw new DispatchError(404, "Unknown network")
@@ -52,6 +67,186 @@ export async function stressStatus(env: Env, networkId: string) {
   }
 }
 
+function fixtureTask(manifest: WorkManifest): StressTask | null {
+  try {
+    return stressTask(manifest)
+  } catch {
+    return null
+  }
+}
+
+function plural(count: number, noun: string, many = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : many}`
+}
+
+/** Findings name Trains by fixture number, as the map's Line names do. */
+function trainLabels(snapshot: NetworkSnapshot): (trainId: string) => string {
+  const numbers = new Map<string, number>()
+  for (const station of snapshot.stations) {
+    const task = fixtureTask(station.manifest)
+    if (task) numbers.set(station.lineId, task.train)
+  }
+  return (trainId) => {
+    const lineId = snapshot.trains.find(({ train }) => train.id === trainId)
+      ?.train.lineId
+    const number = lineId === undefined ? undefined : numbers.get(lineId)
+    return number === undefined ? `Train ${trainId}` : `Train ${number}`
+  }
+}
+
+function describeState(state: { status: string }): string {
+  const detail =
+    "issues" in state && Array.isArray(state.issues)
+      ? (state.issues as { detail: string }[])
+          .map((issue) => issue.detail)
+          .join("; ")
+      : "reason" in state && typeof state.reason === "string"
+        ? state.reason
+        : "phase" in state && typeof state.phase === "string"
+          ? state.phase
+          : ""
+  return detail ? `${state.status} (${detail.slice(0, 300)})` : state.status
+}
+
+/**
+ * Every way the recorded Network differs from the scenario, each naming its
+ * Train and the failed check. Empty when the run matches.
+ */
+export function stressFindings(
+  snapshot: NetworkSnapshot,
+  runId: string,
+  baseline: string,
+  simulated = false
+): string[] {
+  const findings: string[] = []
+  const label = trainLabels(snapshot)
+  const counts = {
+    Lines: snapshot.lines.length,
+    Trains: snapshot.trains.length,
+    Stations: snapshot.stations.length,
+    Cars: snapshot.cars.length,
+  }
+  for (const [name, count] of Object.entries(counts))
+    if (count !== 10) findings.push(`Expected 10 ${name}, found ${count}`)
+  const extras = {
+    holds: snapshot.holds.length,
+    conflicts: snapshot.conflicts.length,
+    Junctions: snapshot.junctions?.length ?? 0,
+    Crossings: snapshot.crossings?.length ?? 0,
+  }
+  for (const [name, count] of Object.entries(extras))
+    if (count) findings.push(`Expected no ${name}, found ${count}`)
+  const numbers = new Set<number>()
+  for (const station of snapshot.stations) {
+    const task = fixtureTask(station.manifest)
+    if (!task) {
+      findings.push(
+        `Station ${station.id}: manifest differs from the versioned fixture`
+      )
+      continue
+    }
+    const name = `Train ${task.train}`
+    if (task.runId !== runId)
+      findings.push(`${name}: Station belongs to stress run ${task.runId}`)
+    if (numbers.has(task.train))
+      findings.push(`${name}: duplicate fixture Station ${station.id}`)
+    numbers.add(task.train)
+    if (station.state.status !== "complete")
+      findings.push(
+        `${name}: Station is ${describeState(station.state)}, expected complete`
+      )
+  }
+  const harness = simulated ? "fake" : scriptedStressAgent.harness
+  const model = simulated ? "fake" : scriptedStressAgent.model
+  for (const { train } of snapshot.trains) {
+    const name = label(train.id)
+    if (train.state.status !== "unloaded")
+      findings.push(`${name}: ${describeState(train.state)}, expected unloaded`)
+    else if (train.state.destination?.kind === "junction")
+      findings.push(`${name}: unloaded into a Junction, expected Terminus`)
+    if (train.terminusBaseline !== baseline)
+      findings.push(
+        `${name}: Terminus baseline ${train.terminusBaseline} is not the frozen baseline ${baseline}`
+      )
+    const cars = snapshot.cars.filter((car) => car.trainId === train.id)
+    const car = cars[0]
+    if (
+      !car ||
+      cars.length !== 1 ||
+      train.carIds.length !== 1 ||
+      train.carIds[0] !== car.id
+    ) {
+      findings.push(
+        `${name}: expected one Car, found ${cars.length} (${train.carIds.length} on the Train)`
+      )
+      continue
+    }
+    if (car.sourceCommit !== baseline)
+      findings.push(
+        `${name} Car provenance: source commit ${car.sourceCommit} is not the frozen baseline`
+      )
+    if (car.acceptedCommit !== train.headCommit)
+      findings.push(
+        `${name} Car provenance: accepted commit ${car.acceptedCommit} is not the Train head ${train.headCommit}`
+      )
+    const station = snapshot.stations.find(
+      (entry) => entry.id === car.stationId
+    )
+    if (!station || station.lineId !== train.lineId)
+      findings.push(
+        `${name} Car provenance: Station ${car.stationId} is not on this Train's Line`
+      )
+    else if (JSON.stringify(station.manifest) !== JSON.stringify(car.manifest))
+      findings.push(`${name} Car provenance: manifest differs from its Station`)
+    const task = fixtureTask(car.manifest)
+    if (task?.runId !== runId)
+      findings.push(
+        `${name} Car provenance: manifest is not this run's fixture`
+      )
+    if (
+      car.stationAgent.harness !== harness ||
+      car.stationAgent.model !== model
+    )
+      findings.push(
+        `${name} Car provenance: Station Agent ${car.stationAgent.harness}/${car.stationAgent.model}, expected ${harness}/${model}`
+      )
+    if (
+      (!simulated && car.review.harness !== harness) ||
+      car.review.model !== model
+    )
+      findings.push(
+        `${name} Car provenance: Conductor ${car.review.harness}/${car.review.model}, expected ${simulated ? "model " : `${harness}/`}${model}`
+      )
+    if (task) {
+      const expected = Object.keys(stressFiles(task))
+      const outside = car.changedPaths.filter(
+        (path) => !expected.includes(path)
+      )
+      const missing = expected.filter(
+        (path) => !car.changedPaths.includes(path)
+      )
+      if (outside.length || missing.length)
+        findings.push(
+          `${name} Car changed paths differ from the fixture: ${[
+            ...missing.map((path) => `missing ${path}`),
+            ...outside.map((path) => `unexpected ${path}`),
+          ].join(", ")}`
+        )
+    }
+    const unmet = car.manifest.expectedEvidence.flatMap((check) => {
+      const found = car.evidence.checks.find((entry) => entry.name === check)
+      if (!found) return [`${check} (missing)`]
+      if (!found.required) return [`${check} (not required)`]
+      return found.status === "passed" ? [] : [`${check} (${found.status})`]
+    })
+    if (unmet.length)
+      findings.push(
+        `${name} Car lacks passing independent evidence: ${unmet.join(", ")}`
+      )
+  }
+  return findings
+}
+
 /** The disposable Network must contain exactly this run, with one Car per Train. */
 export function stressOracle(
   snapshot: NetworkSnapshot,
@@ -59,82 +254,9 @@ export function stressOracle(
   baseline: string,
   simulated = false
 ) {
-  if (
-    snapshot.trains.length !== 10 ||
-    snapshot.lines.length !== 10 ||
-    snapshot.stations.length !== 10 ||
-    snapshot.cars.length !== 10 ||
-    snapshot.holds.length ||
-    snapshot.conflicts.length ||
-    snapshot.junctions?.length ||
-    snapshot.crossings?.length
-  )
-    throw new DispatchError(
-      409,
-      "Stress oracle requires exactly ten completed ordinary Lines and Cars, with no holds or conflicts"
-    )
-  const numbers = new Set<number>()
-  for (const station of snapshot.stations) {
-    const task = stressTask(station.manifest)
-    if (task.runId !== runId || station.state.status !== "complete")
-      throw new DispatchError(409, "Unexpected or unfinished stress Station")
-    numbers.add(task.train)
-  }
-  if (numbers.size !== 10)
-    throw new DispatchError(409, "Duplicate stress fixture Stations")
-  for (const { train } of snapshot.trains) {
-    if (
-      train.state.status !== "unloaded" ||
-      train.terminusBaseline !== baseline ||
-      train.state.destination?.kind === "junction"
-    )
-      throw new DispatchError(
-        409,
-        "Stress Train did not unload into Terminus from the frozen baseline"
-      )
-    const cars = snapshot.cars.filter((car) => car.trainId === train.id)
-    if (
-      cars.length !== 1 ||
-      train.carIds.length !== 1 ||
-      train.carIds[0] !== cars[0]!.id ||
-      cars[0]!.sourceCommit !== baseline ||
-      cars[0]!.acceptedCommit !== train.headCommit
-    )
-      throw new DispatchError(
-        409,
-        "Stress Car provenance differs from the scenario"
-      )
-    const car = cars[0]!
-    const station = snapshot.stations.find(
-      (entry) => entry.id === car.stationId
-    )
-    const task = stressTask(car.manifest)
-    if (
-      !station ||
-      station.lineId !== train.lineId ||
-      JSON.stringify(station.manifest) !== JSON.stringify(car.manifest) ||
-      task.runId !== runId ||
-      car.stationAgent.harness !==
-        (simulated ? "fake" : scriptedStressAgent.harness) ||
-      (!simulated && car.review.harness !== scriptedStressAgent.harness) ||
-      car.stationAgent.model !==
-        (simulated ? "fake" : scriptedStressAgent.model) ||
-      car.review.model !== (simulated ? "fake" : scriptedStressAgent.model) ||
-      JSON.stringify([...car.changedPaths].sort()) !==
-        JSON.stringify(Object.keys(stressFiles(task)).sort()) ||
-      car.manifest.expectedEvidence.some(
-        (name) =>
-          !car.evidence.checks.some(
-            (check) =>
-              check.name === name && check.required && check.status === "passed"
-          )
-      )
-    )
-      throw new DispatchError(
-        409,
-        "Stress Car lacks its Station, scripted provenance, or independent evidence"
-      )
-  }
+  const findings = stressFindings(snapshot, runId, baseline, simulated)
+  if (findings.length)
+    throw new DispatchError(409, findings.join("; "), { findings })
   return {
     baseline,
     head: snapshot.network.terminusCommit,
@@ -151,38 +273,110 @@ export function stressOracle(
   }
 }
 
+function integrationFindings(status: StressStatus): string[] {
+  return status.activeIntegrations ||
+    status.failedIntegrations ||
+    status.completedIntegrations !== 10
+    ? [
+        `Expected exactly ten completed integrations into Terminus; found ${status.completedIntegrations} completed, ${status.failedIntegrations} failed, ${status.activeIntegrations} active`,
+      ]
+    : []
+}
+
+/** Station Sandboxes name their Train; review and Git Sandboxes are random. */
+function sandboxLabels(snapshot: NetworkSnapshot): (sandbox: string) => string {
+  return (sandbox) => {
+    const station = snapshot.stations.find((entry) =>
+      sandbox.startsWith(`station-${entry.id}-`)
+    )
+    const task = station && fixtureTask(station.manifest)
+    if (task) return `Train ${task.train} Station Sandbox`
+    if (sandbox.startsWith("station-")) return `Station Sandbox ${sandbox}`
+    if (sandbox.startsWith("conductor-"))
+      return `Conductor review Sandbox ${sandbox}`
+    if (sandbox.startsWith("git-")) return `Git workspace Sandbox ${sandbox}`
+    return `Sandbox ${sandbox}`
+  }
+}
+
+/**
+ * TEMPORARY, with the perf logs it reads: Sandbox placement retries in the
+ * window, for this Network's Sandboxes only. Perf logs are best effort, so a
+ * read that fails or is partial is itself a warning, never a finding.
+ */
+export async function placementWarnings(
+  env: Env,
+  snapshot: NetworkSnapshot,
+  window: { from: string; to: string }
+): Promise<string[]> {
+  const unchecked = "Sandbox placement retries could not be checked"
+  try {
+    const logs = await readPerfLogs(env.PERF_LOGS, new URLSearchParams(window))
+    if ("error" in logs) return [`${unchecked}: ${logs.error}`]
+    if (!logs.records.length)
+      return [`${unchecked}: no perf logs were found for this run`]
+    // Every Sandbox registers its object id under its Network's namespace
+    // before its container starts, and keeps it until the Network is deleted.
+    const namespace = parseRepoId(snapshot.network.terminusRepoId).namespace
+    const { results } = await env.DB.prepare(
+      "SELECT object_id, binding FROM network_sandboxes WHERE namespace = ?"
+    )
+      .bind(namespace)
+      .all<{ object_id: string; binding: SandboxBinding }>()
+    const registered = new Set(
+      results.map((row) => `${row.binding}/${row.object_id}`)
+    )
+    const inRun = (sandbox: string, binding: string) =>
+      (binding === "SANDBOX" || binding === "WORKSPACE_SANDBOX") &&
+      registered.has(
+        `${binding}/${env[binding].idFromName(sandbox).toString()}`
+      )
+    const warnings = stressPlacementRetries(
+      logs.records,
+      inRun,
+      sandboxLabels(snapshot)
+    )
+    return logs.complete
+      ? warnings
+      : [
+          ...warnings,
+          `${unchecked} fully: the run's perf logs are larger than one read covers, so some retries may be missing`,
+        ]
+  } catch (error) {
+    return [
+      `${unchecked}: ${error instanceof Error ? error.message : String(error)}`,
+    ]
+  }
+}
+
+/** A 409 from verification carries its individual findings. */
+function errorFindings(error: DispatchError): string[] {
+  const details = error.details as { findings?: unknown } | undefined
+  return Array.isArray(details?.findings)
+    ? details.findings.map(String)
+    : [error.message]
+}
+
 export async function verifyStressRun(
   env: Env,
   networkId: string,
   runId: string,
   baseline: string
 ) {
-  stressRepositoryMode(env)
+  const mode = stressRepositoryMode(env)
   const snapshot = await new NetworkStore(env.DB).snapshot(networkId)
   if (!snapshot) throw new DispatchError(404, "Unknown network")
-  const recorded = stressRun(snapshot, stressRepositoryMode(env))
+  const recorded = stressRun(snapshot, mode)
   if (recorded.runId !== runId || recorded.baseline !== baseline)
     throw new DispatchError(
       409,
       "Stress run identity differs from its recorded fixture"
     )
-  const oracle = stressOracle(
-    snapshot,
-    runId,
-    baseline,
-    env.REPOSITORY_MODE === "fake"
-  )
-  const status = await stressStatus(env, networkId)
-  if (
-    status.activeIntegrations ||
-    status.failedIntegrations ||
-    status.completedIntegrations !== 10
-  )
-    throw new DispatchError(
-      409,
-      "Stress integrations did not complete exactly once per Train"
-    )
-  if (env.REPOSITORY_MODE === "fake") return null
+  const oracle = stressOracle(snapshot, runId, baseline, mode === "fake")
+  const counts = integrationFindings(await stressStatus(env, networkId))
+  if (counts.length)
+    throw new DispatchError(409, counts.join("; "), { findings: counts })
+  if (mode === "fake") return null
   const repositories = artifactsRepositories(env)
   const access = await repositories.access(
     snapshot.network.terminusRepoId,
@@ -206,62 +400,104 @@ export async function verifyStressRun(
     } finally {
       await workspace.close()
     }
+  } catch (error) {
+    if (error instanceof DispatchError) throw error
+    if (error instanceof StressGitMismatchError)
+      throw new DispatchError(409, error.message, { findings: error.findings })
+    // Infrastructure failures are retryable and say nothing about the run.
+    throw new DispatchError(
+      503,
+      `Canonical Git verification could not complete: ${error instanceof Error ? error.message : String(error)}`
+    )
   } finally {
     await repositories.revoke(access)
   }
 }
 
-/** Explicit verification command. Network lifecycle continues without this report reader. */
+/**
+ * Explicit verification command. Network lifecycle continues without this
+ * report reader. Once every Train has stopped, it returns a report either
+ * way; a failed run lists its findings instead of refusing.
+ */
 export async function stressReport(env: Env, networkId: string) {
   const store = new NetworkStore(env.DB)
   const snapshot = await store.snapshot(networkId)
   if (!snapshot) throw new DispatchError(404, "Unknown network")
   const mode = stressRepositoryMode(env)
   const run = stressRun(snapshot, mode)
-  if (
-    snapshot.stations.some(
-      (station) => station.revisionCount || station.runRetries
-    )
-  )
-    throw new DispatchError(
-      409,
-      "Stress fixture unexpectedly needed a retry or revision"
-    )
   const before = await stressStatus(env, networkId)
-  if (before.leases || before.expiredLeases || before.activeIntegrations)
-    throw new DispatchError(409, "Stress resources are still active")
-  const verification = await verifyStressRun(
-    env,
-    networkId,
-    run.runId,
-    run.baseline
+  const pending = stressReportPending(snapshot, before)
+  if (pending) throw new DispatchError(409, `Not ready to verify: ${pending}`)
+  const label = trainLabels(snapshot)
+  const findings: string[] = []
+  for (const station of snapshot.stations)
+    if (station.revisionCount || station.runRetries) {
+      const task = fixtureTask(station.manifest)
+      findings.push(
+        `${task ? `Train ${task.train}` : `Station ${station.id}`}: Station needed ${plural(station.revisionCount, "revision")} and ${plural(station.runRetries ?? 0, "run retry", "run retries")}`
+      )
+    }
+  findings.push(
+    ...stressFindings(snapshot, run.runId, run.baseline, mode === "fake"),
+    ...integrationFindings(before)
   )
-  const status = await stressStatus(env, networkId)
-  if (status.leases || status.expiredLeases || status.activeIntegrations)
-    throw new DispatchError(409, "Resources remain after stress verification")
   const events = []
   for (;;) {
     const page = await store.eventsAfter(networkId, events.at(-1)?.seq ?? 0)
     if (!page.length) break
     events.push(...page)
   }
+  findings.push(...stressInterventions(events, label))
   const timings = stressTimings(events)
-  if (
-    timings.findings.length ||
-    timings.trains.length !== 10 ||
-    timings.trains.some(
-      (train) =>
-        train.workMs === null ||
-        train.queueMs === null ||
-        train.integrationMs === null
+  findings.push(...timings.findings)
+  for (const { train } of snapshot.trains) {
+    if (train.state.status !== "unloaded") continue
+    const row = timings.trains.find((entry) => entry.trainId === train.id)
+    const missing = (["workMs", "queueMs", "integrationMs"] as const).filter(
+      (key) => row?.[key] === null || row?.[key] === undefined
     )
-  )
-    throw new DispatchError(
-      409,
-      "Durable event log lacks valid ten-Train timing evidence"
+    if (missing.length)
+      findings.push(
+        `${label(train.id)}: durable events lack ${missing.join(", ")} timing`
+      )
+  }
+  let verification = null
+  if (!findings.length)
+    try {
+      verification = await verifyStressRun(
+        env,
+        networkId,
+        run.runId,
+        run.baseline
+      )
+    } catch (error) {
+      if (!(error instanceof DispatchError) || error.status !== 409) throw error
+      findings.push(...errorFindings(error))
+    }
+  const status = await stressStatus(env, networkId)
+  if (status.leases || status.activeIntegrations)
+    findings.push(
+      `Resources remained after verification: ${plural(status.leases, "Sandbox lease")}, ${plural(status.activeIntegrations, "active integration")}`
+    )
+  const warnings = before.expiredLeases
+    ? [
+        `${plural(before.expiredLeases, "expired Sandbox lease row")} remained from Sandboxes that stopped without releasing their slot, for example across a deploy; capacity no longer counts them`,
+      ]
+    : []
+  // After verification, so its hundreds of R2 reads can't use up the
+  // subrequests verification needs. The window ends at the run's last event,
+  // so this report's own Git check is not counted.
+  if (mode === "artifacts")
+    warnings.push(
+      ...(await placementWarnings(env, snapshot, {
+        from: snapshot.network.createdAt,
+        to: events.at(-1)?.occurredAt ?? new Date().toISOString(),
+      }))
     )
   return stressReportSchema.parse({
-    passed: true,
+    passed: !findings.length,
+    findings,
+    warnings,
     mode,
     run,
     verification,
@@ -273,6 +509,8 @@ export async function stressReport(env: Env, networkId: string) {
     note:
       mode === "fake"
         ? "Local rehearsal: simulated repositories and agents. Cloudflare Artifacts/Sandbox capacity and final Git tree are not verified."
-        : "Canonical Git tree, Cars, merge history and resource cleanup verified.",
+        : findings.length
+          ? "Verification failed; see findings. Canonical Git checks run only after every recorded check passes."
+          : "Canonical Git tree, Cars, merge history and resource cleanup verified.",
   })
 }

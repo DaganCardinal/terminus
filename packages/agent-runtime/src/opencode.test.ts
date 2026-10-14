@@ -36,6 +36,7 @@ import {
 import { dispatcherTranscript } from "./opencode.fixture"
 import { technicianHarnessAgent } from "./technician"
 import type { TechnicianRepair } from "@terminus/domain"
+import { MODEL_CATALOG, catalogModel, utilityModel } from "@terminus/protocol"
 
 const execute = promisify(execFile)
 const model = "@cf/zai-org/glm-5.3"
@@ -167,6 +168,22 @@ describe("Harness agent configuration", () => {
     ])
     for (const agent of [conductorHarnessAgent("S"), stationHarnessAgent])
       expect(limits(agent)).toEqual([8192, 8192])
+    // The default preset's Dispatcher model is also its utility model.
+    expect(
+      Object.values(
+        JSON.parse(
+          opencodeConfig(
+            "account",
+            "gateway",
+            "@cf/zai-org/glm-5.3-flash",
+            dispatcherHarnessAgent("S")
+          )
+        ).provider.terminus.models as Record<
+          string,
+          { limit: { output: number } }
+        >
+      ).map((definition) => definition.limit.output)
+    ).toEqual([dispatcherOutputTokens])
   })
 
   it("gives only the Dispatcher the plan tools, and never its explore subagents", () => {
@@ -222,6 +239,107 @@ describe("Harness agent configuration", () => {
     ])
     const resumed = opencodeRunCommand("dispatcher", model, "Fix", "ses_1")
     expect(resumed.slice(-4)).toEqual(["--session", "ses_1", "--", "Fix"])
+  })
+})
+
+describe("Anthropic and OpenAI under OpenCode", () => {
+  // The AI SDK appends its endpoint to `baseURL`; the result must be the one
+  // route the Sandbox outbound handler grants each provider.
+  const endpoints = {
+    anthropic: {
+      npm: "@ai-sdk/anthropic",
+      path: "/messages",
+      route:
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic/v1/messages",
+    },
+    openai: {
+      npm: "@ai-sdk/openai",
+      path: "/responses",
+      route:
+        "https://gateway.ai.cloudflare.com/v1/account/gateway/openai/responses",
+    },
+  } as const
+  const external = MODEL_CATALOG.filter(
+    (entry) =>
+      entry.provider !== "workers-ai" &&
+      (entry.harnesses as readonly string[]).includes("opencode")
+  )
+
+  it("covers every external-provider model OpenCode offers", () => {
+    expect(external.map((entry) => entry.id).sort()).toEqual([
+      "anthropic/claude-haiku-4-5-20251001",
+      "anthropic/claude-haiku-5-5",
+      "anthropic/claude-sonnet-5-5",
+      "openai/gpt-6-luna",
+      "openai/gpt-6-sol",
+    ])
+  })
+
+  it.each(
+    external.flatMap((entry) =>
+      [dispatcherHarnessAgent("S"), stationHarnessAgent].map((agent) => ({
+        entry,
+        agent,
+      }))
+    )
+  )(
+    "points $entry.id / $agent.name at its provider's native gateway route",
+    ({ entry, agent }) => {
+      const provider = entry.provider as keyof typeof endpoints
+      const config = JSON.parse(
+        opencodeConfig("account", "gateway", entry.id, agent)
+      )
+      const terminus = config.provider.terminus
+      expect(config.enabled_providers).toEqual(["terminus"])
+      expect(terminus.npm).toBe(endpoints[provider].npm)
+      expect(`${terminus.options.baseURL}${endpoints[provider].path}`).toBe(
+        endpoints[provider].route
+      )
+      // A placeholder the outbound handler discards; no credential is written.
+      expect(terminus.options.apiKey).toBe("provided-by-worker")
+      expect(JSON.stringify(config)).not.toMatch(/sk-|AI_GATEWAY_TOKEN/)
+
+      // OpenCode sends the definition's `id`, which must be the native API
+      // model the outbound handler compares against, not the catalog id.
+      const utility = utilityModel(entry.id)
+      expect(catalogModel(utility).provider).toBe(provider)
+      expect(config.model).toBe(`terminus/${entry.id}`)
+      expect(config.small_model).toBe(`terminus/${utility}`)
+      expect(config.agent.explore.model).toBe(`terminus/${utility}`)
+      const definitions = terminus.models as Record<
+        string,
+        Record<string, unknown>
+      >
+      expect(Object.keys(definitions)).toEqual(
+        entry.id === utility ? [entry.id] : [entry.id, utility]
+      )
+      for (const [id, definition] of Object.entries(definitions)) {
+        expect(definition.id).toBe(catalogModel(id).apiModel)
+        expect(definition.id).not.toContain("/")
+        expect(definition.tool_call).toBe(true)
+        // Workers AI's reasoning fields are not part of these providers' APIs.
+        expect(definition).not.toHaveProperty("reasoning")
+        expect(definition).not.toHaveProperty("interleaved")
+      }
+      expect(definitions[entry.id]!.limit).toEqual({
+        context: 131072,
+        output: agent.capability === "planning" ? dispatcherOutputTokens : 8192,
+      })
+    }
+  )
+
+  it("keeps Workers AI on the OpenAI-compatible Workers AI endpoint", () => {
+    const terminus = JSON.parse(
+      opencodeConfig("account", "gateway", model, stationHarnessAgent)
+    ).provider.terminus
+    expect(terminus.npm).toBe("@ai-sdk/openai-compatible")
+    expect(terminus.options.baseURL).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/account/ai/v1"
+    )
+    expect(terminus.models[model]).toMatchObject({
+      reasoning: true,
+      interleaved: { field: "reasoning_content" },
+    })
   })
 })
 

@@ -9,6 +9,7 @@ export * from "./preview-git"
 export * from "./repository-browse"
 export * from "./sealed-workspace"
 export * from "./smart-http"
+export * from "./fast-forward"
 
 export * from "./technician-git"
 export * from "./stress-git"

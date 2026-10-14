@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   ArtifactsRepositoryHost,
   type ArtifactsNamespaces,
@@ -18,6 +18,7 @@ import {
 import { ArtifactsApiError } from "./artifacts-rest"
 import type { CommittedObjects } from "./repository-browse"
 import { StationGit } from "./station-git"
+import { GitCapacityError, type RepositoryPromoter } from "./fast-forward"
 
 const execute = promisify(execFile)
 const temporary: string[] = []
@@ -65,7 +66,11 @@ function gitObjects(gitDir: string): CommittedObjects {
 }
 
 async function fixture(
-  options: { readHeadDirectly?: boolean; readObjectsDirectly?: boolean } = {}
+  options: {
+    readHeadDirectly?: boolean
+    readObjectsDirectly?: boolean
+    promote?: RepositoryPromoter
+  } = {}
 ) {
   const directory = await mkdtemp(join(tmpdir(), "terminus-git-test-"))
   temporary.push(directory)
@@ -219,7 +224,8 @@ async function fixture(
       pauses++
       afterPause?.()
     },
-    options.readHeadDirectly ? readHead : undefined
+    options.readHeadDirectly ? readHead : undefined,
+    options.promote
   )
   async function head(name: string) {
     return (
@@ -676,6 +682,15 @@ describe("Artifacts repository transport with real Git", () => {
     )
     expect(expected[0]?.content).toBe("# Demo\n")
     const opened = f.grants.length
+    const expectedOverview = await viaWorkspace.readOverview(
+      "p/terminus",
+      commit
+    )
+    const afterOverview = f.grants.length
+    expect(await f.host.readOverview("p/terminus", commit)).toEqual(
+      expectedOverview
+    )
+    expect(f.grants).toHaveLength(afterOverview)
     for (const [index, path] of paths.entries())
       expect(await f.host.readFile("p/terminus", commit, path), path).toEqual(
         expected[index]
@@ -695,7 +710,7 @@ describe("Artifacts repository transport with real Git", () => {
     await expect(
       f.host.readFile("p/terminus", "main", "README.md")
     ).rejects.toThrow("Expected a full Git commit identity")
-    expect(f.grants).toHaveLength(opened)
+    expect(f.grants).toHaveLength(opened + 1)
     expect(f.tokens.size).toBe(0)
   })
 
@@ -869,6 +884,71 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.commands).toHaveLength(retried)
     expect(f.tokens.size).toBe(0)
     expect(f.handles.size).toBe(0)
+  })
+
+  it("promotes in the Worker without opening a workspace, revoking both grants on success or failure", async () => {
+    const promote = vi.fn<RepositoryPromoter>().mockResolvedValue(undefined)
+    const f = await fixture({ promote })
+    const baseline = await f.host.createTerminus({ namespace: "p" })
+    await f.host.fork({
+      sourceRepoId: "p/terminus",
+      commit: baseline.headCommit,
+      name: "train",
+    })
+    const input = {
+      sourceRepoId: "p/terminus",
+      targetRepoId: "p/train",
+      fromCommit: baseline.headCommit,
+      toCommit: "a".repeat(40),
+    }
+    const opened = f.grants.length
+    await f.host.fastForward(input)
+    expect(promote).toHaveBeenCalledWith({
+      source: expect.objectContaining({
+        repoId: input.sourceRepoId,
+        scope: "read",
+      }),
+      target: expect.objectContaining({
+        repoId: input.targetRepoId,
+        scope: "write",
+      }),
+      fromCommit: input.fromCommit,
+      toCommit: input.toCommit,
+    })
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+    promote.mockRejectedValueOnce(new RepositoryMovedError("Target moved"))
+    await expect(f.host.fastForward(input)).rejects.toThrow("Target moved")
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+    const called = promote.mock.calls.length
+    await expect(
+      f.host.fastForward({ ...input, sourceRepoId: "p/missing" })
+    ).rejects.toThrow("missing")
+    expect(promote).toHaveBeenCalledTimes(called)
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("falls back to guarded native Git only for a Worker capacity limit", async () => {
+    const promote = vi
+      .fn<RepositoryPromoter>()
+      .mockRejectedValue(new GitCapacityError("budget"))
+    const f = await fixture({ promote, readHeadDirectly: true })
+    const baseline = await f.host.createTerminus({ namespace: "p" })
+    await f.host.fork({
+      sourceRepoId: "p/terminus",
+      commit: baseline.headCommit,
+      name: "train",
+    })
+    const proposed = await f.change("p/terminus")
+    await f.host.fastForward({
+      sourceRepoId: "p/terminus",
+      targetRepoId: "p/train",
+      fromCommit: baseline.headCommit,
+      toCommit: proposed.commit,
+    })
+    expect(await f.head("p/train")).toBe(proposed.commit)
+    expect(f.tokens.size).toBe(0)
   })
 
   it("mints a workspace's credentials together, and revokes them when one is refused", async () => {

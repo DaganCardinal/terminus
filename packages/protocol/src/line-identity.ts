@@ -12,6 +12,11 @@ export interface LineIdentity {
   live: boolean
   /** When the Line released its identity for reuse. */
   finishedAt?: string
+  /** Lines laid while the network stayed busy share a generation; the next
+   * Line laid after every Line has finished starts a new one. The live map
+   * keeps a finished Line's row for the rest of its generation, so the Lines
+   * still running never move or change shape. */
+  generation: number
 }
 
 export const LINE_COLOR_COUNT = 8
@@ -100,6 +105,7 @@ export function lineIdentities(
   const identities = new Map<string, LineIdentity>()
   /** Lines currently holding their identity, by id. */
   const holding = new Set<string>()
+  let generation = -1
   const named = (name: string) => namedColors[name.split(" ")[0]!.toLowerCase()]
   /** `claimed` holds the named colours of Lines arriving alongside this one,
    * which an unnamed Line leaves for them while another colour is free. */
@@ -118,6 +124,7 @@ export function lineIdentities(
     const own = named(name)
     const unclaimed = colors.filter((c) => !claimed.has(c))
     const shapes = leastUsed(ROUTE_SHAPE_COUNT, (h) => h.shape)
+    if (held.length === 0) generation++
     return {
       slot,
       color:
@@ -126,6 +133,7 @@ export function lineIdentities(
           : (unclaimed[0] ?? colors[0]!),
       shape: shapes[seed(id) % shapes.length]!,
       live: true,
+      generation,
     }
   }
 

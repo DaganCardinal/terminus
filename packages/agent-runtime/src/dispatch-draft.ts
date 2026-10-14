@@ -52,6 +52,8 @@ export const notSavedReply = "Not saved:"
  * and the saved draft is final. Each costs one piece, not the whole plan.
  */
 export const maxRejectedPlanCalls = 20
+/** Repeated format failures on the same tool need a different submission strategy. */
+export const maxRepeatedPlanFormatFailures = 3
 /** After this many rejected `finalize_plan` calls, the draft is final. */
 export const maxRejectedFinalizations = 3
 
@@ -902,8 +904,8 @@ function progress(
 
 /**
  * The plan tools as an MCP server lists them. With `asText`, the outline
- * travels as JSON text (see `proposalAsText`); Stations always use flat
- * arguments, so no value nests deeper than a list.
+ * travels as JSON text (see `proposalAsText`). Station arguments accept
+ * arrays or text for every model.
  */
 export function planTools(asText: boolean) {
   return [
@@ -930,8 +932,8 @@ export function planTools(asText: boolean) {
     },
     {
       name: planToolNames.station,
-      description: `Saves one Station's name and complete Manifest, replacing any earlier version of that Station. Every list holds plain strings, except contracts. Save each Station with its own call; several calls may go in one message. The reply says whether the Station was saved, lists its problems, and says what is still missing.`,
-      inputSchema: toolSchema(planStationSchema),
+      description: `Saves one Station's name and complete Manifest, replacing any earlier version of that Station. List fields accept arrays of strings or text with one item per line. Contracts accepts an array of objects or JSON array text. Each field is its own argument, not one Station JSON blob. Save each Station with its own call; several calls may go in one message. The reply says whether the Station was saved, lists its problems, and says what is still missing.`,
+      inputSchema: planStationToolJsonSchema(),
     },
     {
       name: planToolNames.inspect,
@@ -959,6 +961,42 @@ export function planTools(asText: boolean) {
       },
     },
   ]
+}
+
+/**
+ * Advertises both list representations normalizeStation accepts, for every
+ * model. The array branch preserves field constraints; decoded text passes
+ * the same full protocol schema before a Station is saved.
+ */
+export function planStationToolJsonSchema(): Record<string, unknown> {
+  const schema = toolSchema(planStationSchema)
+  if (!isRecord(schema.properties)) return schema
+  return {
+    ...schema,
+    properties: Object.fromEntries(
+      Object.entries(schema.properties).map(([field, property]) => {
+        if (!isRecord(property) || property.type !== "array")
+          return [field, property]
+        return [
+          field,
+          {
+            description:
+              "Accepts an array or text. Decoded text must satisfy the same constraints as the array.",
+            anyOf: [
+              property,
+              {
+                type: "string",
+                description:
+                  field === "contracts"
+                    ? "JSON array text containing contract objects, with no code fence. Use [] for no contracts."
+                    : "One list item per line, or JSON array text. Use an empty string for an empty list when allowed.",
+              },
+            ],
+          },
+        ]
+      })
+    ),
+  }
 }
 
 /** The outline's JSON schema, for instructions when it travels as text. */

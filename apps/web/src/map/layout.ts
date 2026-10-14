@@ -2,6 +2,7 @@ import {
   lineIdentities,
   type Line,
   type LineIdentity,
+  type LineHistory,
   type EventEnvelope,
   type NetworkSnapshot,
   type TrainState,
@@ -11,6 +12,7 @@ import {
   pointOnTrack,
   roundTrack,
   straightRuns,
+  translateTrack,
   type Point,
   type Track,
 } from "./track"
@@ -227,32 +229,187 @@ export interface NetworkLayout {
  *
  * Each Line's number, colour and shape come from its identity. Its row comes
  * from its identity's slot, so a new Line takes a finished Line's place, or,
- * with `placement: "order"`, from its position in `lines`. */
+ * with `placement: "order"`, from its position in `lines`.
+ *
+ * `held` Lines are laid out but not drawn: they keep their rows, so the
+ * drawn Lines stay exactly where they were while those Lines ran. */
 export function layoutNetwork(
   lines: Line[],
   identities?: Map<string, LineIdentity>,
-  placement: "slot" | "order" = "slot"
+  placement: "slot" | "order" = "slot",
+  held: Line[] = []
 ): NetworkLayout {
+  const all = [...lines, ...held]
   let fresh: Map<string, LineIdentity> | undefined
   const identity = (line: Line) =>
-    identities?.get(line.id) ?? (fresh ??= freshIdentities(lines)).get(line.id)!
+    identities?.get(line.id) ?? (fresh ??= freshIdentities(all)).get(line.id)!
   const placed =
     placement === "slot"
-      ? [...lines].sort((a, b) => identity(a).slot - identity(b).slot)
-      : lines
+      ? [...all].sort((a, b) => identity(a).slot - identity(b).slot)
+      : all
   const keys = placed.map((line, i) =>
     placement === "slot" ? identity(line).slot : i
   )
-  if (
-    placed.some(
-      (l) =>
-        l.destination?.kind === "junction" ||
-        l.origin?.kind === "junction" ||
-        l.stops?.some((s) => s.kind === "crossing")
-    )
+  const layout = placed.some(
+    (l) =>
+      l.destination?.kind === "junction" ||
+      l.origin?.kind === "junction" ||
+      l.stops?.some((s) => s.kind === "crossing")
   )
-    return layoutGraph(placed, identity)
-  return layoutBundle(placed, identity, keys)
+    ? layoutGraph(placed, identity)
+    : layoutBundle(placed, identity, keys)
+  if (held.length === 0) return layout
+  return visibleLayout(layout, lines)
+}
+
+/** View filters only hide geometry; they never reposition or refit it. */
+export function visibleLayout(
+  layout: NetworkLayout,
+  lines: Line[]
+): NetworkLayout {
+  const drawn = new Set(lines.map((line) => line.id))
+  const drawnStations = new Set(lines.flatMap((line) => line.stationIds))
+  return {
+    ...layout,
+    routes: layout.routes.filter((route) => drawn.has(route.line.id)),
+    junctions: layout.junctions.filter(
+      (j) =>
+        j.lineIds.some((id) => drawn.has(id)) ||
+        lines.some(
+          (l) => l.origin?.kind === "junction" && l.origin.junctionId === j.id
+        )
+    ),
+    interchanges: layout.interchanges.flatMap((c) => {
+      const lanes = c.lanes.filter((lane) => drawn.has(lane.lineId))
+      return drawnStations.has(c.stationId) || lanes.length > 0
+        ? [{ ...c, lanes }]
+        : []
+    }),
+  }
+}
+
+/** Replay slot occupants in creation batches. A finished Line retains the
+ * last layout it had while live, even after its slot is reused. Historical
+ * layouts share a Terminus anchor and canvas with the current layout, so
+ * Live and Finished are visibility filters over the same coordinates.
+ * The canvas grows with the largest layout, not the number of past Lines. */
+export function layoutHistory(
+  history: LineHistory,
+  identities = lineIdentities(history)
+): NetworkLayout {
+  const fallback = Date.parse(history.network.createdAt) || 0
+  const batches = new Map<
+    string,
+    { generation: number; opened: number; lines: Line[] }
+  >()
+  for (const line of history.lines) {
+    const generation = identities.get(line.id)!.generation
+    const parsed = Date.parse(history.lineCreatedAt?.[line.id] ?? "")
+    const opened = Number.isNaN(parsed) ? fallback : parsed
+    const key = `${generation}|${opened}`
+    const batch = batches.get(key) ?? { generation, opened, lines: [] }
+    batch.lines.push(line)
+    batches.set(key, batch)
+  }
+  const footprints = new Map<string, NetworkLayout>()
+  const occupants = new Map<number, Line>()
+  let generation = -1
+  for (const batch of [...batches.values()].sort(
+    (a, b) => a.generation - b.generation || a.opened - b.opened
+  )) {
+    if (batch.generation !== generation) {
+      occupants.clear()
+      generation = batch.generation
+    }
+    for (const line of batch.lines)
+      occupants.set(identities.get(line.id)!.slot, line)
+    const layout = layoutNetwork([...occupants.values()], identities)
+    for (const route of layout.routes) {
+      const identity = identities.get(route.line.id)!
+      if (
+        !footprints.has(route.line.id) ||
+        identity.live ||
+        batch.opened <= Date.parse(identity.finishedAt!)
+      )
+        footprints.set(route.line.id, layout)
+    }
+  }
+  const layouts = [...new Set(footprints.values())]
+  if (layouts.length === 0) return layoutNetwork([], identities)
+  const hub = {
+    x: Math.max(...layouts.map((l) => l.hub.x)),
+    y: Math.max(...layouts.map((l) => l.hub.y)),
+  }
+  const result: NetworkLayout = {
+    hub,
+    hubHalfHeight: Math.max(...layouts.map((l) => l.hubHalfHeight)),
+    width: hub.x + Math.max(...layouts.map((l) => l.width - l.hub.x)),
+    height: hub.y + Math.max(...layouts.map((l) => l.height - l.hub.y)),
+    routes: [],
+    junctions: [],
+    interchanges: [],
+  }
+  for (const layout of layouts) {
+    const lines = history.lines.filter((l) => footprints.get(l.id) === layout)
+    const visible = visibleLayout(layout, lines)
+    const offset = { x: hub.x - layout.hub.x, y: hub.y - layout.hub.y }
+    const shift = (p: Point) => ({ x: p.x + offset.x, y: p.y + offset.y })
+    result.routes.push(
+      ...visible.routes.map((route) => ({
+        ...route,
+        points: route.points.map(shift),
+        stationTrack: route.stationTrack.map(shift),
+        track: translateTrack(route.track, offset),
+        stations: route.stations.map(shift),
+        depot: shift(route.depot),
+        ...(route.bullet ? { bullet: shift(route.bullet) } : {}),
+      }))
+    )
+    result.junctions.push(
+      ...visible.junctions.map((j) => ({ ...j, point: shift(j.point) }))
+    )
+    result.interchanges.push(
+      ...visible.interchanges.map((c) => ({
+        ...c,
+        at: shift(c.at),
+        lanes: c.lanes.map((lane) => ({ ...lane, point: shift(lane.point) })),
+      }))
+    )
+  }
+  return result
+}
+
+/** The finished Lines the live map holds rows for, so the Lines still running
+ * keep their place, shape and route into Terminus: for each row of the
+ * latest generation that no drawn Line occupies, the Line that held it last.
+ * A new Line laid into that row replaces it; once every Line has finished,
+ * the next generation starts with a fresh layout. */
+export function heldLines(
+  lines: Line[],
+  drawn: Line[],
+  identities: Map<string, LineIdentity>
+): Line[] {
+  const generation = Math.max(
+    -1,
+    ...[...identities.values()].map((i) => i.generation)
+  )
+  const taken = new Set(drawn.map((line) => identities.get(line.id)?.slot))
+  const drawnIds = new Set(drawn.map((line) => line.id))
+  const last = new Map<number, Line>()
+  for (const line of lines) {
+    const identity = identities.get(line.id)
+    if (
+      !identity ||
+      identity.generation !== generation ||
+      drawnIds.has(line.id) ||
+      taken.has(identity.slot)
+    )
+      continue
+    const other = last.get(identity.slot)
+    if (!other || identity.finishedAt! >= identities.get(other.id)!.finishedAt!)
+      last.set(identity.slot, line)
+  }
+  return [...last.values()]
 }
 
 function layoutBundle(
@@ -1195,6 +1352,17 @@ export function identitiesOf(snapshot: NetworkSnapshot) {
     snapshotIdentities.set(snapshot, identities)
   }
   return identities
+}
+
+const snapshotLayouts = new WeakMap<NetworkSnapshot, NetworkLayout>()
+/** The shared Live/Finished geometry, computed once per snapshot. */
+export function layoutOf(snapshot: NetworkSnapshot) {
+  let layout = snapshotLayouts.get(snapshot)
+  if (!layout) {
+    layout = layoutHistory(snapshot, identitiesOf(snapshot))
+    snapshotLayouts.set(snapshot, layout)
+  }
+  return layout
 }
 
 /** The number and colour a Line is drawn with. */

@@ -125,9 +125,10 @@ function terminusProvider(
           apiKey: "provided-by-worker",
           headers: { "cf-aig-gateway-id": gatewayId },
         },
+        // When the role model is its own utility model, its role limit wins.
         models: {
           [model]: definition(model, output),
-          [utility]: definition(utility),
+          ...(utility === model ? {} : { [utility]: definition(utility) }),
         },
       },
     },

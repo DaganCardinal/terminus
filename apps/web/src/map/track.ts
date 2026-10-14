@@ -153,6 +153,21 @@ export function trackSection(track: Track, from: number, to: number): string {
   return d
 }
 
+/** Move a track without recalculating its curves or travel distances. */
+export function translateTrack(track: Track, offset: Point): Track {
+  if (offset.x === 0 && offset.y === 0) return track
+  const shift = (p: Point) => ({ x: p.x + offset.x, y: p.y + offset.y })
+  const moved: Track = {
+    ...track,
+    pieces: track.pieces.map((piece) =>
+      piece.kind === "line"
+        ? { ...piece, from: shift(piece.from), to: shift(piece.to) }
+        : { ...piece, center: shift(piece.center) }
+    ),
+  }
+  return { ...moved, d: trackSection(moved, 0, moved.length) }
+}
+
 /** Distance ranges on horizontal straight track, at least `clearance` from
  * any curve. Stations are only placed here, as on a real diagram. */
 export function straightRuns(

@@ -36,6 +36,81 @@ async function rows(planId: string) {
 }
 
 describe("Dispatcher draft store", () => {
+  it("retains draft pieces only while the trusted checkpoint matches", async () => {
+    const plan = await seedDispatchPlan()
+    const store = new DispatchDraftStore(env.DB)
+    const draft = { outline, stations: { a: station("a") } }
+    await store.begin(plan.id, "baseline-and-config-a", null)
+    await store.save(plan.id, { stations: {} }, draft)
+    await store.begin(plan.id, "baseline-and-config-a", null)
+    expect(await store.restore(plan.id, "baseline-and-config-a")).toEqual({
+      draft,
+      baseline: null,
+    })
+    expect(await store.restore(plan.id, "different-context")).toBeNull()
+    await store.begin(plan.id, "different-context", null)
+    expect(await store.read(plan.id)).toEqual({ stations: {} })
+    await store.clear(plan.id)
+    expect(await store.restore(plan.id, "different-context")).toBeNull()
+  })
+
+  it("treats corrupt checkpoint data as unavailable and corrupt pieces as missing", async () => {
+    const plan = await seedDispatchPlan()
+    const store = new DispatchDraftStore(env.DB)
+    await store.begin(plan.id, "context", null)
+    await store.save(
+      plan.id,
+      { stations: {} },
+      { outline, stations: { a: station("a"), b: station("b") } }
+    )
+    await env.DB.prepare(
+      "UPDATE dispatch_drafts SET body = '{' WHERE plan_id = ? AND key = 'a'"
+    )
+      .bind(plan.id)
+      .run()
+    expect((await store.restore(plan.id, "context"))!.draft).toEqual({
+      outline,
+      stations: { b: station("b") },
+    })
+    await env.DB.prepare(
+      "UPDATE dispatch_draft_checkpoints SET baseline = '{' WHERE plan_id = ?"
+    )
+      .bind(plan.id)
+      .run()
+    expect(await store.restore(plan.id, "context")).toBeNull()
+    await store.begin(plan.id, "context", null)
+    expect(await store.read(plan.id)).toEqual({ stations: {} })
+  })
+
+  it("fences checkpoint creation during deletion and rolls back a reset when the fence rejects it", async () => {
+    const plan = await seedDispatchPlan()
+    const store = new DispatchDraftStore(env.DB)
+    const draft = { stations: { a: station("a") } }
+    await store.begin(plan.id, "context", null)
+    await store.save(plan.id, { stations: {} }, draft)
+    await env.DB.prepare("UPDATE networks SET deleting = 1 WHERE id = ?")
+      .bind(plan.networkId)
+      .run()
+    await expect(store.begin(plan.id, "new-context", null)).rejects.toThrow(
+      "network_deleting"
+    )
+    expect(await store.read(plan.id)).toEqual(draft)
+    expect(await store.restore(plan.id, "context")).toEqual({
+      draft,
+      baseline: null,
+    })
+  })
+
+  it("deletes checkpoints with their plan", async () => {
+    const plan = await seedDispatchPlan()
+    const store = new DispatchDraftStore(env.DB)
+    await store.begin(plan.id, "context", null)
+    await env.DB.prepare("DELETE FROM dispatch_plans WHERE id = ?")
+      .bind(plan.id)
+      .run()
+    expect(await store.restore(plan.id, "context")).toBeNull()
+  })
+
   it("saves one row per piece and reads the draft back", async () => {
     const plan = await seedDispatchPlan()
     const store = new DispatchDraftStore(env.DB)

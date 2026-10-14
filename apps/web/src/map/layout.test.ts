@@ -3,18 +3,22 @@ import {
   lineIdentities,
   type EventEnvelope,
   type Line,
+  type LineHistory,
   type TrainState,
 } from "@terminus/protocol"
 import {
   HUB_RADIUS,
   TRACK_WIDTH,
   clearingBlock,
+  heldLines,
+  layoutHistory,
   layoutNetwork,
   lineColor,
   routeShapes,
   isMoving,
   trainDistance,
   trainStops,
+  visibleLayout,
   type TrainMotion,
 } from "./layout"
 import { pointOnTrack, type Point } from "./track"
@@ -87,6 +91,261 @@ describe("network map projection", () => {
       side: routeOf(before, "b").side,
       color: lineColor(identities.get("b")!.color),
     })
+  })
+  it("keeps running Lines exactly in place, shape and colour when others finish", () => {
+    const view = (lineId: string, status: string, at: string) => ({
+      train: { lineId, state: { status } },
+      stateEnteredAt: at,
+    })
+    const junction = { kind: "junction" as const, junctionId: "j" }
+    const networks: Record<string, Line[]> = {
+      bundle: Array.from({ length: 7 }, (_, i) => line(`l${i}`, (i % 4) + 1)),
+      graph: [
+        { ...line("a", 2), destination: junction },
+        { ...line("b", 3), destination: junction },
+        { ...line("o", 1), origin: junction },
+        line("p", 6),
+        line("q", 2),
+        line("r", 4),
+      ],
+    }
+    for (const [name, lines] of Object.entries(networks)) {
+      const live = lines.map((l) => view(l.id, "in_transit", at(1)))
+      const history = (finished: string[]) => ({
+        network: { createdAt: at(0) },
+        lines,
+        lineCreatedAt: Object.fromEntries(lines.map((l) => [l.id, at(1)])),
+        trains: lines.map((l, i) =>
+          finished.includes(l.id)
+            ? view(l.id, "unloaded", at(10 + i))
+            : live[i]!
+        ),
+      })
+      const draw = (finished: string[]) => {
+        const identities = lineIdentities(history(finished))
+        const running = lines.filter((l) => !finished.includes(l.id))
+        const layout = layoutNetwork(
+          running,
+          identities,
+          "slot",
+          heldLines(lines, running, identities)
+        )
+        expect(layout.routes.map((r) => r.line.id).sort(), name).toEqual(
+          running.map((l) => l.id).sort()
+        )
+        return layout
+      }
+      const before = draw([])
+      const finishing = name === "bundle" ? ["l0", "l3", "l6"] : ["p", "r"]
+      const after = draw(finishing)
+      expect([after.width, after.height, after.hub], name).toEqual([
+        before.width,
+        before.height,
+        before.hub,
+      ])
+      for (const route of after.routes)
+        expect(route, `${name}: ${route.line.id}`).toEqual(
+          before.routes.find((r) => r.line.id === route.line.id)
+        )
+    }
+  })
+  it("starts a fresh layout once every Line has finished", () => {
+    const [a, b, c] = [line("a", 6), line("b"), line("c")]
+    const identities = lineIdentities({
+      network: { createdAt: at(0) },
+      lines: [a, b, c],
+      lineCreatedAt: { a: at(1), b: at(1), c: at(20) },
+      trains: [
+        {
+          train: { lineId: "a", state: { status: "unloaded" } },
+          stateEnteredAt: at(5),
+        },
+        {
+          train: { lineId: "b", state: { status: "siding" } },
+          stateEnteredAt: at(6),
+        },
+        {
+          train: { lineId: "c", state: { status: "ready" } },
+          stateEnteredAt: at(20),
+        },
+      ],
+    })
+    expect(heldLines([a, b, c], [c], identities)).toEqual([])
+    expect(layoutNetwork([c], identities)).toEqual(layoutNetwork([c]))
+  })
+  it("keeps the same routes and canvas when switching Live and Finished, including after a reload", () => {
+    const junction = { kind: "junction" as const, junctionId: "j" }
+    const networks = [
+      Array.from({ length: 7 }, (_, i) => line(`l${i}`, (i % 5) + 1)),
+      [
+        { ...line("a", 2), destination: junction },
+        { ...line("b", 3), destination: junction },
+        { ...line("o", 1), origin: junction },
+        line("p", 6),
+        line("q", 2),
+      ],
+      [
+        line("source", 2),
+        {
+          ...line("receiver", 1),
+          stops: [
+            {
+              kind: "crossing" as const,
+              crossingId: "x",
+              stationId: "source-s0",
+            },
+            { kind: "station" as const, stationId: "receiver-s0" },
+          ],
+        },
+        line("other", 4),
+      ],
+    ]
+    for (const lines of networks) {
+      const history = (finished: string[]): LineHistory => ({
+        network: { createdAt: at(0) },
+        lines,
+        lineCreatedAt: Object.fromEntries(lines.map((l) => [l.id, at(1)])),
+        trains: lines.map((l, i) => ({
+          train: {
+            lineId: l.id,
+            state: {
+              status: finished.includes(l.id) ? "unloaded" : "in_transit",
+            },
+          },
+          // Completion order differs from creation/slot order.
+          stateEnteredAt: finished.includes(l.id) ? at(20 - i) : at(1),
+        })),
+      })
+      const live = visibleLayout(layoutHistory(history([])), lines)
+      const finishedHistory = history(lines.map((l) => l.id))
+      const finishedLines = [...lines].reverse()
+      const finished = visibleLayout(
+        layoutHistory(finishedHistory),
+        finishedLines
+      )
+      expect(finished).toEqual(live)
+      const partialHistory = history(lines.slice(0, 3).map((l) => l.id))
+      const identities = lineIdentities(partialHistory)
+      const partialLayout = layoutHistory(partialHistory)
+      for (const isLive of [true, false]) {
+        const shown = visibleLayout(
+          partialLayout,
+          lines.filter((l) => identities.get(l.id)!.live === isLive)
+        )
+        expect([shown.width, shown.height, shown.hub]).toEqual([
+          live.width,
+          live.height,
+          live.hub,
+        ])
+        for (const route of shown.routes)
+          expect(route).toEqual(
+            live.routes.find((r) => r.line.id === route.line.id)
+          )
+      }
+      expect(layoutHistory(structuredClone(finishedHistory))).toEqual(finished)
+    }
+  })
+  it("preserves historical geometry when slots are reused or a new generation starts", () => {
+    const [a, b, c, d] = [
+      line("a", 6),
+      line("b", 2),
+      line("c", 1),
+      line("d", 12),
+    ]
+    const history = (includeC: boolean, includeD: boolean): LineHistory => ({
+      network: { createdAt: at(0) },
+      lines: [a, b, ...(includeC ? [c] : []), ...(includeD ? [d] : [])],
+      lineCreatedAt: { a: at(1), b: at(1), c: at(10), d: at(30) },
+      trains: [
+        {
+          train: { lineId: "a", state: { status: "unloaded" } },
+          stateEnteredAt: at(5),
+        },
+        {
+          train: {
+            lineId: "b",
+            state: { status: includeD ? "unloaded" : "in_transit" },
+          },
+          stateEnteredAt: at(20),
+        },
+        ...(includeC
+          ? [
+              {
+                train: {
+                  lineId: "c",
+                  state: { status: includeD ? "siding" : "ready" },
+                },
+                stateEnteredAt: at(25),
+              },
+            ]
+          : []),
+        ...(includeD
+          ? [
+              {
+                train: { lineId: "d", state: { status: "ready" } },
+                stateEnteredAt: at(30),
+              },
+            ]
+          : []),
+      ],
+    })
+    const before = layoutHistory(history(false, false))
+    for (const value of [history(true, false), history(true, true)]) {
+      const identities = lineIdentities(value)
+      expect(identities.get("c")!.slot).toBe(identities.get("a")!.slot)
+      const layout = layoutHistory(value)
+      const route = layout.routes.find((r) => r.line.id === "a")!
+      const old = before.routes.find((r) => r.line.id === "a")!
+      if (value.lines.includes(d))
+        expect(layout.hub.x).toBeGreaterThan(before.hub.x)
+      expect({
+        number: route.number,
+        color: route.color,
+        shape: route.shape,
+        side: route.side,
+      }).toEqual({
+        number: old.number,
+        color: old.color,
+        shape: old.shape,
+        side: old.side,
+      })
+      const relative = (points: Point[], hub: Point) =>
+        points.map((p) => ({ x: p.x - hub.x, y: p.y - hub.y }))
+      expect(relative(route.points, layout.hub)).toEqual(
+        relative(old.points, before.hub)
+      )
+      expect(relative(route.stations, layout.hub)).toEqual(
+        relative(old.stations, before.hub)
+      )
+      expect(route.track.length).toBe(old.track.length)
+      expect(route.stationDistances).toEqual(old.stationDistances)
+      for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+        const currentPoint = pointOnTrack(
+          route.track,
+          route.track.length * fraction
+        )
+        const oldPoint = pointOnTrack(old.track, old.track.length * fraction)
+        expect(currentPoint.x - layout.hub.x).toBeCloseTo(
+          oldPoint.x - before.hub.x,
+          8
+        )
+        expect(currentPoint.y - layout.hub.y).toBeCloseTo(
+          oldPoint.y - before.hub.y,
+          8
+        )
+      }
+      const running = value.lines.filter((l) => identities.get(l.id)!.live)
+      const finished = value.lines.filter((l) => !identities.get(l.id)!.live)
+      const liveView = visibleLayout(layout, running)
+      const finishedView = visibleLayout(layout, finished)
+      expect([liveView.width, liveView.height, liveView.hub]).toEqual([
+        finishedView.width,
+        finishedView.height,
+        finishedView.hub,
+      ])
+      expect(finishedView.routes.find((r) => r.line.id === "a")).toEqual(route)
+      expect(layoutHistory(structuredClone(value))).toEqual(layout)
+    }
   })
   it("keeps stations in travel order, geometry in bounds and bends on the transit grid", () => {
     for (const count of [1, 2, 6, 12, 24]) {

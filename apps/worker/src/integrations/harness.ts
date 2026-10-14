@@ -13,6 +13,7 @@ import {
   logHarnessTimeline,
   liveHarnessActivityScript,
   ProposalSubmissionsExhausted,
+  PlanToolFormatStalled,
   type HarnessAgent,
 } from "@terminus/agent-runtime"
 import type { GitWorkspace } from "@terminus/artifacts"
@@ -29,6 +30,7 @@ import {
   type ActivityObserver,
 } from "@terminus/protocol"
 import { gatewayConfig } from "./execution-config"
+import { harnessExecutionEnabled } from "./harness-availability"
 import type { StationSandbox } from "./station-runner"
 
 export interface HarnessRequest {
@@ -63,10 +65,7 @@ export async function prepareHarness(
   if (execution.model !== request.model)
     throw new Error("Harness configuration differs from its frozen model grant")
   const gateway = gatewayConfig(env, request.model)
-  if (
-    (execution.harness !== "opencode" || gateway.provider !== "workers-ai") &&
-    env.ALTERNATIVE_HARNESSES_ENABLED !== "true"
-  )
+  if (!harnessExecutionEnabled(env, execution.harness, gateway.provider))
     throw new Error(
       "Alternative harness execution is disabled until Cloudflare capability verification is complete"
     )
@@ -275,6 +274,7 @@ export class HarnessSession {
     this.#session ??= result.sessionId
     if (output.stopped === "proposal_rejected")
       throw new ProposalSubmissionsExhausted(result.summary ?? "")
+    if (output.stopped === "proposal_stalled") throw new PlanToolFormatStalled()
     // Stopped because its plan was accepted: the saved draft is the answer,
     // and is reviewed again, so a missing closing message is not a failure.
     if (output.stopped === "proposal_accepted") return result.summary ?? ""
@@ -414,9 +414,9 @@ function stderrTail(stderr: string): string {
 
 export interface HarnessExit {
   exitCode: number
-  /** Set when the live runner ended the harness: its work was done, or it
-   * reached its limit of rejected plan tool calls. */
-  stopped?: "proposal_accepted" | "proposal_rejected"
+  /** Set when the live runner ended the harness: its work was done, it
+   * reached a rejection limit, or a format loop needs a session correction. */
+  stopped?: "proposal_accepted" | "proposal_rejected" | "proposal_stalled"
   /** For diagnosis only: the signal and end of stderr after an abnormal exit. */
   signal?: string
   stderrTail?: string
@@ -465,7 +465,8 @@ export async function consumeHarnessActivity(
       exit = { exitCode: event.exitCode as number }
       if (
         event.stopped === "proposal_accepted" ||
-        event.stopped === "proposal_rejected"
+        event.stopped === "proposal_rejected" ||
+        event.stopped === "proposal_stalled"
       )
         exit.stopped = event.stopped
       if (typeof event.signal === "string")

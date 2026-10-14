@@ -1,6 +1,6 @@
 # Ten-Train stress test
 
-The quickest judge-facing flow is built into Terminus. Open **Stress test** from the Networks page, select **Run ten-Train stress test**, watch the map, then select **Verify and download report** when all ten Trains have unloaded. The browser uses the normal app login; no Access token needs to be copied into a terminal.
+The quickest judge-facing flow is built into Terminus. Open **Stress test** from the Networks page, select **Run ten-Train stress test**, watch the map, then select **Verify and download report** once every Train has stopped (normally all ten unloaded). The browser uses the normal app login; no Access token needs to be copied into a terminal.
 
 ## One-command local rehearsal
 
@@ -24,7 +24,7 @@ The explicit backend command:
 2. Prepares all ten Train repositories from the same baseline, then atomically records all Lines, Stations, Trains, unload policies, events, and frozen test execution configurations.
 3. Starts the ordinary Train Workflows with stable identities. Station and integration execution follows the existing pipeline.
 
-Keep the normal default Sandbox limits (ten agent, ten agentless) for the first baseline measurement. The test uses deterministic Station edits and Conductor decisions while retaining real Artifacts, Git, repository-scoped access, Sandboxes and their capacity gates, D1, Workflows, independent validation, sealed candidate integrity checks, fast-forward Station acceptance, and merge-commit integration. Every Station adds a checkpoint module and test under `src/terminus-stress/<run UUID>/`. Each versioned manifest must match the fixture exactly. Provenance identifies scripted execution explicitly; no model calls are needed for these roles. The advisory conflict watch also uses offline triage and investigation for this scripted fixture; canonical integration still validates the real merges. The immutable `execution_configs.pipelineStress` field scopes the override to the launched Trains and survives later settings changes or deployments.
+Keep the normal default Sandbox limits (ten agent, ten agentless) for the first baseline measurement. The test uses deterministic Station edits and Conductor decisions while retaining real Artifacts, Git, repository-scoped access, Sandboxes and their capacity gates, D1, Workflows, independent validation, sealed candidate integrity checks, fast-forward Station acceptance, and merge-commit integration. Every Station adds a checkpoint module and test under `src/terminus-stress/<run UUID>/`; a revision run keeps identical files from the earlier candidate and refuses symlinks or any other contents. Each versioned manifest must match the fixture exactly. Provenance identifies scripted execution explicitly; no model calls are needed for these roles. The advisory conflict watch also uses offline triage and investigation for this scripted fixture; canonical integration still validates the real merges. The immutable `execution_configs.pipelineStress` field scopes the override to the launched Trains and survives later settings changes or deployments.
 
 The browser displays progress and submits commands. Closing or refreshing it cannot change Train movement or acceptance; Workflows continue headlessly. Final verification is an explicit read-only command, so refreshing the page does not start another Git oracle or affect the lifecycle. Its downloaded report contains the run identity, final snapshot, durable events, per-Train work and queue durations, integration service time, maximum queue depth, total drain time, and integrations per minute.
 
@@ -34,9 +34,9 @@ The Cloudflare oracle clones canonical Terminus in an agentless Sandbox and veri
 - Exactly twenty expected regular Git blobs with exact contents and no other baseline-to-final changes.
 - Every accepted Car commit remains reachable from the canonical head.
 - Exactly ten canonical merge commits, matching the unloaded Trains' recorded commits.
-- Exactly ten completed integration attempts, no failed or active attempts, and no live or expired capacity leases after verification.
+- Exactly ten completed integration attempts, no failed or active attempts, and no live capacity leases after verification. Expired lease rows belong to Sandboxes that stopped without releasing their slot (for example across a deploy); capacity already ignores them, so the report lists them as warnings rather than failing.
 
-The repository's actual Git head must match the recorded snapshot, and the Network must remain unchanged during verification. An unexpected retry, revision, blocker, missing timing evidence, overlapping reservations, incorrect file, or leftover resource prevents a passing report. The local app rehearsal performs the metadata/timing checks with simulated repositories and returns no Git verification; it labels that distinction in the UI and report.
+The repository's actual Git head must match the recorded snapshot, and the Network must remain unchanged during verification. An unexpected retry, revision, blocker, missing timing evidence, overlapping reservations, incorrect file, or leftover resource prevents a passing report. Blockers come from the durable event log: a failed Station run, a blocked Train, or a Train cleared to resume fails the run even if every Train later unloads, because clearing resets the Station's retry counters. The finding names the Train and the recorded failure. Sandbox placement retries (Cloudflare could not provide a container, and Sandbox start retried it) record no event and do not fail the run; the Cloudflare report lists them as warnings, one per Sandbox, from the temporary perf logs. Those logs are best effort, so a read that finds none or is incomplete is also a warning. A failed run still returns a downloadable report with `passed: false` and a `findings` list naming each Train and failed check; canonical Git checks run only after every recorded check passes, and they list every difference rather than the first. The local app rehearsal performs the metadata/timing checks with simulated repositories and returns no Git verification; it labels that distinction in the UI and report.
 
 Results remain inspectable as an ordinary Network. Use the usual explicit **Delete Network** action when its evidence is no longer needed. Nothing is deleted automatically.
 
@@ -67,6 +67,8 @@ It now creates the fixture Network automatically. `--network NETWORK_ID` optiona
 
 The CLI writes `run.json`, `scenario.json`, `events.json`, `report.json`, and `perf.json`. It exits nonzero on a correctness failure or deadline and does not retry mutations automatically. Its report also includes API latency and the existing Perf Tail records, grouped by phase when available. Tail delivery can lag, and `complete=false` identifies an incomplete window. Missing perf data does not invalidate the correctness oracle. The browser report focuses on durable event timings and correctness.
 
+Failed requests print the Worker's message and findings.
+
 Resume an observer after a successful launch:
 
 ```sh
@@ -83,7 +85,7 @@ All endpoints use normal application authentication:
 - `POST /api/stress-tests`: `{requestId,networkId?}`; creates/recovers a test and returns its Network, run identity, baseline, and mode.
 - `GET /api/networks/:id/stress-test/run`: reconstructs the immutable run identity.
 - `GET /api/networks/:id/stress-test`: lease and integration counts.
-- `POST /api/networks/:id/stress-test/report`: verifies and returns a downloadable report; explicitly identifies simulation.
-- `POST /api/networks/:id/stress-test/verify`: advanced canonical Git oracle with `{runId,baseline}`; simulated execution returns no Git result.
+- `POST /api/networks/:id/stress-test/report`: verifies and returns a downloadable report with `passed`, `findings` and `warnings`; explicitly identifies simulation. Returns `409` with the reason until every Train is unloaded, blocked or on the siding and no Sandbox or integration is active; `503` when Git verification could not run, which is safe to retry.
+- `POST /api/networks/:id/stress-test/verify`: advanced canonical Git oracle with `{runId,baseline}`; simulated execution returns no Git result. A failed check returns `409` with `details.findings`, which the CLI prints.
 
 This first fixture is conflict-free and has one Station per Line. Crossings, Junctions, deliberate failures, and model-provider throughput remain later scenarios. Establish service times before setting a performance budget; canonical integration is deliberately serialized.

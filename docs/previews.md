@@ -20,6 +20,25 @@ The preview uses the same read-only Sandbox infrastructure and Vite runner as Tr
 
 ## Hostnames
 
-Local development uses `http://preview-<snapshot>-<token>.localhost:8787/`, routed directly to Wrangler. The fake environment keeps these hostnames but has no app to preview. `npm run dev:worker` cannot serve them: the configured `*.terminusdev.com` route would make Wrangler present every request under that zone, so the script sets `--local-upstream localhost:8787`, which presents every hostname, previews included, as `localhost:8787`. Preview the live setup on the deployed preview domain instead.
+Local development uses `http://preview-<snapshot>-<token>.localhost:8787/`, routed directly to Wrangler. The fake environment keeps these hostnames but has no app to preview. `npm run dev:worker` cannot serve them: a configured wildcard preview route makes Wrangler present requests under that zone, so the script sets `--local-upstream localhost:8787`, which presents every hostname, previews included, as `localhost:8787`. Preview the live setup on the deployed preview domain instead.
 
-Deployment requires a separate preview domain with wildcard DNS, TLS, and a Worker route. Set `PREVIEW_BASE_URL` to its HTTPS origin, for example `https://example-previews.com`, and route `*.example-previews.com/*` to this Worker. Keep `workers_dev: true` if the control app uses that URL. Protect preview traffic with Cloudflare Access before using it; the preview URL token alone is a bearer link. See [Private beta deployment](private-beta-deployment.md) and Cloudflare's [preview hostname setup](https://developers.cloudflare.com/sandbox/previews/serve-previews-on-their-own-hostnames/) for DNS and certificate details. Each preview has its own browser origin, and all paths on its hostname reach only the preview app, including `/api` and paths matching control-app assets. Access credentials are stripped before forwarding to the container. No domain or route is provisioned by the repository configuration.
+Each preview has its own browser origin, and all paths on its hostname reach only the preview app, including `/api` and paths matching control-app assets. Access credentials are stripped before forwarding to the container.
+
+## Deployment
+
+Configure the control app first using the [README deployment instructions](../README.md#deployment). Previews require a separate domain with wildcard DNS, TLS and a Worker route. Prefer a different registrable domain from the control app; the preview URL token alone is a bearer link and does not replace Access protection.
+
+1. Add proxied wildcard DNS for `*.<preview-domain>` in its Cloudflare zone. A dedicated zone apex can use an `AAAA` record named `*` with value `100::`; the Worker route handles requests before any origin connection.
+2. Ensure TLS covers the wildcard. A deeper hostname such as `*.previews.example.com` needs a certificate covering that depth. See Cloudflare's [preview hostname setup](https://developers.cloudflare.com/sandbox/previews/serve-previews-on-their-own-hostnames/).
+3. Route `*.<preview-domain>/*` to the Terminus Worker. For example, set this in its Wrangler configuration:
+
+   ```jsonc
+   "routes": [
+     { "pattern": "*.example-previews.com/*", "zone_name": "example-previews.com" }
+   ]
+   ```
+
+4. Set `PREVIEW_BASE_URL` to the HTTPS origin, for example `https://example-previews.com`, and deploy. Keep `workers_dev: true` if the control app uses its regular Worker URL. DNS and certificates must be provisioned separately.
+5. Verify a generated preview URL requires Access in a logged-out browser. If using hostname-based Access, protect the entire wildcard with a separate application, restrict its allowed emails and add its AUD tag to `ACCESS_AUD`, comma-separated with the control app's audience.
+
+The preview domain's apex and malformed preview subdomains return 404. Preview requests cannot reach the control API, and cookies, Authorization and Cloudflare Access headers are removed before forwarding to the container.

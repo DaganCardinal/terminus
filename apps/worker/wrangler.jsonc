@@ -213,6 +213,9 @@
     // Claude Code, Codex and Anthropic/OpenAI models, billed through AI
     // Gateway Unified Billing. See docs/harness-selection.md.
     "ALTERNATIVE_HARNESSES_ENABLED": "true",
+    // Anthropic/OpenAI models under OpenCode. Off until an OpenCode run has
+    // called them live; Claude Code and Codex cover those providers meanwhile.
+    "OPENCODE_EXTERNAL_PROVIDERS_ENABLED": "false",
     // Enables only the Browser Run transport proof (POST /api/browser-run/proof).
     // Keep it off except while running that proof; see docs/browser-run.md.
     "BROWSER_RUN_ENABLED": "false",
@@ -341,6 +344,7 @@
       "vars": {
         "REPOSITORY_MODE": "fake",
         "ALTERNATIVE_HARNESSES_ENABLED": "false",
+        "OPENCODE_EXTERNAL_PROVIDERS_ENABLED": "false",
         // The fake environment has no Browser binding.
         "BROWSER_RUN_ENABLED": "false",
         "APP_ORIGIN": "",

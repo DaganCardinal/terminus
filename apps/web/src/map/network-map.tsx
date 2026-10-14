@@ -19,10 +19,11 @@ import {
   awaitingApproval,
   clearingBlock,
   identitiesOf,
-  layoutNetwork,
+  layoutOf,
   leg,
   trainDistance,
   trainStops,
+  visibleLayout,
   type TrainMotion,
 } from "./layout"
 import { useSignalPulses } from "./use-signal-pulses"
@@ -147,7 +148,8 @@ export function NetworkMap({
   const [arrived, setArrived] = useState(() => new Set<string>())
 
   // Finished Lines leave the live map and give their slot, colour and shape
-  // to the next Line laid. One still watching its Train run into Terminus
+  // to the next Line laid. Until then their rows stay reserved, so the Lines
+  // still running never move. One still watching its Train run into Terminus
   // stays, fading out, until the Train arrives.
   const identities = identitiesOf(snapshot)
   const isLive = (lineId: string) => identities.get(lineId)?.live ?? true
@@ -185,9 +187,10 @@ export function NetworkMap({
       )
   }
   const { width, height, hub, hubHalfHeight, routes, junctions, interchanges } =
-    shown === "live"
-      ? layoutNetwork(liveLines, identities)
-      : layoutNetwork(finishedLines, identities, "order")
+    visibleLayout(
+      layoutOf(snapshot),
+      shown === "live" ? liveLines : finishedLines
+    )
   /** The selected Line dims the others only while it is drawn. */
   const focus =
     selection && routes.some((route) => route.line.id === selection.lineId)
@@ -288,7 +291,6 @@ export function NetworkMap({
   }
   const show = (next: "live" | "finished") => {
     setMode(next)
-    fit()
   }
 
   const onWheel = useEffectEvent((event: WheelEvent) => {

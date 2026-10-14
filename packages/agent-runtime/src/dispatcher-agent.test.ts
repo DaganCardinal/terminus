@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { z } from "zod"
 import type { BaselineReport } from "@terminus/domain"
 import {
   dispatchProposalSchema,
@@ -10,6 +11,7 @@ import {
 } from "@terminus/protocol"
 import {
   HarnessDispatcher,
+  dispatcherSystemPrompt,
   reviewProposalText,
   type DispatchSession,
   type DispatchSessionFactory,
@@ -18,6 +20,8 @@ import {
   emptyPlanDraft,
   planToolAgentName,
   planToolNames,
+  planTools,
+  planToolReply,
 } from "./dispatch-draft"
 import {
   FakeDispatchPlanner,
@@ -25,6 +29,7 @@ import {
 } from "./dispatch-planner"
 import {
   DispatchProposalError,
+  PlanToolFormatStalled,
   ProposalSubmissionsExhausted,
 } from "./dispatch-proposal"
 import { liveDispatcherProposal } from "./dispatcher.fixture"
@@ -65,6 +70,7 @@ function scripted(
   const queue = [...replies]
   const saved = [...drafts]
   const session = {
+    restore: vi.fn<DispatchSession["restore"]>(async () => null),
     prepare: vi.fn<DispatchSession["prepare"]>(async () => baseline),
     start: vi.fn<DispatchSession["start"]>(async () =>
       text(queue.shift() ?? "")
@@ -136,6 +142,82 @@ const draft = (...stations: PlanStation[]): PlanDraft => ({
 const complete = draft(station("footer"), station("footer-tests"))
 
 describe("harness Dispatcher", () => {
+  it("changes format after a stalled tool loop, keeping the native session and saved work", async () => {
+    const { session, sessions } = scripted([], null, [
+      draft(station("footer")),
+      complete,
+    ])
+    session.start.mockRejectedValueOnce(new PlanToolFormatStalled())
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(session.start).toHaveBeenCalledOnce()
+    expect(session.resume).toHaveBeenCalledOnce()
+    expect(session.resume.mock.calls[0]![0]).toContain(
+      "send exactly one tool call at a time"
+    )
+    expect(session.resume.mock.calls[0]![0]).toContain(
+      "send list fields as JSON strings"
+    )
+    expect(session.resume.mock.calls[0]![0]).toContain("`footer-tests`")
+    expect(session.close).toHaveBeenCalledOnce()
+  })
+
+  it("bounds format recovery to the existing two session corrections", async () => {
+    const { session, sessions } = scripted([], null, [draft(station("footer"))])
+    session.start.mockRejectedValue(new PlanToolFormatStalled())
+    session.resume.mockRejectedValue(new PlanToolFormatStalled())
+    await expect(
+      new HarnessDispatcher("configured", sessions).plan(input)
+    ).rejects.toBeInstanceOf(DispatchProposalError)
+    expect(session.resume).toHaveBeenCalledTimes(2)
+  })
+
+  it("recovers a complete persisted draft without preparing or starting a Sandbox", async () => {
+    const { session, sessions } = scripted([])
+    session.restore.mockResolvedValue({ draft: complete, baseline: null })
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(session.prepare).not.toHaveBeenCalled()
+    expect(session.start).not.toHaveBeenCalled()
+    expect(session.resume).not.toHaveBeenCalled()
+    expect(session.close).toHaveBeenCalledOnce()
+  })
+
+  it("gives a fresh session the saved pieces and remaining problems after an interruption", async () => {
+    const { session, sessions } = scripted([""], null, [complete])
+    const partial = draft(station("footer"))
+    session.restore.mockResolvedValue({ draft: partial, baseline: null })
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(session.start.mock.calls[0]![1]).toContain(JSON.stringify(partial))
+    expect(session.start.mock.calls[0]![1]).toContain(
+      "These Stations are in the outline but not saved: `footer-tests`"
+    )
+    expect(session.start.mock.calls[0]![1]).toContain("do not restart the plan")
+    expect(session.resume).not.toHaveBeenCalled()
+  })
+
+  it("reassesses restored work against current planning context before reusing it", async () => {
+    const { session, sessions } = scripted([""], null, [complete])
+    session.restore.mockResolvedValue({ draft: complete, baseline: null })
+    const result = await new HarnessDispatcher("configured", sessions).plan({
+      ...input,
+      network: { projectChecks: [], activeLines: [] },
+    })
+    expect(session.prepare).toHaveBeenCalledOnce()
+    expect(session.start.mock.calls[0]![1]).toContain(
+      "evidence test is not a configured project check"
+    )
+    expect(session.resume).toHaveBeenCalledTimes(2)
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+  })
+
   it("explores through one session and returns the saved plan without corrections", async () => {
     const { session, sessions } = scripted(["Plan submitted."], null, [
       complete,
@@ -198,7 +280,54 @@ describe("harness Dispatcher", () => {
     const [system] = session.start.mock.calls[0]!
     expect(system).toContain("Pass the outline as JSON text")
     expect(system).toContain("## Outline JSON schema")
+    expect(system).toContain(
+      "arrays of strings or a string with one item per line"
+    )
   })
+
+  it.each([false, true])(
+    "supplies the actual Station schema and a valid call example (outline as text: %s)",
+    (outlineAsText) => {
+      const system = dispatcherSystemPrompt({
+        network: input.network,
+        baseline: null,
+        planTools: true,
+        outlineAsText,
+      })
+      const schemaText = system
+        .split("## Station tool input JSON schema\n\n")[1]!
+        .split("\n\n")[0]!
+      const schema = JSON.parse(schemaText) as Parameters<
+        typeof z.fromJSONSchema
+      >[0]
+      expect(schema).toEqual(planTools(outlineAsText)[1]!.inputSchema)
+      const exampleText = system.match(
+        /### Station call example[\s\S]*?```json\n([\s\S]*?)\n```/
+      )![1]!
+      const example = JSON.parse(exampleText) as Record<string, unknown>
+      expect(z.fromJSONSchema(schema).parse(example)).toEqual(example)
+      const context = { network: input.network, baseline: null }
+      const saved = planToolReply(
+        planToolNames.station,
+        example,
+        emptyPlanDraft,
+        context
+      )
+      expect(saved.outcome).toBe("saved")
+      const textScope = JSON.parse(
+        system.match(/scope can be sent as `([^`]+)`/)![1]!
+      ) as Record<string, unknown>
+      const alternate = { ...example, ...textScope }
+      expect(z.fromJSONSchema(schema).parse(alternate)).toEqual(alternate)
+      expect(
+        planToolReply(planToolNames.station, alternate, emptyPlanDraft, context)
+          .draft
+      ).toEqual(saved.draft)
+      expect(system).toContain(
+        "do not nest fields under `manifest` or `station`"
+      )
+    }
+  )
 
   it("corrects an incomplete draft in the same session", async () => {
     const { session, sessions } = scripted([""], null, [
@@ -475,6 +604,9 @@ describe("harness Dispatcher", () => {
       .catch((error: unknown) => error)
     expect(error).toBeInstanceOf(DispatchProposalError)
     expect(session.resume).not.toHaveBeenCalled()
+    expect((error as Error).message).toBe(
+      "Dispatcher proposal failed validation after repeated rejected plan tool calls: stations (missing_station)"
+    )
     expect(session.close).toHaveBeenCalledOnce()
 
     // A still-blocked plan is saved, as after the last correction.

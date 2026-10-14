@@ -16,6 +16,8 @@ const MAX_FILES = 5000
 const MAX_DOCUMENTS = 40
 const MAX_DOCUMENT_CHARS = 200_000
 const MAX_FILE_CHARS = 400_000
+const MAX_TREES = 1000
+const MAX_DEPTH = 64
 
 /** Paths that may hold credentials are never listed or read. */
 export function isSecretPath(path: string): boolean {
@@ -197,6 +199,98 @@ export interface CommittedObjects {
   tree(hash: string): Promise<CommittedTreeEntry[]>
   blobSize(hash: string): Promise<number>
   blob(hash: string): Promise<ReadableStream<Uint8Array>>
+}
+
+/** An overview from immutable Artifacts objects, without a clone or repo token. */
+export async function readCommittedOverview(
+  objects: CommittedObjects,
+  commit: string
+): Promise<RepositoryOverview> {
+  requireCommit(commit)
+  type File = { path: string; hash: string }
+  const files: File[] = []
+  const candidates: File[] = []
+  let filesTruncated = false
+  let trees = 0
+  // Keep only the visible inventory and the highest-ranked documents, even for
+  // repositories larger than the overview. Blob sizes are read only for these.
+  const retain = (
+    list: File[],
+    file: File,
+    limit: number,
+    compare: (a: File, b: File) => number
+  ) => {
+    let low = 0,
+      high = list.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (compare(list[middle]!, file) < 0) low = middle + 1
+      else high = middle
+    }
+    if (low < limit) list.splice(low, 0, file)
+    if (list.length > limit) list.pop()
+  }
+  const visit = async (hash: string, prefix: string, depth: number) => {
+    if (depth > MAX_DEPTH || ++trees > MAX_TREES) {
+      filesTruncated = true
+      return
+    }
+    for (const entry of await objects.tree(hash)) {
+      if (
+        !entry.name ||
+        entry.name === "." ||
+        entry.name === ".." ||
+        /[/\0]/.test(entry.name)
+      )
+        throw new Error("Artifacts returned an invalid tree path")
+      const path = prefix + entry.name
+      if (isSecretPath(path)) continue
+      if (entry.type === "tree") {
+        await visit(entry.hash, `${path}/`, depth + 1)
+      } else if (entry.type === "blob" && /^100(?:644|755)$/.test(entry.mode)) {
+        const file = { path, hash: entry.hash }
+        if (files.length === MAX_FILES) filesTruncated = true
+        retain(files, file, MAX_FILES, (a, b) => a.path.localeCompare(b.path))
+        if (isDocumentPath(path))
+          retain(
+            candidates,
+            file,
+            MAX_DOCUMENTS,
+            (a, b) =>
+              documentRank(a.path) - documentRank(b.path) ||
+              a.path.localeCompare(b.path)
+          )
+      }
+    }
+  }
+  await visit(await objects.treeOf(commit), "", 0)
+  const inventory: RepositoryEntry[] = []
+  const sizes = new Map<string, Promise<number>>()
+  // Limit concurrent REST requests to stay within the Worker's connection cap.
+  for (let at = 0; at < files.length; at += 4) {
+    inventory.push(
+      ...(await Promise.all(
+        files.slice(at, at + 4).map(async ({ path, hash }) => {
+          let size = sizes.get(hash)
+          if (!size) {
+            size = objects.blobSize(hash)
+            sizes.set(hash, size)
+          }
+          return { path, size: await size }
+        })
+      ))
+    )
+  }
+  const documents: RepositoryDocument[] = []
+  for (const file of candidates) {
+    const { content, truncated } = await readText(
+      await objects.blob(file.hash),
+      MAX_DOCUMENT_CHARS
+    )
+    if (content !== null)
+      documents.push({ path: file.path, content, truncated })
+  }
+  return { commit, files: inventory, filesTruncated, documents }
 }
 
 /**

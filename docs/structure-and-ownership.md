@@ -1,865 +1,127 @@
 # Application Structure and Ownership
 
-## Junction ownership
+> **The railway network is the domain model. The map is a projection of that model, not the system itself.**
 
-Junctions add a convergence boundary before canonical Terminus integration. The domain owns frozen feature membership, endpoint rules, acceptance and release transitions. One Junction Workflow owns its lifecycle and serializes promotions into its repository; each incoming and outgoing Train Workflow remains the only writer of its Train state. Dispatcher commands persist commit-bound release approval and explicit retry, repair and abandonment requests.
+Backend orchestration runs independently of browsers. The UI displays state and submits commands; it never decides whether work may start, be accepted, move or integrate. [Technology architecture](technology-architecture.md) describes the runtime and storage boundaries; [AGENTS.md](../AGENTS.md) supplies the governing rules.
 
-The shared Integration Workflow handles explicit Terminus, Crossing and Junction purposes. Destination-aware unloading into a Junction does not enter canonical history. D1 acknowledges a reviewed promotion and its accepted-input ledger atomically before releasing the target reservation. Artifacts owns accepted history, and only orchestration receives credentials to promote into a Junction.
-
-The UI projects convergence topology, feature checks, blockers, approval waits and release controls from backend state. See [Junctions](junctions.md) for implementation, recovery and verification instructions.
-
-## Purpose
-
-The application should be structured so that the orchestration logic, domain model, persistence, AI agents, and UI are clearly separated.
-
-The central architectural principle is:
-
-> **The railway network is the domain model. The map is a visualization of that model, not the system itself.**
-
-The application should continue to function correctly even if the map UI is removed entirely.
-
-The UI should never be responsible for deciding what happens next in the workflow. It should display current state, accept user input, and send commands to the backend.
-
----
-
-# High-Level Architecture
-
-The application consists of five main layers:
-
-1. **Domain**
-2. **Orchestration**
-3. **Execution**
-4. **Persistence / Artifacts**
-5. **UI**
-
-Conceptually:
+## Source layout
 
 ```text
-User
-  │
-  ▼
-UI / Map
-  │
-  │ commands
-  ▼
-Dispatcher
-  │
-  ▼
-Domain State
-  │
-  ├── Station work
-  ├── Conductor review
-  ├── Technician work
-  └── Workflow execution
-  │
-  ▼
-Artifacts / Repository State
-  │
-  ▼
-Events + Updated Domain State
-  │
-  ▼
-Dispatcher
-  │
-  ▼
-UI / Map
+apps/
+  web/src/
+    components/       UI composition and controls
+    map/              SVG railway layout and rendering
+    views/            Network, Train, Station, Dispatcher and settings panels
+    state/            API clients, snapshot and activity polling
+  worker/src/
+    api/              HTTP routes, authentication and request boundaries
+    agents/           Deterministic Dispatcher commands and role wiring
+    workflows/        Durable Train, Station, integration, planning and repair execution
+    integrations/     D1, Sandbox, provider transport and Worker Git adapters
+  stress-test/        Explicit ten-Train CLI and local rehearsal
+  perf-tail/          Temporary benchmark log collection
+packages/
+  domain/             Pure railway concepts, transitions, invariants and gates
+  protocol/           Zod schemas, commands, events, snapshots and shared contracts
+  agent-runtime/      Role prompts, capabilities, harness adapters and model interfaces
+  artifacts/          Repository operations, Git history and promotion mechanics
+  ui/                 Shared React components without orchestration knowledge
 ```
 
-The backend owns the truth.
+Exact filenames can change; ownership boundaries cannot. Runtime behavior belongs in a named layer, never a catch-all `scripts`, `utils` or `helpers` directory. Scripts are limited to development or maintenance diagnostics.
 
-The frontend renders that truth.
+## Where code goes
 
----
+| Responsibility | Owner |
+| --- | --- |
+| Define legal Train, Station, Car, Crossing or Junction behavior | `packages/domain` |
+| Engineer hard gates, retry allowance and lifecycle transitions | `packages/domain` |
+| Validate a shape crossing an API, Workflow or model boundary | `packages/protocol` |
+| Curated model/harness compatibility and shared execution schemas | `packages/protocol` |
+| Define role instructions, capabilities, tools and structured outputs | `packages/agent-runtime` |
+| Implement text model and typed decision-model interfaces | `packages/agent-runtime` |
+| Create, fork, inspect or promote repositories; verify ancestry and exact commits | `packages/artifacts` |
+| Apply user/network commands and wire role implementations | `apps/worker/src/agents` |
+| Coordinate durable steps, retries, waits and recovery | `apps/worker/src/workflows` |
+| Authenticate HTTP requests and validate command input | `apps/worker/src/api` |
+| Adapt D1, Sandboxes, outbound requests and Worker filesystem/HTTP transport | `apps/worker/src/integrations` |
+| Render domain state, inspection panels and command controls | `apps/web/src` |
+| Build reusable visual components | `packages/ui` |
 
-# Recommended Project Structure
+For example, fast-forward ancestry checks belong in `packages/artifacts`, the Worker's temporary filesystem and scoped fetch adapter belong in `apps/worker/src/integrations`, and the acceptance step that invokes them belongs in the Train Workflow. Rendering an accepted Car belongs in the web app.
 
-Use a TypeScript monorepo with clear package boundaries.
+## Role ownership
 
-A suggested structure is:
+| Role | Responsibility | Boundary |
+| --- | --- | --- |
+| Dispatcher | Goals, proposals, topology, network holds, conflict forecasts and escalations | Does not implement product code or write Train lifecycle state |
+| Station Agent | One manifest in an isolated run workspace | Cannot accept its own work or write a Train/Terminus |
+| Conductor | Independent candidate review against manifests, actual changes and evidence | Does not implement fixes; its sealed checkout must remain unchanged |
+| Engineer | Deterministic movement gates, bounded ambiguous decisions and selective Dispatch notices | Cannot override hard rules or release a hold through an advisory decision |
+| Technician | Bounded exceptional repairs in an isolated repository | Cannot silently rewrite accepted Train or canonical history |
 
-```text
-/
-├── apps/
-│   ├── web/
-│   │   ├── components/
-│   │   ├── map/
-│   │   ├── views/
-│   │   └── state/
-│   │
-│   └── worker/
-│       ├── api/
-│       ├── agents/
-│       ├── workflows/
-│       └── integrations/
-│
-├── packages/
-│   ├── domain/
-│   ├── protocol/
-│   ├── agent-runtime/
-│   ├── artifacts/
-│   └── ui/
-│
-└── tests/
-```
+Roles are application responsibilities, not permanent services. The Dispatcher combines deterministic commands with read-only model planning/investigation. The Engineer is evaluated at Workflow gates and calls a typed `DecisionModel` only for eligible questions. Coding/review roles use the shared `prepareHarness` path, with capability profiles owned by `packages/agent-runtime` and infrastructure enforcement in the Worker.
 
-Exact filenames and framework conventions may change, but these boundaries should remain intact.
+## Lifecycle writers
 
-Avoid placing significant application logic in miscellaneous locations such as:
+| Entity or process | Owning execution |
+| --- | --- |
+| Train lifecycle | One Train Workflow per Train |
+| Station execution result | One Station Workflow per run, consumed by the owning Train Workflow |
+| Merge candidate and promotion attempt | Shared Integration Workflow with explicit Terminus, Crossing or Junction purpose |
+| Junction lifecycle and input scheduling | One Junction Workflow per Junction |
+| Planning and explicit launch | One Dispatch Workflow per planning request |
+| Technician candidate and review | One Technician Workflow per repair |
+| Advisory collision investigation | One Conflict Watch Workflow per eligible accepted Car |
 
-```text
-/scripts/
-/utils/
-/helpers/
-```
+The Dispatcher and user persist commands, permissions and requests. Station results and cross-entity notifications wake the owner. They never directly write a Train's lifecycle state. Durable receipts and periodic gate checks recover missing notifications.
 
-Those directories should not become dumping grounds for orchestration or domain logic.
+Domain rules define valid transitions; Workflows execute them reliably; D1 persists them with their events. Infrastructure retries cannot silently grant another Station revision or replace a frozen model/harness configuration.
 
-If a piece of code controls how the application behaves, it should live in an explicitly named architectural layer.
+## Work manifests and accepted snapshots
 
----
+A Work Manifest is a structured domain object stored in D1. It contains the goal, concrete repository change, scope, expected/avoided areas, contracts, invariants, dependencies, acceptance criteria and expected evidence. Protocol schemas validate it before execution. A copy supplied to a harness is context, not another source of truth.
 
-# 1. Domain Layer
+Departure starts Station work from the Train's current accepted snapshot. Finishing an implementation produces a proposed Station commit, not a Car. Trusted validation runs in a fresh Conductor checkout before model access. After independent review, orchestration fast-forwards the candidate onto the Train and atomically records the Car and event before signaling the next Station.
 
-The `domain` package is the core of the application.
+A Car references accepted history, manifest, execution identity, actual diff, evidence and verdict. It has no repository of its own. The Train repository is its cumulative integration snapshot. Rejected candidates and failed evidence remain inspectable; explicit intervention retains lifetime revision history.
 
-It defines what the railway system means.
+## Convergence and human permissions
 
-It owns concepts such as:
+Terminus alone represents canonical project state. Configured Crossings and Junctions are explicit merge boundaries before canonical integration; ordinary Station acceptance remains a fast-forward.
 
-- Projects
-- Networks
-- Trains
-- Stations
-- Work manifests
-- Integration snapshots
-- Conflicts
-- Reviews
-- Agent assignments
-- Statuses
-- State transitions
-- Domain events
+A Crossing visits a source Station's frozen accepted checkpoint, merges that prefix into the receiving Train and copies missing original Cars with provenance. Source work is never rerun. Only the receiving Train Workflow completes pickup and changes its Train state.
 
-The domain layer should define the lifecycle of the system independently of Cloudflare, AI models, React, or any specific persistence mechanism.
+A Junction owns fixed feature membership and a frozen canonical baseline. Its Workflow serializes input integrations and owns feature acceptance. Incoming unloads change feature state, not canonical history. Complete checks and Conductor review precede exact-commit human release, which creates one outgoing Train carrying the feature's Cars and original history. See [Junctions](junctions.md).
 
-Examples of domain transitions include:
+Integration reservations belong to the exact target repository. Unknown promotions must be reconciled before retry or abandonment. Junction receipts retain exclusion until the head, accepted-input ledger, provenance and events are acknowledged atomically.
 
-```text
-Station waiting
-→ signaled
-→ active
-→ ready_for_pickup
-→ in_review
-→ complete        (car.attached)
-```
+Unloading approval, repair approval and feature release are separate Dispatcher-owned permissions. Each binds to the relevant exact commit and never overrides other hard gates. The Train Workflow owns its approval hold; the UI's review yard is a projection of that reason.
 
-Likewise:
+## Persistence and event ownership
 
-```text
-Train ready
-→ in_transit      (train.departed)
-→ approaching
-→ docked
-→ reviewing
-→ ready           (departs again, or returning → Terminus → unloaded)
-```
+| Information | Source of truth |
+| --- | --- |
+| Canonical, Train, Station, Junction, repair and published code/history | Artifacts |
+| Network topology, manifests, lifecycle records, Cars and provenance | Domain + D1 |
+| Settings, immutable execution configuration and human permissions | D1 |
+| Domain event feed and audit trail | D1, in the same batch as the state change |
+| Durable execution checkpoints and waits | Workflows |
+| Disposable checkouts and running processes | Sandboxes |
+| Selection, zoom, layout and animation | React |
 
-The full state lists, including `held`, `blocked`, `revising`, `cancelled`, and the `siding`, are defined in `outline-updated.md` under "Train States" and "Station States".
+The domain event log powers both user activity and audit history. Safe harness observations and temporary benchmark logs are separate telemetry with no authority over orchestration. R2 dependency caches are disposable; losing them causes an install rather than loss of work.
 
-The domain layer determines which transitions are valid.
+## Map and interaction
 
-It should be possible to test the entire logical railway lifecycle without:
+The map renders snapshots, signals, explicit blockers and topology. A Train in transit shows work of unknown duration; animation never means percentage completion and cannot arrive at a Station before the backend reports readiness. Arrival, review, departure and unloading come from backend state/events.
 
-- rendering the UI
-- calling an LLM
-- launching a Cloudflare Workflow
-- modifying a real repository
+Crossing visits, Junction acceptance, review-yard holds and siding remain visible and inspectable. Line numbers, colours, profiles and coordinates are deterministic presentation projections, not stored domain topology. See [Network map](network-map.md).
 
-This is an important architectural constraint.
+The web app communicates only through `packages/protocol` and application commands. Polling new events reloads authoritative snapshots. Closing, reopening or refreshing the app cannot start a Workflow, accept work or change a movement gate.
 
----
+## Dependency direction and verification
 
-# 2. Dispatcher
+Dependencies point inward toward domain concepts. `packages/domain` imports no React, Worker, Workflow, D1, Sandbox, Artifacts or model APIs and runs no Git commands. Infrastructure adapts domain interfaces. Agent results use protocol-defined shapes and are validated before commands act on them.
 
-The Dispatcher is the primary orchestration authority.
-
-Each project/network should have a Dispatcher responsible for coordinating the complete system.
-
-The Dispatcher owns the overall network state: topology, cross-Line dependencies, and network-level holds. Each Train owns its own lifecycle state, which it moves through under its Conductor and Engineer. The Dispatcher is involved with a Train only when that Train raises an issue.
-
-Dispatcher responsibilities include:
-
-- maintaining the overall network state
-- laying out Lines and Stations, and creating Trains
-- detecting or receiving conflicts between Lines
-- responding to issues raised by Trains
-- invoking Technicians when necessary
-- making state changes available to connected clients
-- recording network activity/events
-
-Each Train, through its Conductor and Engineer, handles:
-
-- signaling its next Station to begin work
-- responding to completed Station work
-- running Conductor reviews
-- attaching Cars and updating its integration state
-- progressing through its Line
-
-The backend (the Dispatcher and each Train's lifecycle) is authoritative.
-
-The browser should never orchestrate the workflow.
-
-For example, the browser must not implement logic equivalent to:
-
-```text
-Station finished
-→ call Conductor
-→ update train
-→ start next station
-```
-
-Instead:
-
-```text
-Station finished
-→ the Train's lifecycle (backend) receives the event
-→ domain state is updated
-→ the Train invokes the next action (Conductor review)
-→ updated state is made available to clients
-```
-
-This ensures the project continues running even when no browser is connected.
-
----
-
-# 3. Agent Roles
-
-The conceptual agents in the system are:
-
-## Dispatcher
-
-Responsible for overall coordination and network state.
-
-This is the central orchestration role.
-
----
-
-## Station Agent
-
-Responsible for completing the work described by a Station's structured work manifest.
-
-Typical responsibilities include:
-
-- inspecting the relevant repository
-- understanding the station goal
-- planning implementation
-- modifying code
-- running tests/checks
-- iterating on failures
-- preparing completed work for review
-
-The Station Agent should focus only on its assigned work.
-
-It should not determine broader project orchestration.
-
----
-
-## Conductor
-
-Responsible for reviewing work before it is incorporated into the Train's evolving integration state.
-
-Typical responsibilities include:
-
-- inspecting completed Station work
-- comparing it with the Train's current integration snapshot
-- reviewing quality and compatibility
-- identifying conflicts or regressions
-- accepting or rejecting the Station's work
-- incorporating approved work into the Train
-
-The Conductor represents the quality/integration boundary.
-
-A Station completing work does **not** automatically mean that work becomes part of the Train.
-
----
-
-## Engineer
-
-Responsible for the operational movement of each Train. There is one Engineer per Train.
-
-The Engineer is primarily deterministic. It applies hard domain rules (for example, failed required tests, an unresolved conflict, an incomplete dependency, or a user hold) to decide whether the Train may depart, wait, retry, or stop. It may consult a lightweight decision model only for genuinely ambiguous operational choices, and it never overrides a hard rule.
-
-The Engineer controls the signals shown on the map.
-
----
-
-## Technician
-
-Responsible for resolving conflicts or integration problems.
-
-The Technician should normally be invoked only when needed.
-
-Typical responsibilities include:
-
-- investigating merge/integration conflicts
-- understanding incompatible changes
-- proposing or implementing resolutions
-- validating the resolved result
-- returning the corrected state to the Dispatcher/Conductor
-
-Some conflicts may instead be surfaced to the user for manual resolution.
-
----
-
-# Agent Roles vs Runtime Instances
-
-The conceptual roles above should not automatically map one-to-one to permanent infrastructure.
-
-For example:
-
-```text
-Dispatcher
-→ likely long-lived / stateful
-
-Station Agent
-→ may be created for individual Station execution
-
-Conductor
-→ may be invoked when review is required
-
-Engineer
-→ mostly deterministic domain rules evaluated at each gate, not a long-running agent
-
-Technician
-→ may exist only while resolving a conflict
-```
-
-The architecture should preserve the conceptual roles while allowing the runtime implementation to remain efficient.
-
-Avoid creating separate large services simply because the visual metaphor contains separate characters.
-
----
-
-# 4. Workflows
-
-Long-running or multi-step execution should live in durable workflows rather than HTTP request handlers or UI processes.
-
-Examples include:
-
-```text
-Station Work
-
-Inspect repository
-→ Understand manifest
-→ Implement changes
-→ Run tests
-→ Fix failures
-→ Produce final result
-```
-
-and:
-
-```text
-Conductor Review
-
-Load Station result
-→ Compare against Train snapshot
-→ Run validation
-→ Detect conflicts
-→ Accept / reject / escalate
-```
-
-Workflows should be responsible for reliable execution.
-
-Agents perform reasoning.
-
-The Dispatcher and each Train's lifecycle perform orchestration.
-
-These responsibilities should remain distinct.
-
----
-
-# 5. Artifacts / Repository Layer
-
-Artifacts represents the actual versioned code state underneath the railway.
-
-The railway metaphor should correspond to real evolving repositories rather than arbitrary UI state.
-
-Conceptually:
-
-```text
-Project baseline
-    │
-    ├── Train A integration state
-    │      │
-    │      ├── Station A1 work
-    │      ├── Station A2 work
-    │      └── Station A3 work
-    │
-    └── Train B integration state
-           │
-           ├── Station B1 work
-           └── Station B2 work
-```
-
-Each Station should work in an isolated context.
-
-Each Train should represent an evolving integration snapshot.
-
-When a Conductor accepts Station work, the Train's actual underlying versioned state should change.
-
-This means the UI visualization reflects something real:
-
-```text
-Train
-├── Accepted Station A
-├── Accepted Station B
-└── Current integration snapshot
-```
-
-rather than merely displaying fictional railway progress.
-
----
-
-# 6. Map UI
-
-The primary UI should be a 2D railway/network map.
-
-The map is a projection of domain state.
-
-It should be responsible for:
-
-- drawing stations
-- drawing tracks/routes
-- drawing trains
-- showing train positions
-- showing station statuses
-- showing signals
-- showing conflicts/blockers
-- showing current work activity
-- opening detail/inspection panels
-- accepting user commands
-
-It must **not** own orchestration logic.
-
-The UI should receive semantic state such as:
-
-```text
-Train:
-- status: in_transit
-- Origin: Station A
-- Destination: Station B
-
-Station B:
-- status: active
-```
-
-The frontend may interpret that state visually as:
-
-```text
-Train moves toward Station B
-Station B becomes active
-Signal changes state
-Activity indicator appears
-```
-
-But the visual animation must not cause the underlying workflow to progress.
-
-The state controls the map.
-
-The map does not control the state.
-
----
-
-# 7. Client / Server Protocol
-
-The frontend and backend should communicate through a shared typed protocol.
-
-This protocol should define:
-
-- commands
-- domain events
-- state snapshots
-- incremental state updates
-- progress events
-- user approval requests
-
-Examples of events include:
-
-```text
-station.signaled
-station.started
-station.ready_for_pickup
-
-train.departed
-train.approaching
-train.arrived
-
-review.started
-car.attached
-station.returned
-
-conflict.detected
-conflict.resolved
-```
-
-The full vocabulary and naming conventions are in `outline-updated.md`. When in doubt, prefer the railway-metaphor name.
-
-These should be domain-oriented events rather than UI-specific instructions.
-
-Avoid messages such as:
-
-```text
-moveTrainToX
-flashSignalRed
-showLoadingSpinner
-```
-
-Prefer:
-
-```text
-train.status = in_transit
-
-station.status = active
-
-conflict.status = unresolved
-```
-
-The frontend decides how those states should be presented.
-
----
-
-# 8. Event Stream and Activity History
-
-Domain events should also power the human-readable activity feed.
-
-For example:
-
-```text
-07:41 — Backend train departed Database Station
-07:41 — API Station signaled
-07:42 — Station Agent began implementation
-07:46 — Station work completed
-07:46 — Backend train approaching API Station
-07:47 — Conductor review started
-07:48 — Work accepted
-07:48 — Train integration snapshot updated
-```
-
-The activity log should derive from actual system events.
-
-Avoid maintaining a completely separate logging representation of the same workflow.
-
----
-
-# 9. Application State Ownership
-
-Ownership should be explicit.
-
-| Layer         | Responsibility                                                                     |
-| ------------- | ---------------------------------------------------------------------------------- |
-| Domain        | Defines what trains, stations, manifests, conflicts, reviews, and transitions mean |
-| Dispatcher    | Plans the network; owns overall network state; handles issues raised by Trains     |
-| Station Agent | Performs Station implementation work                                               |
-| Conductor     | In charge of its Train; reviews Station work and attaches Cars                     |
-| Engineer      | Gates each Train's movement with deterministic rules; controls signals             |
-| Technician    | Resolves integration conflicts                                                     |
-| Workflows     | Executes reliable long-running processes                                           |
-| Artifacts     | Stores actual repositories, commits, history, and evolving code state              |
-| Protocol      | Defines communication between backend and frontend                                 |
-| Web UI        | Displays controls, logs, inspectors, approvals, and project information            |
-| Map           | Visualizes the railway/network state                                               |
-
----
-
-# 10. Core Application Loop
-
-The application should fundamentally operate as:
-
-```text
-User defines intent
-        │
-        ▼
-Dispatcher creates/updates network
-        │
-        ▼
-Domain state determines available work
-        │
-        ▼
-Train departs; Station is signaled
-        │
-        ▼
-Station Agent performs work
-        │
-        ▼
-Station produces versioned result
-        │
-        ▼
-Train approaches Station
-        │
-        ▼
-Conductor reviews work
-        │
-        ├── accepted
-        │      │
-        │      ▼
-        │  Train integration snapshot updated
-        │      │
-        │      ▼
-        │  Train departs
-        │      │
-        │      ▼
-        │  Next Station signaled
-        │
-        └── conflict/problem
-               │
-               ▼
-        Technician or user resolution
-               │
-               ▼
-          Review continues
-```
-
-The UI observes this loop and renders it.
-
-The UI does not implement this loop.
-
----
-
-# 11. Train Movement and Work Timing
-
-The intended railway behavior is:
-
-```text
-Train departs current Station
-        │
-        ▼
-Next Station is signaled
-        │
-        ▼
-Station Agent begins work while Train is in transit
-        │
-        ▼
-Station work progresses
-        │
-        ▼
-Station becomes ready for pickup
-        │
-        ▼
-Train arrives
-        │
-        ▼
-Conductor review occurs
-        │
-        ▼
-Accepted work becomes part of Train
-        │
-        ▼
-Train departs toward next Station
-```
-
-This makes Train movement represent ongoing work rather than waiting for all work to finish before animation begins.
-
-The map therefore acts as a meaningful progress visualization.
-
----
-
-# 12. Structured Station Manifests
-
-Every Station should have a structured work manifest.
-
-The manifest is the contract between:
-
-- Dispatcher
-- Station Agent
-- Conductor
-- UI
-
-It should describe the intended work sufficiently clearly that downstream systems do not need to infer basic task structure from arbitrary chat history.
-
-The manifest should eventually contain information such as:
-
-- Station goal
-- expected outcome
-- scope
-- relevant repository/context
-- dependencies
-- constraints
-- validation requirements
-- completion criteria
-
-The exact manifest schema can evolve, but the concept should be treated as a first-class domain object rather than storing the task only as free-form prompt text.
-
----
-
-# 13. Evolving Integration Snapshots
-
-Each Train must have an explicit concept of its current integrated state.
-
-A Train is not simply a visual container for completed Stations.
-
-It represents the version of the project produced by the work it has accepted so far.
-
-Conceptually:
-
-```text
-Train starts from baseline
-        │
-        ▼
-Station A accepted
-        │
-        ▼
-Integration Snapshot 1
-        │
-        ▼
-Station B accepted
-        │
-        ▼
-Integration Snapshot 2
-        │
-        ▼
-Station C accepted
-        │
-        ▼
-Integration Snapshot 3
-```
-
-Every Conductor review compares proposed Station work against this evolving snapshot.
-
-This should be modeled explicitly throughout the system.
-
----
-
-# 14. Avoid Hidden Logic
-
-Important business logic should never be buried inside miscellaneous scripts.
-
-Do not allow the architecture to evolve into:
-
-```text
-/scripts/
-  run-agent.mjs
-  do-station.mjs
-  merge-stuff.mjs
-  workflow-helper.mjs
-  dispatcher-loop.mjs
-  integration.mjs
-  final-final-helper.mjs
-```
-
-A file containing meaningful behavior should have an obvious architectural home.
-
-Examples:
-
-```text
-Domain rule
-→ packages/domain
-
-Dispatcher orchestration
-→ apps/worker/agents/dispatcher
-
-Station execution workflow
-→ apps/worker/workflows
-
-Artifacts-specific implementation
-→ packages/artifacts
-
-Shared frontend/backend event definition
-→ packages/protocol
-
-Map rendering
-→ apps/web/map
-```
-
-The directory structure should make it possible to understand the application's architecture without reading every file.
-
----
-
-# 15. Dependency Direction
-
-Dependencies should generally flow inward toward the domain.
-
-Conceptually:
-
-```text
-UI
- │
- ▼
-Protocol
-
-Cloudflare runtime
- │
- ▼
-Orchestration
- │
- ▼
-Domain
-
-Artifacts adapter
- │
- ▼
-Domain interfaces
-```
-
-The Domain layer should not import:
-
-- React
-- Cloudflare Worker APIs
-- Cloudflare Agents
-- Cloudflare Workflows
-- Artifacts SDK implementation details
-- model-provider SDKs
-
-Instead, outer layers adapt those technologies to the domain.
-
-This keeps the core architecture portable and understandable.
-
----
-
-# 16. Development Strategy
-
-The orchestration engine should be functional before significant effort is placed into visual polish.
-
-A useful early implementation could have an extremely basic UI showing:
-
-```text
-Train A
-Status: in_transit
-Destination: Station 3
-
-Station 3
-Status: active
-Agent: Station Agent
-Progress: Running tests
-
-Station 4
-Status: waiting
-```
-
-If that interface can:
-
-- execute Station work
-- update repositories
-- move through lifecycle states
-- perform Conductor reviews
-- evolve Train integration snapshots
-- detect conflicts
-- invoke Technician resolution
-- maintain the correct event history
-
-then the core application is working.
-
-The 2D railway map should then render this established system state rather than becoming the place where that behavior is implemented.
-
----
-
-# Architectural Principle
-
-When deciding where new functionality belongs, use this rule:
-
-> **If the functionality changes what the system means or what happens next, it belongs on the backend/domain side.**
-
-> **If the functionality changes how the current state is displayed or interacted with, it belongs in the UI.**
-
-The railway visualization should remain replaceable.
-
-The orchestration system should not be.
+Pure domain tests cover transitions and hard gates without UI, models, Workflows, Sandboxes or real repositories. Git mechanics have real temporary-repository tests; Worker tests exercise D1 and Workflows with fake execution. Live provider and container verification is separate from offline evidence. Tests live beside the code they verify; the normal checks are listed in the [README](../README.md#checks).

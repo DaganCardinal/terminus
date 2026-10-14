@@ -111,6 +111,107 @@ export function stressTimings(events: TimingEvent[]) {
   }
 }
 
+export interface InterventionEvent {
+  event: { type: string; trainId?: string; issues?: { detail: string }[] }
+}
+const interventions = new Map<string, "failed" | "blocked" | "cleared">([
+  ["station.run_failed", "failed"],
+  ["train.blocked", "blocked"],
+  ["train.cleared", "cleared"],
+])
+
+/**
+ * Failed Station runs, blocks and clearances in the durable event log, one
+ * finding per Train in order of first occurrence. Clearing a blocked Train
+ * resets its Station's retry counters, so a Train that was unblocked and then
+ * unloaded shows its intervention only here.
+ */
+export function stressInterventions(
+  events: InterventionEvent[],
+  label: (trainId: string) => string
+): string[] {
+  const trains = new Map<
+    string,
+    { failed: number; blocked: number; cleared: number; details: Set<string> }
+  >()
+  for (const { event } of events) {
+    const kind = interventions.get(event.type)
+    if (!kind || !event.trainId) continue
+    const train = trains.get(event.trainId) ?? {
+      failed: 0,
+      blocked: 0,
+      cleared: 0,
+      details: new Set<string>(),
+    }
+    trains.set(event.trainId, train)
+    train[kind]++
+    for (const issue of event.issues ?? []) train.details.add(issue.detail)
+  }
+  const times = (count: number) => (count > 1 ? ` ${count} times` : "")
+  return [...trains].map(([trainId, train]) => {
+    const what = [
+      ...(train.failed
+        ? [
+            train.failed > 1
+              ? `${train.failed} Station runs failed`
+              : "Station run failed",
+          ]
+        : []),
+      ...(train.blocked ? [`blocked${times(train.blocked)}`] : []),
+      ...(train.cleared
+        ? [`cleared by intervention${times(train.cleared)}`]
+        : []),
+    ]
+    const details = [...train.details].join("; ").slice(0, 300)
+    const listed =
+      what.length > 1
+        ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}`
+        : what[0]
+    return `${label(trainId)}: ${listed}${details ? ` (${details})` : ""}`
+  })
+}
+
+const placementRetrySchema = z.object({
+  sandbox: z.string(),
+  binding: z.string(),
+  pauseMs: z.number(),
+})
+
+/**
+ * TEMPORARY, with the perf logs it reads: one warning per Sandbox whose
+ * container Cloudflare could not place, in order of its first retry. Sandbox
+ * start retries these below the Station run and records no event, so
+ * otherwise a run that spent minutes on them only looks slow.
+ */
+export function stressPlacementRetries(
+  records: { message: string }[],
+  inRun: (sandbox: string, binding: string) => boolean,
+  label: (sandbox: string) => string
+): string[] {
+  const sandboxes = new Map<string, { retries: number; pausedMs: number }>()
+  for (const record of records) {
+    const match = /^\[perf\] sandbox\.placement_retry (\{.*\})$/.exec(
+      record.message
+    )
+    if (!match) continue
+    let fields: z.infer<typeof placementRetrySchema>
+    try {
+      fields = placementRetrySchema.parse(JSON.parse(match[1]!))
+    } catch {
+      continue
+    }
+    if (!inRun(fields.sandbox, fields.binding)) continue
+    const sandbox = sandboxes.get(fields.sandbox) ?? { retries: 0, pausedMs: 0 }
+    sandboxes.set(fields.sandbox, sandbox)
+    sandbox.retries++
+    sandbox.pausedMs += fields.pauseMs
+  }
+  return [...sandboxes].map(
+    ([name, { retries, pausedMs }]) =>
+      `${label(name)}: Cloudflare could not place its container ${retries === 1 ? "once" : `${retries} times`} and retried after ${Math.round(pausedMs / 1000)} s of pauses`
+  )
+}
+
 export function latencySummary(samples: ApiSample[]) {
   if (!samples.length) return null
   const sorted = samples.map((sample) => sample.ms).sort((a, b) => a - b)

@@ -94,6 +94,26 @@ describe("lineIdentities", () => {
     expect(after.get("b")).toEqual(before.get("b"))
   })
 
+  it("starts a new generation only once every Line has finished", () => {
+    const ids = lineIdentities(
+      history(
+        [
+          [line("a"), 1],
+          [line("b"), 1],
+          [line("c"), 6],
+          [line("d"), 20],
+        ],
+        [
+          train("a", "unloaded", 5),
+          train("b", "unloaded", 10),
+          train("c", "siding", 15),
+          train("d", "ready", 20),
+        ]
+      )
+    )
+    expect([...ids.values()].map((i) => i.generation)).toEqual([0, 0, 0, 1])
+  })
+
   it("does not reuse a slot freed after the new Line was laid", () => {
     const ids = lineIdentities(
       history(

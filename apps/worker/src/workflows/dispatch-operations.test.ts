@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
+import { env } from "cloudflare:test"
 import type { DispatchProposal } from "@terminus/domain"
 import {
   DispatchProposalError,
   FakeDispatchPlanner,
+  HarnessDispatcher,
+  type DispatchSession,
 } from "@terminus/agent-runtime"
+import type { PlanDraft } from "@terminus/protocol"
 import { NonRetryableError } from "cloudflare:workflows"
 import {
   proposeDispatchPlan,
@@ -34,6 +38,7 @@ import {
   promoteIntegration,
 } from "./integration-operations"
 import { FakeIntegrationValidator } from "../integrations/integration-validator"
+import { DispatchDraftStore } from "../integrations/dispatch-draft-store"
 
 function proposal(): DispatchProposal {
   const work = (path: string, dependencies: string[] = []) =>
@@ -116,6 +121,73 @@ async function promoteOtherWork(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("durable Dispatcher planning and launch", () => {
+  it("reuses the completed draft if the final proposal commit fails before persisting", async () => {
+    const f = await fixture()
+    const proposalToSave = proposal()
+    const completed: PlanDraft = {
+      outline: {
+        summary: proposalToSave.summary,
+        lines: proposalToSave.lines.map((line) => ({
+          key: line.key,
+          name: line.name,
+          unloadRecommendation: line.unloadRecommendation,
+          stations: line.stations.map((s) => s.key),
+        })),
+      },
+      stations: Object.fromEntries(
+        proposalToSave.lines.flatMap((line) =>
+          line.stations.map((s) => {
+            const { repositoryChange, ...fields } = s.manifest
+            if (!repositoryChange || repositoryChange.kind === "verification")
+              throw new Error("Expected a concrete test proposal")
+            return [
+              s.key,
+              {
+                ...fields,
+                key: s.key,
+                name: s.name,
+                changeKind: repositoryChange.kind,
+                changeDescription: repositoryChange.description,
+              },
+            ]
+          })
+        )
+      ),
+    }
+    const drafts = new DispatchDraftStore(env.DB)
+    const session: DispatchSession = {
+      restore: () => drafts.restore(f.plan.id, "trusted-test-context"),
+      prepare: vi.fn(async () => {
+        await drafts.begin(f.plan.id, "trusted-test-context", null)
+        return null
+      }),
+      start: vi.fn(async () => {
+        await drafts.save(f.plan.id, { stations: {} }, completed)
+        return "Plan submitted"
+      }),
+      resume: vi.fn(async () => ""),
+      draft: () => drafts.read(f.plan.id),
+      close: vi.fn(async () => {}),
+    }
+    f.ports.planner = new HarnessDispatcher("fake", { open: () => session })
+    vi.spyOn(f.ports.store, "commit").mockRejectedValueOnce(
+      new Error("D1 temporarily unavailable")
+    )
+    await expect(prepareDispatchPlan(f.ports, f.plan.id)).rejects.toThrow(
+      "D1 temporarily unavailable"
+    )
+    expect(
+      (await f.ports.store.dispatchPlan(f.plan.id))!.value.state.status
+    ).toBe("planning")
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    expect(
+      (await f.ports.store.dispatchPlan(f.plan.id))!.value.state.status
+    ).toBe("ready")
+    expect(session.prepare).toHaveBeenCalledOnce()
+    expect(session.start).toHaveBeenCalledOnce()
+    expect(session.resume).not.toHaveBeenCalled()
+  })
+
   it("stops durable model retries after corrective validation is exhausted and persists safe field diagnostics", async () => {
     const f = await fixture()
     f.ports.planner.plan = vi.fn(async () => {

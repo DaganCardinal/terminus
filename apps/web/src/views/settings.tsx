@@ -7,6 +7,7 @@ import {
   utilityModel,
   type Harness,
   type HarnessRole,
+  type ModelProviderId,
   type RoleHarnesses,
   MODEL_PRESETS,
   roleModels,
@@ -113,6 +114,7 @@ interface Saved {
   general: ModelSettings
   updatedAt: string | null
   alternativesEnabled: boolean
+  opencodeExternalEnabled: boolean
 }
 
 const settingsFor = (
@@ -130,7 +132,8 @@ function toSaved(
   own: ModelSettings | null,
   general: ModelSettings,
   updatedAt: string | null,
-  alternativesEnabled = false
+  alternativesEnabled = false,
+  opencodeExternalEnabled = false
 ): Saved {
   return {
     choice: own?.preset ?? "general",
@@ -139,6 +142,7 @@ function toSaved(
     general,
     updatedAt,
     alternativesEnabled,
+    opencodeExternalEnabled,
   }
 }
 
@@ -157,7 +161,8 @@ const loadAgents = (networkId: string | null): Promise<Saved> =>
             settings.override,
             settings.general,
             settings.updatedAt,
-            settings.alternativeHarnessesEnabled
+            settings.alternativeHarnessesEnabled,
+            settings.opencodeExternalProvidersEnabled
           )
         )
     : api
@@ -167,7 +172,8 @@ const loadAgents = (networkId: string | null): Promise<Saved> =>
             general.settings,
             general.settings,
             general.updatedAt,
-            general.alternativeHarnessesEnabled
+            general.alternativeHarnessesEnabled,
+            general.opencodeExternalProvidersEnabled
           )
         )
 
@@ -376,10 +382,17 @@ function ModelSettingsForm({
       : choice === "custom"
         ? harnesses
         : roleHarnesses({ preset: choice })
+  /** Whether this deployment runs a harness with a model's provider. */
+  const runnable = (harness: Harness, provider: ModelProviderId) =>
+    harness === "opencode"
+      ? provider === "workers-ai" || saved.opencodeExternalEnabled
+      : saved.alternativesEnabled
   const changeHarness = (role: HarnessRole, harness: Harness) => {
-    const model = modelForHarness(
-      harness,
-      shown[role]
+    const kept = modelForHarness(harness, shown[role])
+    const model = (
+      runnable(harness, catalog(kept)!.provider)
+        ? kept
+        : compatibleModels(harness)[0]!.id
     ) as RoleModels[HarnessRole]
     setCustom({ ...shown, [role]: model })
     setHarnesses({ ...shownHarnesses, [role]: harness })
@@ -420,7 +433,8 @@ function ModelSettingsForm({
             next.override,
             next.general,
             next.updatedAt,
-            next.alternativeHarnessesEnabled
+            next.alternativeHarnessesEnabled,
+            next.opencodeExternalProvidersEnabled
           )
         )
       } else {
@@ -430,7 +444,8 @@ function ModelSettingsForm({
             next.settings,
             next.settings,
             next.updatedAt,
-            next.alternativeHarnessesEnabled
+            next.alternativeHarnessesEnabled,
+            next.opencodeExternalProvidersEnabled
           )
         )
       }
@@ -459,6 +474,13 @@ function ModelSettingsForm({
         <p className="settings-help" role="status">
           Claude Code, Codex and external-provider models are unavailable until
           this deployment passes live Sandbox verification.
+        </p>
+      )}
+      {saved.alternativesEnabled && !saved.opencodeExternalEnabled && (
+        <p className="settings-help" role="status">
+          Anthropic and OpenAI models run under Claude Code and Codex. OpenCode
+          uses Workers AI models until it passes live verification with those
+          providers.
         </p>
       )}
       <section aria-labelledby="settings-preset">
@@ -587,8 +609,8 @@ function ModelSettingsForm({
                             key={option.id}
                             value={option.id}
                             disabled={
-                              option.provider !== "workers-ai" &&
-                              !saved.alternativesEnabled
+                              role.id !== "engineer" &&
+                              !runnable(harnesses[role.id], option.provider)
                             }
                           >
                             {option.name} · {option.maker}

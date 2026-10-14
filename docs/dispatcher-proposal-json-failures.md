@@ -114,3 +114,12 @@ Paths are relative to the `terminus` repo. `docs/temp` is gitignored, so logs an
 | Code change | `packages/agent-runtime/src/opencode.ts`, `dispatcher-agent.ts`, `conductor-agent.ts`, with tests in `opencode.test.ts` and `dispatcher-agent.test.ts` |
 
 To rerun the spike: `node scripts/json-mode-spike/run.mjs` reads credentials from `apps/worker/.dev.vars`, and `--dry-run` sends nothing.
+
+
+## October 14, 07:12 MDT follow-up: Station calls never reached Terminus
+
+The tail export `docs/temp/perf-logs/tail-perf-logs-oct-14-712am.json` records plan `dispatch-207dcc86ca90452cb96413dbb8b20288` running on configured `@cf/zai-org/glm-5.3`. The outline saved successfully, naming nine Stations. All 20 subsequent tool calls were reported as `invalid` by OpenCode; no `put_station` call reached the plan server. Most parse errors show bare prose after `"scope":` even though the tool declared an array. The excerpts do not establish whether the model or the provider's tool serialization lost the syntax; raw Gateway response inspection would be needed to distinguish them.
+
+The runner stopped at the existing 20-rejection limit (`proposal_rejected`). The saved draft therefore contained its outline and no Stations, and assembly correctly reported `stations (missing_station)`. There was one session run and zero resumes, not three proposal attempts. Total session time was about 274 seconds; increasing retries would only prolong the observed loop.
+
+The Station tool now advertises both arrays and text for every model: string lists accept one item per line or JSON array text, and contracts accept an array of objects or JSON array text. This matches the normalization the server already supports, without a model-specific Station format. The Dispatcher prompt includes the same tool input schema, a complete flat Station argument example, and an equivalent text-list example. The full Station schema, draft assessment and final Workflow validation still apply. The terminal error now distinguishes the tool rejection limit from three exhausted session attempts. Offline tests cover both advertised formats, the prompt examples, typed Manifest persistence, Line-shared values and rejection of invalid paths and unknown evidence. This change still needs a fresh live Dispatcher run; the failed plan cannot be completed from the saved outline alone.

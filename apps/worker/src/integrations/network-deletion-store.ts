@@ -75,9 +75,6 @@ export class NetworkDeletionStore {
         id: row.object_id,
         binding: row.binding,
       })),
-      runIds,
-      events,
-      trains: (await store.trains(networkId)).map((row) => row.value),
     }
   }
 

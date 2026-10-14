@@ -204,10 +204,27 @@ async function api(
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     const text = await response.text()
-    if (!response.ok)
+    if (!response.ok) {
+      // The Worker's message and findings name the failed checks and Trains.
+      let reason = ""
+      try {
+        const body = JSON.parse(text) as {
+          error?: unknown
+          details?: { findings?: unknown }
+        }
+        const findings = body.details?.findings
+        reason = Array.isArray(findings)
+          ? findings.map(String).join("\n  ")
+          : typeof body.error === "string"
+            ? body.error
+            : ""
+      } catch {
+        reason = text.slice(0, 500)
+      }
       throw new Error(
-        `${method} ${path.split("?")[0]} returned ${response.status}`
+        `${method} ${path.split("?")[0]} returned ${response.status}${reason ? `:\n  ${reason}` : ""}`
       )
+    }
     ok = true
     return text ? JSON.parse(text) : null
   } finally {
@@ -297,8 +314,6 @@ try {
       throw new Error(
         "Unexpected blocker or integration failure; inspect report.json and the Network"
       )
-    if (completed === 10 && status.expiredLeases)
-      throw new Error("Expired Sandbox leases remain after the Trains unloaded")
     if (
       completed === 10 &&
       status.leases === 0 &&
@@ -311,9 +326,9 @@ try {
         })
       )
       status = stressStatusSchema.parse(await api(`${networkPath}/stress-test`))
+      // Expired lease rows belong to stopped Sandboxes and hold no capacity.
       if (
         status.leases ||
-        status.expiredLeases ||
         status.activeIntegrations ||
         status.failedIntegrations ||
         status.completedIntegrations !== 10

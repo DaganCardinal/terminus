@@ -9,12 +9,15 @@ import logomarkWhite from "@/assets/terminus-logomark-white.svg"
 export function AppNav({
   trail = [],
   settingsNetworkId = null,
+  stressTest = false,
   children,
 }: {
   /** Ancestors then the current page; the last item is not a link. */
   trail?: { label: string; href?: string }[]
   /** The current network, or null for global settings. */
   settingsNetworkId?: string | null
+  /** Put a Stress test link in the overflow menu. */
+  stressTest?: boolean
   children?: ReactNode
 }) {
   return (
@@ -60,7 +63,11 @@ export function AppNav({
       )}
       <div className="app-nav-end">
         {children}
-        <AppMenu variant="nav" settingsNetworkId={settingsNetworkId} />
+        <AppMenu
+          variant="nav"
+          settingsNetworkId={settingsNetworkId}
+          stressTest={stressTest}
+        />
       </div>
     </nav>
   )

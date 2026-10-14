@@ -690,6 +690,7 @@ describe("model settings", () => {
       general: { preset: "light" },
       updatedAt: null,
       alternativeHarnessesEnabled: true,
+      opencodeExternalProvidersEnabled: true,
     })
 
     const models = {

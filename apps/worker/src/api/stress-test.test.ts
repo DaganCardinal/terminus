@@ -13,14 +13,20 @@ import {
   HarnessConflictInvestigator,
 } from "@terminus/agent-runtime"
 import {
+  PERF_LOG_PREFIX,
   PIPELINE_STRESS_PROFILE,
+  perfLogHour,
   scriptedStressAgent,
   stressLines,
+  stressTask,
+  type PerfLogRecord,
 } from "@terminus/protocol"
 import { drive, seedLine, seedNetwork, testPorts } from "../../test/fixtures"
 import {
   advanceTrain,
+  clearTrain,
   recordIntegrationOutcome,
+  stationRunId,
 } from "../workflows/train-operations"
 import {
   prepareIntegration,
@@ -28,7 +34,15 @@ import {
 } from "../workflows/integration-operations"
 import { FakeIntegrationValidator } from "../integrations/integration-validator"
 import { handleApi } from "./router"
-import { stressOracle, stressStatus } from "./stress-test"
+import {
+  placementWarnings,
+  stressFindings,
+  stressOracle,
+  stressReport,
+  stressStatus,
+} from "./stress-test"
+import { parseRepoId } from "@terminus/artifacts"
+import { projectNamespace } from "../agents/dispatcher"
 import { NetworkStore } from "../integrations/network-store"
 import { trainModels, conflictWatchPorts } from "../agents/ports"
 
@@ -90,6 +104,15 @@ describe("pipeline stress profile", () => {
     const initial = (await store.snapshot(run.networkId))!
     expect(initial.trains).toHaveLength(10)
     expect(initial.lines).toHaveLength(10)
+    // Documented limits: Artifacts namespaces have 2-63 characters and Workflow
+    // instance IDs 100; repository names are held to the namespace limit.
+    expect(projectNamespace(run.networkId).length).toBeLessThanOrEqual(63)
+    for (const { train } of initial.trains)
+      expect(parseRepoId(train.repoId).name.length).toBeLessThanOrEqual(63)
+    for (const station of initial.stations)
+      expect(
+        stationRunId({ ...station, revisionCount: 9, runRetries: 9 }, 99).length
+      ).toBeLessThanOrEqual(63)
     const liveRoleEnv = {
       ...profileEnv,
       ENGINEER_MODEL: "live",
@@ -135,6 +158,8 @@ describe("pipeline stress profile", () => {
     expect(report.status).toBe(200)
     expect(await report.json()).toMatchObject({
       passed: true,
+      findings: [],
+      warnings: [],
       mode: "fake",
       verification: null,
       status: { completedIntegrations: 10 },
@@ -205,12 +230,179 @@ describe("pipeline stress profile", () => {
     const corrupt = structuredClone(snapshot)
     corrupt.cars[0]!.sourceCommit = "unrelated"
     expect(() => stressOracle(corrupt, runId, network.terminusCommit)).toThrow(
-      "provenance"
+      "Car provenance: source commit unrelated is not the frozen baseline"
     )
     const noEvidence = structuredClone(snapshot)
     noEvidence.cars[0]!.evidence.checks = []
     expect(() =>
       stressOracle(noEvidence, runId, network.terminusCommit)
-    ).toThrow("independent evidence")
+    ).toThrow(
+      "Car lacks passing independent evidence: typecheck (missing), test (missing), build (missing)"
+    )
+    // A failed run still gets a report, naming each Train and failed check:
+    // this ledger's scripted provenance is not what simulated execution records.
+    const failed = await stressReport(env, network.id)
+    expect(failed).toMatchObject({
+      passed: false,
+      mode: "fake",
+      verification: null,
+    })
+    for (let train = 1; train <= 10; train++)
+      expect(failed.findings).toContain(
+        `Train ${train} Car provenance: Station Agent ${scriptedStressAgent.harness}/${scriptedStressAgent.model}, expected fake/fake`
+      )
+  })
+
+  it("fails a run whose Station failed and was cleared, though every Train unloaded", async () => {
+    const unplaced =
+      "Station run failed during checkout: There is no container instance that can be provided to this Durable Object, try again later"
+    const runner = new FakeStationRunner()
+    let firstRun = true
+    const ports = testPorts({
+      runner: {
+        config: { harness: "fake", model: "fake" },
+        run: async (input) => {
+          // Train 3's first run fails as in the first live run, which the
+          // stress profile's Engineer blocks.
+          if (firstRun && stressTask(input.manifest).train === 3) {
+            firstRun = false
+            throw new Error(unplaced)
+          }
+          return runner.run(input)
+        },
+      },
+    })
+    const network = await seedNetwork(ports)
+    const trains = []
+    for (const line of stressLines(runId))
+      trains.push((await seedLine(ports, network.id, line)).train)
+    await Promise.all(trains.map((train) => drive(ports, train.id)))
+    expect((await ports.store.train(trains[2]!.id))!.value.state.status).toBe(
+      "blocked"
+    )
+    await clearTrain(ports.train, trains[2]!.id)
+    expect(await drive(ports, trains[2]!.id)).toEqual({
+      kind: "await_terminus",
+    })
+    const integration = {
+      store: ports.store,
+      repositories: ports.train.repositories,
+      validator: new FakeIntegrationValidator(),
+    }
+    // Train 3 joined the Terminus queue last, so it integrates last.
+    for (const train of [...trains.filter((_, i) => i !== 2), trains[2]!]) {
+      expect(await advanceTrain(ports.train, train.id)).toEqual({
+        kind: "moved",
+      })
+      const attempt = await ports.store.latestIntegration(train.id)
+      await prepareIntegration(integration, attempt!.input.id)
+      await recordIntegrationOutcome(ports.train, train.id, {
+        integrationId: attempt!.input.id,
+        result: await promoteIntegration(integration, attempt!.input.id),
+      })
+    }
+    const snapshot = (await ports.store.snapshot(network.id))!
+    expect(
+      snapshot.trains.every(({ train }) => train.state.status === "unloaded")
+    ).toBe(true)
+    // Clearing resets the Station's counters, so only the events show it.
+    expect(snapshot.stations.map((station) => station.runRetries ?? 0)).toEqual(
+      Array(10).fill(0)
+    )
+    expect(
+      stressFindings(snapshot, runId, network.terminusCommit, true)
+    ).toEqual([])
+    const report = await stressReport(env, network.id)
+    expect(report).toMatchObject({ passed: false, mode: "fake" })
+    expect(report.findings).toEqual([
+      `Train 3: Station run failed, blocked and cleared by intervention (Error: ${unplaced})`,
+    ])
+  })
+
+  it("warns about Sandbox placement retries in this run, from the perf logs", async () => {
+    const ports = testPorts()
+    const network = await seedNetwork(ports)
+    for (const line of stressLines(runId).slice(0, 2))
+      await seedLine(ports, network.id, line)
+    const snapshot = (await new NetworkStore(env.DB).snapshot(network.id))!
+    const namespace = parseRepoId(snapshot.network.terminusRepoId).namespace
+    const station = snapshot.stations.find(
+      (entry) => stressTask(entry.manifest).train === 2
+    )!
+    const stationSandbox = `station-${stationRunId(station, 1)}`
+    const gitSandbox = `git-${crypto.randomUUID()}`
+    const register = (
+      sandbox: string,
+      binding: "SANDBOX" | "WORKSPACE_SANDBOX"
+    ) =>
+      env.DB.prepare(
+        "INSERT INTO network_sandboxes (object_id, namespace, binding) VALUES (?, ?, ?)"
+      )
+        .bind(env[binding].idFromName(sandbox).toString(), namespace, binding)
+        .run()
+    await register(stationSandbox, "SANDBOX")
+    await register(gitSandbox, "WORKSPACE_SANDBOX")
+    const line = (t: string, event: string, fields: object) => ({
+      t,
+      entrypoint: "ExecutionSandboxStandard1",
+      invocation: `${t}-${crypto.randomUUID()}`,
+      outcome: "ok",
+      truncated: false,
+      message: `[perf] ${event} ${JSON.stringify({ t, ...fields })}`,
+    })
+    const retry = (
+      t: string,
+      sandbox: string,
+      pauseMs: number,
+      binding = "SANDBOX"
+    ) =>
+      line(t, "sandbox.placement_retry", {
+        sandbox,
+        binding,
+        attempt: 1,
+        pauseMs,
+      })
+    const records: PerfLogRecord[] = [
+      line("2026-01-01T10:04:00.000Z", "sandbox.setup", {
+        sandbox: stationSandbox,
+      }),
+      retry("2026-01-01T10:05:00.000Z", stationSandbox, 5_000),
+      retry("2026-01-01T10:05:10.000Z", stationSandbox, 10_000),
+      retry("2026-01-01T10:06:00.000Z", gitSandbox, 5_000, "WORKSPACE_SANDBOX"),
+      // Another Network's Sandbox, and a retry after this run ended.
+      retry("2026-01-01T10:07:00.000Z", "station-elsewhere-s1-r0", 5_000),
+      retry("2026-01-01T10:45:00.000Z", stationSandbox, 20_000),
+    ]
+    for (const record of records)
+      await env.PERF_LOGS.put(
+        `${PERF_LOG_PREFIX}${perfLogHour(record.t)}/${record.invocation}.json`,
+        JSON.stringify([record])
+      )
+    expect(
+      await placementWarnings(env, snapshot, {
+        from: "2026-01-01T10:00:00.000Z",
+        to: "2026-01-01T10:30:00.000Z",
+      })
+    ).toEqual([
+      "Train 2 Station Sandbox: Cloudflare could not place its container 2 times and retried after 15 s of pauses",
+      `Git workspace Sandbox ${gitSandbox}: Cloudflare could not place its container once and retried after 5 s of pauses`,
+    ])
+    // Perf logs are best effort: a run they don't cover is a warning only.
+    expect(
+      await placementWarnings(env, snapshot, {
+        from: "2026-01-02T10:00:00.000Z",
+        to: "2026-01-02T10:30:00.000Z",
+      })
+    ).toEqual([
+      "Sandbox placement retries could not be checked: no perf logs were found for this run",
+    ])
+    expect(
+      await placementWarnings(env, snapshot, {
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2026-01-01T10:30:00.000Z",
+      })
+    ).toEqual([
+      "Sandbox placement retries could not be checked: A window may span at most six hours",
+    ])
   })
 })

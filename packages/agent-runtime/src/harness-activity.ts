@@ -2,6 +2,7 @@ import type { AgentActivity, Harness } from "@terminus/protocol"
 import {
   maxRejectedFinalizations,
   maxRejectedPlanCalls,
+  maxRepeatedPlanFormatFailures,
   notSavedReply,
   planAcceptedReply,
   planToolAgentName,
@@ -118,7 +119,8 @@ export function filteredHarnessActivity(
  * Once \`finalize_plan\` accepts the Dispatcher's plan, the harness is stopped: the saved draft
  * is the answer, and the model's closing message would cost another round trip. It is stopped
  * too after \`maxRejectedFinalizations\` rejected finalizations or \`maxRejectedPlanCalls\`
- * pieces that were not saved, and the saved draft is final. */
+ * pieces that were not saved, and the saved draft is final. Repeated argument-format
+ * failures pause the run earlier, allowing a bounded correction in the same session. */
 export const liveHarnessActivityScript = `import { spawn } from "node:child_process"
 import { createWriteStream } from "node:fs"
 import { constants } from "node:os"
@@ -133,6 +135,7 @@ child.stderr.setEncoding("utf8")
 child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000) })
 const decoder = new StringDecoder("utf8")
 let buffer = "", dropping = false, count = 0, rejected = 0, finalizeRejected = 0, stopped = null
+let formatTool = "", formatFailures = 0
 function emit(event) {
   if (count >= 1000) return
   const activity = filter(harness, event, directory)
@@ -146,7 +149,8 @@ function stopAtPlanOutcome(event) {
   if (state.status !== "completed" && state.status !== "error") return
   const tool = event.part?.tool
   // OpenCode routes a call whose arguments do not parse to its \`invalid\` tool.
-  const unparsed = tool === "invalid" && tools.some((name) => state.input?.tool === name || String(state.input?.error ?? "").includes(name))
+  const invalidTool = tool === "invalid" ? tools.find((name) => state.input?.tool === name || String(state.input?.error ?? "").includes(name)) : undefined
+  const unparsed = !!invalidTool
   if (!unparsed && !tools.includes(tool)) return
   const output = typeof state.output === "string" ? state.output : ""
   if (tool === finalize) {
@@ -154,6 +158,18 @@ function stopAtPlanOutcome(event) {
     else if (++finalizeRejected >= ${maxRejectedFinalizations}) stopped = "proposal_rejected"
   } else if (unparsed || state.status === "error" || output.startsWith(${JSON.stringify(notSavedReply)})) {
     if (++rejected >= ${maxRejectedPlanCalls}) stopped = "proposal_rejected"
+  }
+  // Schema/JSON failures are formatting problems. Assessment failures and
+  // infrastructure errors keep their existing budgets, without a format nudge.
+  const format = unparsed || (output.startsWith(${JSON.stringify(notSavedReply)}) && /not valid JSON|does not match .*schema/.test(output))
+  if (format) {
+    const target = invalidTool ?? tool
+    formatFailures = formatTool === target ? formatFailures + 1 : 1
+    formatTool = target
+    if (!stopped && formatFailures >= ${maxRepeatedPlanFormatFailures}) stopped = "proposal_stalled"
+  } else if (tool !== ${JSON.stringify(planToolAgentName(planToolNames.inspect))}) {
+    formatTool = ""
+    formatFailures = 0
   }
   if (!stopped) return
   child.kill("SIGTERM")
