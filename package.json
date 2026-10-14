@@ -21,7 +21,9 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "stress:ten": "node apps/stress-test/src/main.ts",
+    "stress:offline": "npm run build --workspace @terminus/web && npm exec --workspace @terminus/worker -- vitest run src/api/stress-test.test.ts && npm exec --workspace @terminus/artifacts -- vitest run src/stress-git.test.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

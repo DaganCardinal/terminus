@@ -1,4 +1,9 @@
-import { catalogModel, type RoleExecution } from "@terminus/protocol"
+import {
+  catalogModel,
+  scriptedStressAgent,
+  stressTask,
+  type RoleExecution,
+} from "@terminus/protocol"
 import {
   harnessResult,
   logHarnessTimeline,
@@ -27,6 +32,7 @@ import type { NetworkStore } from "./network-store"
 import { gatewayConfig } from "./execution-config"
 import { prepareHarness, runPreparedHarness } from "./harness"
 import { runInstalledChecks } from "./project-checks"
+import { runStressStation } from "./scripted-stress"
 
 const repoDirectory = stationDirectory
 
@@ -58,6 +64,7 @@ export class SandboxStationRunner implements StationRunner {
   readonly #store: NetworkStore
   readonly #sandbox: (runId: string) => StationSandbox
   readonly #validate: boolean
+  readonly #scripted: boolean
 
   private readonly execution: RoleExecution
   /**
@@ -72,8 +79,10 @@ export class SandboxStationRunner implements StationRunner {
     store: NetworkStore,
     sandbox?: (runId: string) => StationSandbox,
     execution: RoleExecution = executionConfig(model),
-    validate = false
+    validate = false,
+    scripted = false
   ) {
+    this.#scripted = scripted
     this.#validate = validate
     this.execution = execution
     this.#env = env
@@ -81,10 +90,17 @@ export class SandboxStationRunner implements StationRunner {
     this.#store = store
     this.#sandbox =
       sandbox ?? ((runId) => env.SANDBOX.getByName(`station-${runId}`))
-    this.config = agentProvenance(this.execution)
+    this.config = scripted
+      ? scriptedStressAgent
+      : agentProvenance(this.execution)
   }
 
   async run(input: StationRunInput): Promise<StationRunResult> {
+    if (this.#scripted) stressTask(input.manifest)
+    else if (input.manifest.goal.startsWith("Pipeline stress ten-trains-v1 "))
+      throw new Error(
+        "Use the explicit stress-test command before resuming this fixture"
+      )
     // TEMPORARY benchmark instrumentation.
     const phases = new PerfPhases("station.run", {
       runId: input.runId,
@@ -97,7 +113,7 @@ export class SandboxStationRunner implements StationRunner {
       phases.finish({ ok: true, reused: "published checkpoint" })
       return checkpoint.result
     }
-    const config = gatewayConfig(this.#env, this.config.model)
+    if (!this.#scripted) gatewayConfig(this.#env, this.config.model)
     const validation = validationCommandsSchema.parse(input.validation)
     for (const name of input.manifest.expectedEvidence) {
       if (!validation.some((check) => check.name === name))
@@ -165,11 +181,15 @@ export class SandboxStationRunner implements StationRunner {
         repositories: [
           { remote: access.remote, token: access.token, scope: "write" },
         ],
-        allowModel: true,
-        model: this.config.model,
-        ...(catalogModel(this.config.model).provider === "workers-ai"
+        allowModel: !this.#scripted,
+        ...(this.#scripted
           ? {}
-          : { provider: catalogModel(this.config.model).provider }),
+          : {
+              model: this.config.model,
+              ...(catalogModel(this.config.model).provider === "workers-ai"
+                ? {}
+                : { provider: catalogModel(this.config.model).provider }),
+            }),
       })
       // Each run starts from durable Station history, including prior revisions.
       const repository = new StationGit(
@@ -209,47 +229,58 @@ export class SandboxStationRunner implements StationRunner {
       )
       if (installed.exitCode !== 0)
         throw new Error("Project dependency installation failed")
-      // Install scripts are repository code, so the harness is prepared after them.
-      enter("preflight")
-      const prepared = await prepareHarness(this.#env, sandbox, workspace, {
-        model: config.model,
-        execution: this.execution,
-        agent: stationHarnessAgent,
-        directory: repoDirectory,
-        assignment: stationMessage(input),
-      })
-      enter("harness")
-      const harness = await runPreparedHarness(
-        {
-          // RPC stub methods are not enumerable; forward calls instead of spreading the stub.
-          write: (path, contents) => sandbox.write(path, contents),
-          run: workspace.run,
-        },
-        prepared,
-        repoDirectory,
-        undefined,
-        undefined,
-        {
-          role: "Station",
-          sandbox: `station-${input.runId}`,
-          runId: input.runId,
-          kind: "start",
-        }
-      )
-      const outcome = harnessResult(prepared.harness, harness)
-      logHarnessTimeline(
-        {
-          role: "Station",
-          sandbox: `station-${input.runId}`,
-          runId: input.runId,
-          kind: "start",
-          error: outcome.error?.slice(0, 300),
-          finalChars: outcome.summary?.length,
-        },
-        harness,
-        phases.currentMs()
-      )
-      if (outcome.error) throw new Error(outcome.error)
+      let summary: string | null | undefined
+      if (this.#scripted) {
+        enter("scripted edit")
+        summary = await runStressStation(
+          workspace,
+          input.manifest,
+          repoDirectory
+        )
+      } else {
+        // Install scripts are repository code, so the harness is prepared after them.
+        enter("preflight")
+        const prepared = await prepareHarness(this.#env, sandbox, workspace, {
+          model: this.config.model,
+          execution: this.execution,
+          agent: stationHarnessAgent,
+          directory: repoDirectory,
+          assignment: stationMessage(input),
+        })
+        enter("harness")
+        const harness = await runPreparedHarness(
+          {
+            // RPC stub methods are not enumerable; forward calls instead of spreading the stub.
+            write: (path, contents) => sandbox.write(path, contents),
+            run: workspace.run,
+          },
+          prepared,
+          repoDirectory,
+          undefined,
+          undefined,
+          {
+            role: "Station",
+            sandbox: `station-${input.runId}`,
+            runId: input.runId,
+            kind: "start",
+          }
+        )
+        const outcome = harnessResult(prepared.harness, harness)
+        logHarnessTimeline(
+          {
+            role: "Station",
+            sandbox: `station-${input.runId}`,
+            runId: input.runId,
+            kind: "start",
+            error: outcome.error?.slice(0, 300),
+            finalChars: outcome.summary?.length,
+          },
+          harness,
+          phases.currentMs()
+        )
+        if (outcome.error) throw new Error(outcome.error)
+        summary = outcome.summary
+      }
 
       enter("candidate")
       const headCommit = await repository.candidate(
@@ -276,7 +307,7 @@ export class SandboxStationRunner implements StationRunner {
           diff,
           evidence: { checks },
           agent: this.config,
-          agentSummary: outcome.summary?.slice(-8000) ?? null,
+          agentSummary: summary?.slice(-8000) ?? null,
         },
       }
       // Checkpoint before pushing so a retry cannot repeat a paid agent call.

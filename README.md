@@ -38,6 +38,14 @@ npm run build
 
 Worker tests run in workerd with D1 and Workflows. Repository transport tests use real, temporary local Git repositories. Model tests use mock transports; they do not incur inference charges. The current workerd Workflow tests can print cancellation messages during teardown even when assertions pass.
 
+## Ten-Train stress test
+
+```sh
+npm run stress:ten
+```
+
+This runs the local ten-Train Workflow rehearsal and real local Git oracle, without Cloudflare credentials or Docker. For full Cloudflare verification, open **Stress test** from the app's Networks page, run the test, then **Verify and download report**. It creates its own fixture Network and uses your existing browser login. No manual project import, stress-mode switch, or terminal Access token is needed. See [the run guide](docs/pipeline-stress-test.md).
+
 ## Real repositories and agents
 
 Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default preset uses `@cf/zai-org/glm-5.3-flash` for every role.
@@ -59,6 +67,7 @@ See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness
 | [Previews](docs/previews.md) | Previewing a Train or Terminus, preview hostnames |
 | [Publishing](docs/publishing.md) | Publishing Terminus to a publish repository and deploying it with Workers Builds |
 | [API examples](docs/api.md) | Creating networks, validation commands, snapshots and events |
+| [Pipeline stress test](docs/pipeline-stress-test.md) | Ten scripted Trains, real Git/Sandbox pipeline, correctness oracle and timing report |
 | [Harness selection](docs/harness-selection.md) | Per-role harnesses, frozen configuration, release verification |
 | [Browser Run transport gate](docs/browser-run.md) | Browser testing design, reproducible probes, current transport blockers |
 

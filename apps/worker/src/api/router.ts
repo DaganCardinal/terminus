@@ -1,3 +1,10 @@
+import {
+  stressRepositoryMode,
+  stressStatus,
+  stressReport,
+  verifyStressRun,
+} from "./stress-test"
+import { launchStressTest, stressRun } from "../agents/stress-test"
 import { layJunction } from "../agents/junctions"
 import { readPerfLogs } from "./perf-logs"
 import { browserRunEnabled, proveBrowserRun } from "../integrations/browser-run"
@@ -22,6 +29,10 @@ import {
 import { dispatchTechnician, approveTechnician } from "../agents/technician"
 import { networkModels, technicianPorts } from "../agents/ports"
 import {
+  PIPELINE_STRESS_PROFILE,
+  launchStressRequestSchema,
+  roleExecutionsSchema,
+  stressVerifyRequestSchema,
   createJunctionRequestSchema,
   releaseJunctionRequestSchema,
   junctionRepairRequestSchema,
@@ -93,6 +104,69 @@ type Handler = (
 ) => Promise<Response>
 
 const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/stress-test" }),
+    async (_, env) => {
+      stressRepositoryMode(env)
+      return json({
+        profile: PIPELINE_STRESS_PROFILE,
+        repositoryMode: env.REPOSITORY_MODE,
+      })
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/stress-tests" }),
+    async (request, env) => {
+      const body = await parse(request, launchStressRequestSchema)
+      const networkId = body.networkId ?? `network-stress-${body.requestId}`
+      const executions = roleExecutionsSchema.parse({
+        ...(await new NetworkStore(env.DB).networkExecutions(networkId)),
+        pipelineStress: PIPELINE_STRESS_PROFILE,
+      })
+      const models = await networkModels(env, networkId)
+      return json(
+        await launchStressTest(
+          dispatcherPorts(env, { ...models, executions }),
+          body,
+          stressRepositoryMode(env)
+        ),
+        201
+      )
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/stress-test/run" }),
+    async (_, env, { networkId }) => {
+      const snapshot = await new NetworkStore(env.DB).snapshot(networkId!)
+      return snapshot
+        ? json(stressRun(snapshot, stressRepositoryMode(env)))
+        : notFound("Unknown network")
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/stress-test" }),
+    async (_, env, { networkId }) => json(await stressStatus(env, networkId!)),
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/stress-test/report" }),
+    async (_, env, { networkId }) => json(await stressReport(env, networkId!)),
+  ],
+  [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/stress-test/verify" }),
+    async (request, env, { networkId }) => {
+      stressRepositoryMode(env)
+      const body = await parse(request, stressVerifyRequestSchema)
+      return json(
+        await verifyStressRun(env, networkId!, body.runId, body.baseline)
+      )
+    },
+  ],
   [
     "DELETE",
     new URLPattern({ pathname: "/api/networks/:networkId" }),
@@ -877,6 +951,15 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     new URLPattern({ pathname: "/api/networks/:networkId/lines" }),
     async (request, env, { networkId }) => {
       const body = await parse(request, layLineRequestSchema)
+      if (
+        body.stations.some((station) =>
+          station.manifest.goal.startsWith("Pipeline stress ten-trains-v1 ")
+        )
+      )
+        throw new DispatchError(
+          409,
+          "Launch fixture Lines through the stress-test command"
+        )
       return json(await layLine(dispatcherPorts(env), networkId!, body), 201)
     },
   ],

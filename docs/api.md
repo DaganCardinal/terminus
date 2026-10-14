@@ -8,6 +8,8 @@ Sandbox limits: `GET`/`PUT /api/settings/sandboxes` reads or saves the General l
 
 Temporary benchmark logging: `GET /api/perf-logs?from=<ISO time>&to=<ISO time>` returns `{ from, to, invocations, complete, records }`, the `[perf]` lines stored by the perf Tail Worker, oldest first. `to` defaults to now and `from` to an hour earlier; a window may span six hours. `complete` is false when the window held more stored objects than one request reads. See [Deployment](live-setup.md#deployment).
 
+The explicit [ten-Train stress-test command](pipeline-stress-test.md) creates its own fixture Network, freezes scripted execution for those Trains, and adds resource diagnostics and a canonical Git oracle. The browser uses normal application login; no deployment-wide test mode is needed.
+
 ## Permanently deleting a network
 
 Network Overview's **Network actions** kebab menu contains **Emergency Brake** and **Delete Network**. Delete requires confirmation and calls `DELETE /api/networks/:networkId` with JSON `{ "confirm": true }`.

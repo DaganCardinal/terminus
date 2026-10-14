@@ -1,4 +1,11 @@
 import {
+  PIPELINE_STRESS_PROFILE,
+  stressLaunchSchema,
+  stressStatusSchema,
+  stressReportSchema,
+} from "@terminus/protocol"
+import { z } from "zod"
+import {
   junctionDetailsSchema,
   junctionSchema,
   type CreateJunctionRequest,
@@ -34,6 +41,31 @@ import {
 
 /** Application-level commands and queries against the Worker API. */
 export const api = {
+  stressCapabilities: async () =>
+    z
+      .object({
+        profile: z.literal(PIPELINE_STRESS_PROFILE),
+        repositoryMode: z.enum(["artifacts", "fake"]),
+      })
+      .parse(await request("/stress-test")),
+  launchStressTest: async (requestId: string) =>
+    stressLaunchSchema.parse(
+      await request("/stress-tests", { method: "POST", body: { requestId } })
+    ),
+  stressRun: async (id: string) =>
+    stressLaunchSchema.parse(
+      await request(`/networks/${encodeURIComponent(id)}/stress-test/run`)
+    ),
+  stressStatus: async (id: string) =>
+    stressStatusSchema.parse(
+      await request(`/networks/${encodeURIComponent(id)}/stress-test`)
+    ),
+  stressReport: async (id: string) =>
+    stressReportSchema.parse(
+      await request(`/networks/${encodeURIComponent(id)}/stress-test/report`, {
+        method: "POST",
+      })
+    ),
   deleteNetwork: (networkId: string) =>
     request<void>(`/networks/${encodeURIComponent(networkId)}`, {
       method: "DELETE",

@@ -11,3 +11,4 @@ export * from "./sealed-workspace"
 export * from "./smart-http"
 
 export * from "./technician-git"
+export * from "./stress-git"

@@ -1,5 +1,6 @@
 import "./network.css"
 import "./pages.css"
+import { StressTestPage } from "@/views/stress-test"
 import { NetworkList } from "@/views/network-list"
 import { NetworkOverview } from "@/views/network-overview"
 import { NetworkStatus } from "@/views/network-status"
@@ -10,7 +11,12 @@ export function App() {
 
   return (
     <main className="app-shell">
-      {route.page === "map" ? (
+      {route.page === "stress-test" ? (
+        <StressTestPage
+          key={route.networkId ?? "new"}
+          networkId={route.networkId}
+        />
+      ) : route.page === "map" ? (
         <NetworkStatus key={route.networkId} networkId={route.networkId} />
       ) : route.page === "overview" ? (
         <NetworkOverview

@@ -292,6 +292,33 @@ async function fixture(
 }
 
 describe("Artifacts repository transport with real Git", () => {
+  it("commits a bundled fixture at onboarding and recovers it without another commit", async () => {
+    const f = await fixture()
+    const input = {
+      namespace: "stress-fixture",
+      initialFiles: {
+        "package.json": "{}\n",
+        "src/baseline.ts": 'export const baseline = "terminus"\n',
+      },
+    }
+    const baseline = await f.host.createTerminus(input)
+    expect(
+      await f.host.readFile(
+        baseline.repoId,
+        baseline.headCommit,
+        "src/baseline.ts"
+      )
+    ).toMatchObject({ content: input.initialFiles["src/baseline.ts"] })
+    expect(await f.host.createTerminus(input)).toEqual(baseline)
+    expect(f.tokens.size).toBe(0)
+    await expect(
+      f.host.createTerminus({
+        namespace: "unsafe-fixture",
+        initialFiles: { "../escape": "no" },
+      })
+    ).rejects.toThrow("Invalid initial fixture path")
+    expect(f.tokens.size).toBe(0)
+  })
   it("keeps a Project's Terminus, Train and Station repos in its own namespace", async () => {
     const f = await fixture()
     const terminus = await f.host.createTerminus({ namespace: "p" })

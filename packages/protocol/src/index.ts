@@ -26,3 +26,5 @@ export * from "./line-identity"
 
 // TEMPORARY benchmark instrumentation; remove with perf-log.ts.
 export * from "./perf-log"
+export * from "./stress-test"
+export * from "./stress-report"

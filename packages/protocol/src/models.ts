@@ -196,6 +196,8 @@ export const roleExecutionSchema = z
   )
 export type RoleExecution = z.infer<typeof roleExecutionSchema>
 export const roleExecutionsSchema = z.strictObject({
+  /** Explicit test command only; frozen with its Trains, never a model setting. */
+  pipelineStress: z.literal("ten-trains-v1").optional(),
   dispatcher: roleExecutionSchema,
   conductor: roleExecutionSchema,
   stationAgent: roleExecutionSchema,
