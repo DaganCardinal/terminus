@@ -3,7 +3,9 @@ import { z } from "zod"
 import {
   createDispatchPlanRequestSchema,
   dispatchProposalSchema,
+  dispatchProposalSubmissionSchema,
   dispatchPlanSchema,
+  planLimits,
 } from "./dispatch"
 
 const proposal = {
@@ -230,6 +232,52 @@ describe("planning boundaries", () => {
       expect(dispatchProposalSchema.safeParse(incomplete).success).toBe(false)
     }
   })
+})
+
+it("accepts and reads back a plan at every size limit, and refuses one past each", () => {
+  const [line] = proposal.lines
+  const plan = (sizes: number[]) => ({
+    ...proposal,
+    lines: sizes.map((size, l) => ({
+      ...line!,
+      key: `line-${l}`,
+      name: `Line ${l}`,
+      stations: Array.from({ length: size }, (_, s) => ({
+        ...line!.stations[0]!,
+        key: `s-${l}-${s}`,
+      })),
+    })),
+  })
+  // Every Line, one of them full, holding every Station the plan allows.
+  const sizes: number[] = [planLimits.stationsPerLine]
+  let left = planLimits.stations - planLimits.stationsPerLine
+  for (let lines = planLimits.lines - 1; lines > 0; lines--) {
+    sizes.push(Math.ceil(left / lines))
+    left -= sizes.at(-1)!
+  }
+  const accepts = (sizes: number[]) =>
+    dispatchProposalSchema.safeParse(plan(sizes)).success &&
+    dispatchProposalSubmissionSchema.safeParse(plan(sizes)).success
+  expect(accepts(sizes)).toBe(true)
+  expect(
+    dispatchPlanSchema.safeParse({
+      id: "plan",
+      networkId: "net",
+      goal: "Goal",
+      terminusCommit: "c",
+      model: "m",
+      createdAt: "now",
+      state: {
+        status: "ready",
+        proposal: plan(sizes),
+        assessment: { errors: [], collisions: [] },
+      },
+    }).success
+  ).toBe(true)
+  // One Station too many in the plan, or on one Line, or one Line too many.
+  expect(accepts([...sizes.slice(0, -1), sizes.at(-1)! + 1])).toBe(false)
+  expect(accepts([sizes[0]! + 1, sizes[1]! - 1, ...sizes.slice(2)])).toBe(false)
+  expect(accepts(Array(planLimits.lines + 1).fill(1))).toBe(false)
 })
 
 it("accepts Junction-only proposals, counts all feature Stations, and retains legacy default Lines", () => {

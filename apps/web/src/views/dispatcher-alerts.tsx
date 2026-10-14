@@ -24,14 +24,12 @@ export function attentionTrains(snapshot: NetworkSnapshot) {
   return { blocked, awaiting }
 }
 
-/** Possible conflicts the Dispatcher reported, and checks it is still running. */
+/** Possible conflicts the Dispatcher reported. Checks it is still running
+ * stay silent; only a confirmed pair needs the user. */
 export function conflictThreads(snapshot: NetworkSnapshot) {
   const concerns = snapshot.conflictConcerns ?? []
   return {
     reported: concerns.filter((concern) => concern.pair.stage === "confirmed"),
-    checking: concerns.filter(
-      (concern) => concern.pair.stage === "investigate"
-    ),
   }
 }
 
@@ -39,22 +37,17 @@ export function conflictThreads(snapshot: NetworkSnapshot) {
  * report itself never moves a Train. */
 export function ConflictMessages({
   snapshot,
-  show,
   pending,
   command,
   openTrain,
 }: {
   snapshot: NetworkSnapshot
-  /** Reports need the user; running checks are only status. */
-  show: "reported" | "checking"
   pending: boolean
   command: Command
   openTrain: (lineId: string) => void
 }) {
   const name = namesFor(snapshot)
-  const threads = conflictThreads(snapshot)
-  const reported = show === "reported" ? threads.reported : []
-  const checking = show === "checking" ? threads.checking : []
+  const { reported } = conflictThreads(snapshot)
   const badge = (lineId: string) => {
     const badge = lineBadge(snapshot, lineId)
     return badge ? (
@@ -188,24 +181,6 @@ export function ConflictMessages({
           </DispatcherMessage>
         )
       })}
-      {checking.map((concern) => (
-        <DispatcherMessage
-          key={`${concern.watchId}:${concern.pair.otherTrainId}`}
-          tone="working"
-          meta={
-            <>
-              {badge(concern.lineId)} {badge(concern.pair.otherLineId)} Checking
-              for conflicts
-            </>
-          }
-        >
-          <p>
-            {concern.pair.route === "overlap"
-              ? `${name(concern.lineId)} and ${name(concern.pair.otherLineId)} changed the same files. I'm trial-merging them to see whether they conflict.`
-              : `Clef thinks ${name(concern.lineId)} and ${name(concern.pair.otherLineId)} may interact. I'm trial-merging them to check.`}
-          </p>
-        </DispatcherMessage>
-      ))}
     </>
   )
 }

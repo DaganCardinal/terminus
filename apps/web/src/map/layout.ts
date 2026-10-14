@@ -50,6 +50,9 @@ function freshIdentities(lines: Line[]) {
 // three to four line widths, concentric where lines run in parallel.
 export const TRACK_WIDTH = 8
 export const HUB_RADIUS = 40
+/** A Junction is a ring this size, stretched into a capsule when more
+ * approach lanes enter it than the ring can take. */
+export const JUNCTION_RADIUS = 30
 const CORNER_RADIUS = 28
 const LANE_GAP = 16
 const MARGIN_X = 132
@@ -192,6 +195,8 @@ export interface JunctionLayout {
   id: string
   point: Point
   halfHeight: number
+  /** Incoming Lines in the order they enter, top to bottom. */
+  lineIds: string[]
 }
 
 /** A Station that receiving Lines visit through a Crossing. Each receiver
@@ -416,7 +421,6 @@ function layoutBundle(
 // Graph layout: Crossings and Junctions. Columns come from route order, rows
 // from Lines. Each Line keeps to its own row and leaves it only to visit a
 // Crossing Station or to take its own lane into a Junction or Terminus.
-const JUNCTION_HALF = 28
 /** Approach lanes turn this far before a node, clear of its label. */
 const JUNCTION_CLEAR = 80
 const HUB_CLEAR = 104
@@ -886,11 +890,18 @@ function layoutGraph(
   // Fit the canvas to what is drawn, labels included.
   const hub = nodePoint("terminus")
   const hubHalfHeight = Math.max(HUB_RADIUS, fans.get("terminus")!.half + 24)
-  const junctions: JunctionLayout[] = junctionIds.map((id) => ({
-    id,
-    point: nodePoint(`junction:${id}`),
-    halfHeight: Math.max(JUNCTION_HALF, fans.get(`junction:${id}`)!.half + 20),
-  }))
+  const junctions: JunctionLayout[] = junctionIds.map((id) => {
+    const fan = fans.get(`junction:${id}`)!
+    return {
+      id,
+      point: nodePoint(`junction:${id}`),
+      halfHeight: Math.max(JUNCTION_RADIUS, fan.half + 14),
+      lineIds: [...fan.feeds]
+        .filter(([i]) => into(lines[i]!) === id)
+        .sort((a, b) => a[1].port - b[1].port)
+        .map(([i]) => lines[i]!.id),
+    }
+  })
   let left = hub.x - HUB_LABEL_HALF_WIDTH,
     right = hub.x + HUB_LABEL_HALF_WIDTH,
     top = hub.y - hubHalfHeight,

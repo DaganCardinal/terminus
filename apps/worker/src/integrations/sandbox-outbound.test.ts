@@ -864,7 +864,10 @@ describe("Sandbox outbound capabilities", () => {
       model,
       proposalCheck: {
         planId: plan.id,
-        network: { validationNames: ["test"], activeLines: [] },
+        network: {
+          projectChecks: [{ name: "test", command: ["npm", "test"] }],
+          activeLines: [],
+        },
         baseline: null,
       },
     }
@@ -1048,7 +1051,10 @@ describe("Sandbox outbound capabilities", () => {
         model,
         proposalCheck: {
           planId: plan.id,
-          network: { validationNames: ["test"], activeLines: [] },
+          network: {
+            projectChecks: [{ name: "test", command: ["npm", "test"] }],
+            activeLines: [],
+          },
           baseline: null,
         },
       }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Line, NetworkSnapshot, TrainView } from "@terminus/protocol"
 import { planningContext } from "./dispatch-planning"
+import { defaultValidation } from "../integrations/execution-config"
 
 const at = (minute: number) =>
   new Date(Date.UTC(2026, 9, 10, 12, minute)).toISOString()
@@ -33,6 +34,17 @@ const snapshot = (
   }) as unknown as NetworkSnapshot
 
 describe("planningContext", () => {
+  it("checks plans against the network's configured project checks", () => {
+    const lint = { name: "lint", command: ["npm", "run", "lint"] }
+    const configured = snapshot([], [], {
+      network: { createdAt: at(0), validation: [lint] },
+    } as unknown as Partial<NetworkSnapshot>)
+    expect(planningContext(configured).projectChecks).toEqual([lint])
+    expect(planningContext(snapshot([], [])).projectChecks).toEqual(
+      defaultValidation
+    )
+  })
+
   it("lists finished Lines, most recent first, with their outcome", () => {
     const context = planningContext(
       snapshot(

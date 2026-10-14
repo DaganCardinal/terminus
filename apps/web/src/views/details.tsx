@@ -29,6 +29,7 @@ import {
 } from "./detail-parts"
 import { describeLocation, namesFor, trainDisplayStatus } from "./describe"
 import { JunctionDetails } from "./junctions"
+import { NamedText } from "./named-text"
 import { UnloadModeSwitch } from "./unload-mode-switch"
 import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
@@ -419,12 +420,17 @@ export function TrainDetails({
               </span>
             </div>
             <p className="detail-lead">
-              {describeLocation(
-                train.state,
-                name,
-                train.destination,
-                snapshot.stations
-              )}
+              <NamedText
+                describe={(named) =>
+                  describeLocation(
+                    train.state,
+                    named,
+                    train.destination,
+                    snapshot.stations
+                  )
+                }
+                name={name}
+              />
             </p>
             <TrainPreviewButton trainId={train.id} commit={train.headCommit} />
             <Changes

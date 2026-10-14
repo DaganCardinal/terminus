@@ -87,7 +87,10 @@ export interface PlanAssessment {
 }
 
 export interface PlanningContext {
-  validationNames: string[]
+  /** The project's configured checks. Their names are the evidence a Station
+   * may request, and every converged Junction feature runs them, so a feature
+   * check may reuse a name only with its command. */
+  projectChecks: { name: string; command: string[] }[]
   lines?: Line[]
   stations?: Station[]
   junctions?: import("./junction").Junction[]
@@ -158,6 +161,16 @@ export function assessDispatchProposal(
     for (const j of proposal.junctions) {
       if (j.incoming.length < 2)
         errors.push("A Junction needs at least two incoming Lines")
+      for (const check of j.brief.validation) {
+        const project = context.projectChecks.find((c) => c.name === check.name)
+        if (
+          project &&
+          JSON.stringify(project.command) !== JSON.stringify(check.command)
+        )
+          errors.push(
+            `${j.name}: feature check ${check.name} conflicts with the project check of that name (${project.command.join(" ")}). Project checks already run on the feature; remove it or give it a different name.`
+          )
+      }
       expanded.lines.push(
         ...j.incoming.map((l, i) => ({
           ...l,
@@ -222,7 +235,7 @@ export function assessDispatchProposal(
       }
       seen.add(station.key)
       for (const name of station.manifest.expectedEvidence) {
-        if (!context.validationNames.includes(name))
+        if (!context.projectChecks.some((check) => check.name === name))
           errors.push(
             `${label}: evidence ${name} is not a configured project check.`
           )

@@ -71,9 +71,7 @@ export function planningContext(snapshot: NetworkSnapshot): PlanningContext {
     lines: snapshot.lines,
     stations: snapshot.stations,
     crossings: snapshot.crossings ?? [],
-    validationNames: (snapshot.network.validation ?? defaultValidation).map(
-      (check) => check.name
-    ),
+    projectChecks: snapshot.network.validation ?? defaultValidation,
     // Live as the map draws it, except Lines whose own work already unloaded
     // into Terminus: a live receiver keeps its Crossing source live, but that
     // source's code is in the baseline and must not forecast collisions.

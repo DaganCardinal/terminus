@@ -19,6 +19,7 @@ import {
 import {
   baselineReportSchema,
   dispatchProposalSchema,
+  errorDetail,
 } from "@terminus/protocol"
 import { DispatchProposalError } from "@terminus/agent-runtime"
 import { NonRetryableError } from "cloudflare:workflows"
@@ -27,10 +28,11 @@ import {
   type DispatchPlanningPorts,
 } from "../agents/dispatch-planning"
 import type { Write } from "../integrations/network-store"
-import { orderedPlans } from "../agents/dispatcher"
+import { DispatchError, orderedPlans } from "../agents/dispatcher"
 import { applied } from "./transitions"
 import { defaultValidation } from "../integrations/execution-config"
 import type { DispatchActivityRecorder } from "../integrations/dispatch-activity"
+import { SANDBOX_CAPACITY_MESSAGE } from "../integrations/sandbox-capacity"
 
 export async function prepareDispatchPlan(
   ports: DispatchPlanningPorts,
@@ -100,13 +102,27 @@ export async function layDispatchLines(
   ports: DispatchPlanningPorts,
   planId: string
 ): Promise<void> {
+  try {
+    await layLines(ports, planId)
+  } catch (error) {
+    if (!(error instanceof DispatchError) || error.status === 503) throw error
+    // A refused plan stays refused, so retrying cannot help. Record why.
+    await recordDispatchFailure(ports, planId, "launching", error)
+    throw new NonRetryableError(error.message)
+  }
+}
+
+async function layLines(
+  ports: DispatchPlanningPorts,
+  planId: string
+): Promise<void> {
   const loaded = await load(ports, planId)
   const plan = loaded.value
   if (plan.state.status !== "launching") return
   const snapshot = await ports.store.snapshot(plan.networkId)
   if (!snapshot) throw new Error("Unknown network")
   if (snapshot.network.terminusCommit !== plan.terminusCommit)
-    throw new Error("Terminus changed before launch")
+    throw new DispatchError(409, "Terminus changed before launch")
   const assessment = assessPlan(
     plan.state.proposal,
     planningContext(snapshot),
@@ -115,9 +131,15 @@ export async function layDispatchLines(
   // An included baseline fix is laid as its own Line, with Crossings on the others.
   const proposal = launchProposal(plan.state.proposal)
   if (assessment.errors.length)
-    throw new Error("Network changes made the plan invalid")
+    throw new DispatchError(
+      409,
+      `Network changes made the plan invalid: ${assessment.errors.join("; ")}`
+    )
   if (hasNewCollisionForecasts(plan.state.assessment, assessment))
-    throw new Error("New collision forecasts appeared before launch")
+    throw new DispatchError(
+      409,
+      "New collision forecasts appeared before launch"
+    )
   const writes: Write[] = []
   const events: DomainEvent[] = []
   const lineIds: string[] = []
@@ -185,7 +207,8 @@ export async function layDispatchLines(
     topologyContext.lines,
     topologyContext.stations
   )
-  if (topologyErrors.length) throw new Error(topologyErrors.join("; "))
+  if (topologyErrors.length)
+    throw new DispatchError(409, topologyErrors.join("; "))
   // Forks are independent and named stably, so they run together. All settle
   // before a failure is reported, so a retry never races a fork still running.
   const settled = await Promise.allSettled(
@@ -320,7 +343,7 @@ export async function layDispatchLines(
         .map((w) => w.station),
     ]
   )
-  if (topology.length) throw new Error(topology.join("; "))
+  if (topology.length) throw new DispatchError(409, topology.join("; "))
   writes.sort(
     (a, b) => (a.kind === "crossing" ? 1 : 0) - (b.kind === "crossing" ? 1 : 0)
   )
@@ -362,7 +385,9 @@ export async function recordDispatchFailure(
   ports: DispatchPlanningPorts,
   planId: string,
   phase: "planning" | "launching",
-  validationError?: DispatchProposalError
+  /** Why it failed. Only a Dispatcher or Terminus refusal's own message is
+   * shown; any other failure is described by its kind. */
+  failure?: unknown
 ): Promise<void> {
   const loaded = await load(ports, planId)
   if (loaded.value.state.status !== phase) return
@@ -370,17 +395,83 @@ export async function recordDispatchFailure(
   const failed = applied(
     failDispatchPlan(
       loaded.value,
-      phase === "planning"
-        ? validationError
-          ? `${validationError.message}. Request a new plan.`
-          : "Dispatcher could not prepare a valid proposal. Check Worker configuration and diagnostics, then request a new plan."
-        : "Lines could not be laid against the saved Terminus baseline. Request a fresh plan against the current network."
+      failure instanceof DispatchProposalError ||
+        (failure instanceof DispatchError && failure.status !== 503)
+        ? `${phase === "launching" ? "Launch refused: " : ""}${failure.message}. Request a new plan.`
+        : phase === "planning"
+          ? planningFailureMessage(failure)
+          : "Lines could not be laid against the saved Terminus baseline. Request a fresh plan against the current network."
     )
   )
   await ports.store.commit(
     loaded.networkId,
     [{ kind: "dispatch_plan", plan: failed.value, version: loaded.version }],
     failed.events
+  )
+}
+
+/** Kinds of planning failure, matched in order, each with what to tell the user. */
+const planningFailures: {
+  matches: (message: string, classes: string[]) => boolean
+  message: string
+}[] = [
+  {
+    matches: (message) => message.startsWith(SANDBOX_CAPACITY_MESSAGE),
+    message:
+      "Planning could not start: every agent Sandbox this network may run was busy. Wait for running work to finish or raise the limit in Settings, then request a new plan.",
+  },
+  {
+    matches: (message) =>
+      /^Configure (the )?AI_GATEWAY_|^Alternative harness execution is disabled|^Dispatcher configuration changed/.test(
+        message
+      ),
+    message:
+      "Planning could not start: the Dispatcher's model or harness configuration is incomplete, or changed after the plan was requested. Check Settings and the Worker configuration, then request a new plan.",
+  },
+  {
+    matches: (message) =>
+      /\bexited with -?\d+\b|did not produce a final message|stream ended without an outcome/.test(
+        message
+      ),
+    message:
+      "Planning failed: the Dispatcher's agent stopped before it finished the plan. Request a new plan.",
+  },
+  {
+    matches: (_, classes) => classes.includes("timeout"),
+    message:
+      "Planning failed: it ran out of time before the plan was finished. Request a new plan, or narrow the goal.",
+  },
+  {
+    matches: (_, classes) => classes.includes("memory"),
+    message:
+      "Planning failed: the planning Sandbox ran out of memory. Request a new plan.",
+  },
+  {
+    matches: (_, classes) =>
+      ["container-exited", "connection-lost", "object-reset"].some((kind) =>
+        classes.includes(kind)
+      ),
+    message:
+      "Planning failed: the planning Sandbox stopped unexpectedly. Request a new plan.",
+  },
+  {
+    matches: (_, classes) => classes.includes("overloaded"),
+    message:
+      "Planning failed: the model or Sandbox service was overloaded. Wait a moment, then request a new plan.",
+  },
+]
+
+/**
+ * Says why planning failed without repeating the error, which can carry model
+ * output or credentials: only the kind of failure is described.
+ */
+export function planningFailureMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : ""
+  const classes = (errorDetail(error) ?? "").split(/[ |]/)
+  return (
+    planningFailures.find((failure) => failure.matches(message, classes))
+      ?.message ??
+    "Dispatcher could not prepare a valid proposal. Check Worker configuration and diagnostics, then request a new plan."
   )
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { BaselineReport } from "@terminus/domain"
 import {
   dispatchProposalSchema,
+  planLimits,
   type PlanDraft,
   type PlanOutline,
   type PlanStation,
@@ -30,7 +31,10 @@ import { liveDispatcherProposal } from "./dispatcher.fixture"
 
 const input: DispatchPlanningInput = {
   goal: "Add a footer",
-  network: { validationNames: ["test"], activeLines: [] },
+  network: {
+    projectChecks: [{ name: "test", command: ["npm", "test"] }],
+    activeLines: [],
+  },
   repository: { repoId: "n/terminus", commit: "a".repeat(40) },
   checkBaseline: false,
   validation: [{ name: "test", command: ["npm", "test"] }],
@@ -169,7 +173,19 @@ describe("harness Dispatcher", () => {
     expect(system).toContain(
       "Otherwise use the available read/search tools directly"
     )
-    expect(system).toContain('"validationNames":["test"]')
+    // Evidence names come from the same project checks the plan is checked with.
+    expect(system).toContain(
+      '"validationNames":["test"],"projectChecks":[{"name":"test","command":["npm","test"]}]'
+    )
+    // The size limits the schemas enforce, stated where the model reads them.
+    expect(system).toContain(`**${planLimits.lines} Lines**`)
+    expect(system).toContain(
+      `**${planLimits.stationsPerLine} Stations per Line**`
+    )
+    expect(system).toContain(`**${planLimits.stations} Stations total**`)
+    expect(system).toContain(
+      `Keep the combined plan to at most ${planLimits.stations} Stations.`
+    )
     expect(message).toContain("Add a footer")
     expect(session.resume).not.toHaveBeenCalled()
     expect(session.close).toHaveBeenCalledOnce()
@@ -405,7 +421,13 @@ describe("harness Dispatcher", () => {
     const goal = {
       ...input,
       goal: "Change the primary accent colour to #32a852",
-      network: { ...input.network, validationNames: ["build", "test"] },
+      network: {
+        ...input.network,
+        projectChecks: [
+          { name: "build", command: ["npm", "run", "build"] },
+          { name: "test", command: ["npm", "test"] },
+        ],
+      },
     }
     expect((await textDispatcher(sessions).plan(goal)).proposal).toEqual(
       corrected
@@ -577,6 +599,70 @@ describe("harness Dispatcher", () => {
     session.start.mockRejectedValueOnce(new Error("429"))
     await expect(textDispatcher(sessions).plan(input)).rejects.toThrow("429")
     expect(session.close).toHaveBeenCalledOnce()
+  })
+
+  it("keeps a finished plan, or why planning failed, when cleanup fails", async () => {
+    const finished = scripted([""], null, [complete])
+    finished.session.close.mockRejectedValueOnce(new Error("cleanup"))
+    const result = await new HarnessDispatcher(
+      "configured",
+      finished.sessions
+    ).plan(input)
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+
+    const failed = scripted([""])
+    failed.session.close.mockRejectedValueOnce(new Error("cleanup"))
+    await expect(
+      new HarnessDispatcher("configured", failed.sessions).plan(input)
+    ).rejects.toBeInstanceOf(DispatchProposalError)
+  })
+
+  it("keeps a complete saved plan when the harness fails after writing it", async () => {
+    const { session, sessions } = scripted([], null, [complete])
+    session.start.mockRejectedValueOnce(new Error("OpenCode exited with 137"))
+    const result = await new HarnessDispatcher("configured", sessions).plan(
+      input
+    )
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(session.resume).not.toHaveBeenCalled()
+
+    // The same holds for a correction that completes the plan, then fails.
+    const corrected = scripted([""], null, [draft(station("footer")), complete])
+    corrected.session.resume.mockRejectedValueOnce(new Error("timed out"))
+    expect(
+      (
+        await new HarnessDispatcher("configured", corrected.sessions).plan(
+          input
+        )
+      ).proposal.lines[0]!.stations
+    ).toHaveLength(2)
+  })
+
+  it("leaves a harness failure to the durable retry unless the saved plan is valid", async () => {
+    const incomplete = scripted([], null, [draft(station("footer"))])
+    incomplete.session.start.mockRejectedValueOnce(new Error("timed out"))
+    await expect(
+      new HarnessDispatcher("configured", incomplete.sessions).plan(input)
+    ).rejects.toThrow("timed out")
+    expect(incomplete.session.resume).not.toHaveBeenCalled()
+
+    const blocked = scripted([], null, [
+      draft(
+        station("footer"),
+        station("footer-tests", { expectedEvidence: ["lint"] })
+      ),
+    ])
+    blocked.session.start.mockRejectedValueOnce(new Error("timed out"))
+    await expect(
+      new HarnessDispatcher("configured", blocked.sessions).plan(input)
+    ).rejects.toThrow("timed out")
+
+    const unreadable = scripted([], null, [complete])
+    unreadable.session.start.mockRejectedValueOnce(new Error("timed out"))
+    unreadable.session.draft.mockRejectedValueOnce(new Error("D1"))
+    await expect(
+      new HarnessDispatcher("configured", unreadable.sessions).plan(input)
+    ).rejects.toThrow("timed out")
   })
 
   it("makes fake execution explicit and supports the bounded goal input", async () => {

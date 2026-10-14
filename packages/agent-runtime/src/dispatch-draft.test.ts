@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import type { BaselineReport } from "@terminus/domain"
-import { dispatchProposalSchema, type PlanDraft } from "@terminus/protocol"
+import {
+  dispatchProposalSchema,
+  planLimits,
+  type PlanDraft,
+} from "@terminus/protocol"
 import {
   emptyPlanDraft,
   planAcceptedReply,
@@ -13,7 +17,10 @@ import {
 } from "./dispatch-draft"
 
 const context: PlanCheckContext = {
-  network: { validationNames: ["test"], activeLines: [] },
+  network: {
+    projectChecks: [{ name: "test", command: ["npm", "test"] }],
+    activeLines: [],
+  },
   baseline: null,
 }
 
@@ -436,6 +443,29 @@ describe("set_plan_outline", () => {
     expect(reply.text).toContain(
       "Line `line-0` has 7 Stations; a top-level Line has at most 6"
     )
+  })
+
+  it("accepts a plan at every size limit, as the proposal schema does", () => {
+    // Every Line, one of them full, holding every Station the plan allows.
+    const sizes: number[] = [planLimits.stationsPerLine]
+    let left = planLimits.stations - planLimits.stationsPerLine
+    for (let lines = planLimits.lines - 1; lines > 0; lines--) {
+      sizes.push(Math.ceil(left / lines))
+      left -= sizes.at(-1)!
+    }
+    const lines = sizes.map((size, l) => ({
+      key: `line-${l}`,
+      name: `Line ${l}`,
+      unloadRecommendation: auto,
+      stations: Array.from({ length: size }, (_, s) => `s-${l}-${s}`),
+    }))
+    const { replies } = run([
+      setOutline({ summary: "As large as allowed.", lines }),
+      ...lines.flatMap((line) => line.stations.map((key) => put(station(key)))),
+      finalize,
+    ])
+    expect(replies[0]!.outcome).toBe("saved")
+    expect(replies.at(-1)!.outcome).toBe("accepted")
   })
 
   it("checks routes with the domain's launch rules", () => {

@@ -1,3 +1,4 @@
+import { planLimits } from "@terminus/protocol"
 import { narrativeGuidance } from "./narrative-guidance"
 import {
   maxRejectedFinalizations,
@@ -141,9 +142,9 @@ Prefer the smallest network that expresses the real dependency structure.
 
 Use at most:
 
-- **8 Lines**
-- **6 Stations per Line**
-- **24 Stations total**
+- **${planLimits.lines} Lines**
+- **${planLimits.stationsPerLine} Stations per Line**
+- **${planLimits.stations} Stations total**
 
 These are maximums, not targets. The schema requires at least one Line and at least one Station on each Line. Combine closely related sequential work when necessary; never split a dependent chain across Lines without explicit Crossing stops to transfer its code.
 
@@ -575,7 +576,7 @@ You write the whole proposal in that one response, so follow the Size Budget: a 
 
 export const crossingPlanningGuidance = `A Line can optionally include route stops. A station stop is {kind:"station",key:<owned station key>}; a pickup is {kind:"crossing",source:{kind:"planned",stationKey:<another Line station key>}} or {kind:"crossing",source:{kind:"existing",stationId:<network station id>}}. Include each owned Station exactly once. Crossings import ALL accepted Cars through the source Station, including prior imported work. Source implementation is not rerun. Put reusable work before consumers. Lines must form an acyclic one-way flow; reciprocal exchange is forbidden. A Station status dependency alone does not transfer code. Explain inherited scope and direction in the summary.`
 
-const junctionRules = `Each Junction needs at least two incoming Lines. Junction, Line and Station keys must be unique across the complete proposal. Incoming acceptance is automatic. Incoming Lines end at the Junction; only its outgoing Train reaches Terminus after complete-feature validation, Conductor review, and explicit human release. The outgoing Line may have no Stations. All members share one frozen Terminus snapshot. Crossings stay within a Junction and cannot import external work. Feature validation commands are separate from project checks; use known project commands when uncertain, and explain feature criteria. Do not create validation-only Stations. Keep the combined plan under twenty-four Stations.`
+const junctionRules = `Each Junction needs at least two incoming Lines. Junction, Line and Station keys must be unique across the complete proposal. Incoming acceptance is automatic. Incoming Lines end at the Junction; only its outgoing Train reaches Terminus after complete-feature validation, Conductor review, and explicit human release. The outgoing Line may have no Stations. All members share one frozen Terminus snapshot. Crossings stay within a Junction and cannot import external work. The converged feature always runs every project check in \`network.projectChecks\`, so in \`brief.validation\` copy a project check exactly (same name and command) or add a feature check under a new name; never reuse a project check's name with a different command. Explain feature criteria. Do not create validation-only Stations. Keep the combined plan to at most ${planLimits.stations} Stations.`
 
 /** Junctions in a proposal written as one JSON object. */
 export const junctionPlanningGuidance = `When the user requests feature isolation, propose junctions: [{key,name,brief:{goal,scope,contracts,invariants,acceptanceCriteria,validation:[{name,command}]},incoming:[{name,stations,route?}],outgoing:{name,stations,route?,unloadMode?}}]. unloadMode applies only to the outgoing Line. Top-level lines can be empty when junctions is nonempty. ${junctionRules}`

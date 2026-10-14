@@ -264,7 +264,16 @@ function Proposal({
   // Matches launch order: an included fix is laid first, and every other
   // Line picks up its accepted checkpoint before its first Station.
   const lines = fixIncluded ? [fix.line, ...proposal.lines] : proposal.lines
-  const stations = lines.reduce((n, line) => n + line.stations.length, 0)
+  // Junction Lines are laid after these and shown in their Junction's card.
+  const featureLines = (proposal.junctions ?? []).flatMap((j) => [
+    ...j.incoming,
+    j.outgoing,
+  ])
+  const lineCount = lines.length + featureLines.length
+  const stations = [...lines, ...featureLines].reduce(
+    (n, line) => n + line.stations.length,
+    0
+  )
   const lineIds = "lineIds" in state ? state.lineIds : []
   const launchedLines = lineIds
     .map((id) => snapshot.lines.find((line) => line.id === id))
@@ -287,13 +296,13 @@ function Proposal({
     state.status === "ready" &&
     plan.terminusCommit !== snapshot.network.terminusCommit
   const blocked = assessment.errors.length > 0
-  const shape = `${plural(lines.length, "Line")} · ${plural(stations, "Station")}`
+  const shape = `${plural(lineCount, "Line")} · ${plural(stations, "Station")}`
 
   const superseded = state.status === "ready" && !latest
   const summary = launched
-    ? `Launched ${plural(lines.length, "Line")}.`
+    ? `Launched ${plural(lineCount, "Line")}.`
     : superseded
-      ? `Proposed ${plural(lines.length, "Line")}; not launched.`
+      ? `Proposed ${plural(lineCount, "Line")}; not launched.`
       : null
   const issues = assessment.errors.length + (stale ? 1 : 0)
   const notes = useRef<HTMLDivElement>(null)
@@ -520,7 +529,11 @@ function Proposal({
               ))}
             </div>
             {assessment.collisions.length > 0 && (
-              <PlanNote tone="held" title="Lines that may collide">
+              <PlanNote
+                tone="held"
+                title={`Lines that may collide · ${assessment.collisions.length}`}
+                collapsible
+              >
                 <ul>
                   {assessment.collisions.map((collision, index) => (
                     <li key={index}>
@@ -545,7 +558,7 @@ function Proposal({
             )}
             <PlanFooter
               state={state}
-              lines={lines.length}
+              lines={lineCount}
               issues={issues}
               showIssues={() =>
                 notes.current?.scrollIntoView({
@@ -843,25 +856,44 @@ function PlanNote({
   tone,
   title,
   action,
+  collapsible,
   children,
 }: {
   tone: "attention" | "held"
   title: string
   action?: ReactNode
+  /** Starts closed, showing only the title. */
+  collapsible?: boolean
   children: ReactNode
 }) {
-  return (
-    <div className={`plan-note plan-note-${tone}`} role="note">
-      <h4>
-        {tone === "attention" ? (
-          <CircleAlert size={14} />
-        ) : (
-          <GitCompareArrows size={14} />
-        )}
-        {title}
-      </h4>
+  const heading = (
+    <h4>
+      {tone === "attention" ? (
+        <CircleAlert size={14} />
+      ) : (
+        <GitCompareArrows size={14} />
+      )}
+      {title}
+      {collapsible && (
+        <ChevronRight size={14} className="plan-note-chevron" aria-hidden />
+      )}
+    </h4>
+  )
+  const body = (
+    <>
       {children}
       {action && <div className="plan-note-action">{action}</div>}
+    </>
+  )
+  return collapsible ? (
+    <details className={`plan-note plan-note-${tone}`} role="note">
+      <summary>{heading}</summary>
+      {body}
+    </details>
+  ) : (
+    <div className={`plan-note plan-note-${tone}`} role="note">
+      {heading}
+      {body}
     </div>
   )
 }

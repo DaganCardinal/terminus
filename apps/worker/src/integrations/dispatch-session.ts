@@ -220,7 +220,12 @@ class SandboxDispatchSession implements DispatchSession {
     ])
     this.#access = undefined
     this.#phases.finish({ resumes: this.#resumes })
-    if (results.some((result) => result.status === "rejected"))
+    if (results.some((result) => result.status === "rejected")) {
+      // The planner keeps its outcome, so this log is the only record.
+      console.error("Dispatcher workspace cleanup failed", {
+        sandbox: this.#input.label,
+      })
       throw new Error("Dispatcher workspace cleanup failed")
+    }
   }
 }

@@ -25,7 +25,9 @@ import {
   layDispatchLines,
   startDispatchTrains,
   recordDispatchFailure,
+  planningFailureMessage,
 } from "./dispatch-operations"
+import { SANDBOX_CAPACITY_MESSAGE } from "../integrations/sandbox-capacity"
 import { advanceTrain } from "./train-operations"
 import {
   prepareIntegration,
@@ -352,6 +354,21 @@ describe("durable Dispatcher planning and launch", () => {
       )
     ).toBe(false)
   })
+  it("records why a launch was refused instead of retrying it", async () => {
+    const f = await fixture()
+    await prepareDispatchPlan(f.ports, f.plan.id)
+    await launchPlannedLines(f.ports, f.network.id, f.plan.id)
+    await promoteOtherWork(f)
+    await expect(layDispatchLines(f.ports, f.plan.id)).rejects.toBeInstanceOf(
+      NonRetryableError
+    )
+    const saved = (await f.ports.store.dispatchPlan(f.plan.id))!.value
+    expect(saved.state).toMatchObject({
+      status: "failed",
+      message:
+        "Launch refused: Terminus changed before launch. Request a new plan.",
+    })
+  })
   it("rejects mismatched or malformed context/output, and stores safe failure diagnostics", async () => {
     const f = await fixture()
     f.ports.planner.plan = vi.fn(async () => ({
@@ -379,6 +396,59 @@ describe("durable Dispatcher planning and launch", () => {
       )
     ).toHaveLength(1)
   })
+  it("records what kind of failure stopped planning, never its message", async () => {
+    const f = await fixture()
+    await recordDispatchFailure(
+      f.ports,
+      f.plan.id,
+      "planning",
+      new Error("OpenCode exited with 137 token=PRIVATE")
+    )
+    const saved = (await f.ports.store.dispatchPlan(f.plan.id))!.value.state
+    expect(saved).toMatchObject({
+      status: "failed",
+      message:
+        "Planning failed: the Dispatcher's agent stopped before it finished the plan. Request a new plan.",
+    })
+    expect(JSON.stringify(saved)).not.toContain("PRIVATE")
+  })
+})
+
+describe("planning failure messages", () => {
+  it.each([
+    [
+      `${SANDBOX_CAPACITY_MESSAGE}: this network already runs 10 agent Sandboxes.`,
+      "every agent Sandbox this network may run was busy",
+    ],
+    [
+      "Configure AI_GATEWAY_ID before running real agents",
+      "configuration is incomplete",
+    ],
+    [
+      "Dispatcher configuration changed; request a new plan",
+      "configuration is incomplete, or changed",
+    ],
+    ["OpenCode exited with 1", "agent stopped before it finished"],
+    ["codex exited with 2", "agent stopped before it finished"],
+    [
+      "OpenCode did not produce a final message",
+      "agent stopped before it finished",
+    ],
+    ["The operation timed out", "ran out of time"],
+    ["Container exceeded its memory limit", "ran out of memory"],
+    ["Container is not running", "stopped unexpectedly"],
+    ["Too many requests", "overloaded"],
+    ["Something else entirely", "could not prepare a valid proposal"],
+  ])("describes %j by its kind", (message, kind) => {
+    const described = planningFailureMessage(new Error(message))
+    expect(described).toContain(kind)
+    expect(described).not.toContain(message)
+  })
+  it("describes a failure that is not an Error generically", () => {
+    expect(planningFailureMessage("lost")).toContain(
+      "could not prepare a valid proposal"
+    )
+  })
 })
 
 it("launches planned Crossing references atomically across Lines", async () => {
@@ -401,6 +471,41 @@ it("launches planned Crossing references atomically across Lines", async () => {
   expect(
     snapshot.lines.find((l) => l.id === c.lineId)?.stops?.[0]
   ).toMatchObject({ kind: "crossing", stationId: source.id })
+})
+
+it("flags a Junction feature check that redefines a project check before launch", async () => {
+  const f = await fixture(),
+    p = proposal()
+  f.ports.planner.plan = async () =>
+    planned({
+      summary: "Feature",
+      lines: [],
+      junctions: [
+        {
+          key: "feature",
+          name: "Feature",
+          brief: {
+            goal: "Feature",
+            scope: ["src/"],
+            contracts: [],
+            invariants: [],
+            acceptanceCriteria: ["works"],
+            validation: [{ name: "test", command: ["npm", "run", "test"] }],
+          },
+          incoming: [
+            { name: p.lines[0]!.name, stations: p.lines[0]!.stations },
+            { name: p.lines[1]!.name, stations: p.lines[1]!.stations },
+          ],
+          outgoing: { name: "Deliver", stations: [] },
+        },
+      ],
+    })
+  await prepareDispatchPlan(f.ports, f.plan.id)
+  const plan = (await f.ports.store.dispatchPlan(f.plan.id))!.value
+  if (plan.state.status !== "ready") throw new Error("Expected ready")
+  expect(plan.state.assessment.errors.join(" ")).toContain(
+    "feature check test conflicts with the project check"
+  )
 })
 
 it("atomically launches Junction proposals with stable membership and a deferred outgoing Train", async () => {

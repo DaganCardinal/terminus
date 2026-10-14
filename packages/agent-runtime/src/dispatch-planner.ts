@@ -35,7 +35,7 @@ export class FakeDispatchPlanner implements DispatchPlanner {
   readonly model = "fake"
   async plan(input: DispatchPlanningInput): Promise<DispatchPlanResult> {
     input.onActivity?.({ kind: "phase", phase: "simulation" })
-    const evidence = input.network.validationNames
+    const evidence = input.network.projectChecks.map((check) => check.name)
     const proposal: DispatchProposal = {
       summary:
         "Simulated plan for offline development. Real planning uses the configured Dispatcher model.",

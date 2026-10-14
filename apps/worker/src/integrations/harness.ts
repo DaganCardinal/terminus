@@ -275,6 +275,9 @@ export class HarnessSession {
     this.#session ??= result.sessionId
     if (output.stopped === "proposal_rejected")
       throw new ProposalSubmissionsExhausted(result.summary ?? "")
+    // Stopped because its plan was accepted: the saved draft is the answer,
+    // and is reviewed again, so a missing closing message is not a failure.
+    if (output.stopped === "proposal_accepted") return result.summary ?? ""
     if (result.error) throw new Error(result.error)
     return result.summary ?? ""
   }

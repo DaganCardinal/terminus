@@ -73,11 +73,5 @@ export function dispatcherIndicator(
     latest?.state.status === "starting"
   )
     return { tone: "working", label: "Launching Lines" }
-  if (
-    snapshot.conflictConcerns?.some(
-      (concern) => concern.pair.stage === "investigate"
-    )
-  )
-    return { tone: "working", label: "Checking for conflicts" }
   return { tone: "idle", label: "Dispatcher" }
 }

@@ -164,6 +164,9 @@ export function NetworkStatus({ networkId }: { networkId: string }) {
         events={events}
         selection={selection}
         terminusSelected={panel?.kind === "terminus"}
+        selectedJunctionId={
+          panel?.kind === "junction" ? panel.junctionId : undefined
+        }
         onSelectTerminus={() => setPanel({ kind: "terminus" })}
         onSelect={select}
         onClear={closePanel}

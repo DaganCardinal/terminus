@@ -105,7 +105,9 @@ export function promptNetwork(network: PlanningContext) {
     }
   )
   return {
-    validationNames: network.validationNames,
+    // The instructions name evidence by `validationNames`.
+    validationNames: network.projectChecks.map((check) => check.name),
+    projectChecks: network.projectChecks,
     activeLines: network.activeLines,
     lines: lines.filter((l) => !finished.has(l.id)),
     stations: stations.filter((s) => !finished.has(s.lineId)),
@@ -340,15 +342,32 @@ export class HarnessDispatcher implements DispatchPlanner {
     })
     try {
       const baseline = await session.prepare()
+      const reviewDraft = async () =>
+        reviewPlanDraft(await session.draft(), {
+          network: input.network,
+          baseline,
+        })
       // Stopped after repeated rejected plan tool calls: the saved draft is final.
       let exhausted = false
+      // The harness failed after its saved plan was already complete.
+      let recovered = false
       const answer = async (run: Promise<string>) => {
         try {
           return await run
         } catch (error) {
-          if (!(error instanceof ProposalSubmissionsExhausted)) throw error
-          exhausted = true
-          return error.submission
+          if (error instanceof ProposalSubmissionsExhausted) {
+            exhausted = true
+            return error.submission
+          }
+          // With plan tools the saved draft is the answer, so a harness that
+          // fails once the plan is complete and valid loses nothing. Anything
+          // less is left to the durable retry.
+          const saved = this.planTools
+            ? await reviewDraft().catch(() => null)
+            : null
+          if (saved?.kind !== "valid") throw error
+          recovered = true
+          return ""
         }
       }
       let text = await answer(
@@ -365,15 +384,13 @@ export class HarnessDispatcher implements DispatchPlanner {
       for (let attempt = 1; ; attempt++) {
         input.onActivity?.({ kind: "phase", phase: "validating_proposal" })
         const review = this.planTools
-          ? reviewPlanDraft(await session.draft(), {
-              network: input.network,
-              baseline,
-            })
+          ? await reviewDraft()
           : reviewProposalText(text, input.network, baseline)
         // TEMPORARY benchmark instrumentation.
         perf("dispatcher.proposal_review", {
           attempt,
           exhausted,
+          recovered,
           planTools: this.planTools,
           kind: review.kind,
           finalChars: text.length,
@@ -423,7 +440,9 @@ export class HarnessDispatcher implements DispatchPlanner {
         )
       }
     } finally {
-      await session.close()
+      // A cleanup failure must not discard a finished plan or replace why
+      // planning failed; the session reports it, and its Sandbox is disposable.
+      await session.close().catch(() => {})
     }
   }
 }

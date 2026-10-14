@@ -18,7 +18,10 @@ import {
 } from "./dispatch-plan"
 import { manifest, unwrap, expectRejected, eventTypes } from "./testing"
 
-const context = { validationNames: ["test"], activeLines: [] }
+const context = {
+  projectChecks: [{ name: "test", command: ["npm", "test"] }],
+  activeLines: [],
+}
 const proposal = (): DispatchProposal => ({
   summary: "Implement the goal",
   lines: [
@@ -389,7 +392,7 @@ describe("Baseline fix suggestions", () => {
         {
           key: "feature",
           name: "Feature",
-          brief: {} as never,
+          brief: { validation: [] } as never,
           incoming: [],
           outgoing: { name: "Out", stations: [] },
         },
@@ -398,6 +401,42 @@ describe("Baseline fix suggestions", () => {
     expect(assessPlan(junctions, context, failing).errors.join(" ")).toContain(
       "cannot reach Junction input Lines"
     )
+  })
+
+  it("refuses a Junction feature check that redefines a project check", () => {
+    const line = proposal().lines[0]!
+    const feature = (command: string[]): DispatchProposal => ({
+      summary: "Feature",
+      lines: [],
+      junctions: [
+        {
+          key: "feature",
+          name: "Feature",
+          brief: {
+            validation: [{ name: "test", command }],
+          } as never,
+          incoming: [
+            { ...line, stations: [{ ...line.stations[0]!, key: "a" }] },
+            { ...line, stations: [{ ...line.stations[0]!, key: "b" }] },
+          ],
+          outgoing: { name: "Out", stations: [] },
+        },
+      ],
+    })
+    const checks = {
+      ...context,
+      projectChecks: [{ name: "test", command: ["npm", "test"] }],
+    }
+    expect(
+      assessPlan(
+        feature(["npm", "run", "test"]),
+        checks,
+        undefined
+      ).errors.join(" ")
+    ).toContain("feature check test conflicts with the project check")
+    expect(
+      assessPlan(feature(["npm", "test"]), checks, undefined).errors.join(" ")
+    ).not.toContain("conflicts with the project check")
   })
 
   it("selects the fix Line's unload mode like any other planned Line", () => {

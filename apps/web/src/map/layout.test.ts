@@ -566,6 +566,12 @@ it("projects independent Junctions with their own approach lanes and outgoing ro
       )
     }
     expect(a!.points.at(-1)).not.toEqual(b!.points.at(-1))
+    // The marker's ring lists its inputs in the order they enter it.
+    expect(junction.lineIds).toEqual(
+      [a!, b!]
+        .sort((p, q) => p.points.at(-1)!.y - q.points.at(-1)!.y)
+        .map((r) => r.line.id)
+    )
     expect(out!.points[0]).toEqual(junction.point)
     // The outgoing Line continues straight on from its trunk input.
     expect(a!.points.at(-1)!.y).toBe(junction.point.y)

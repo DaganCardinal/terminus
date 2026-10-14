@@ -9,6 +9,7 @@ import {
 import {
   dispatchProposalSchema,
   lineSharedFields,
+  planLimits,
   planOutlineSchema,
   planStationSchema,
   type PlanDraft,
@@ -276,10 +277,6 @@ function placements(outline: PlanOutline): Map<string, string> {
   return placement
 }
 
-const maxTopLevelLines = 8
-const maxStationsPerLine = 6
-const maxStations = 24
-
 /**
  * Checks the outline's own structure: keys, where each Line sits, and the
  * plan's size limits. These need no Station Manifests.
@@ -304,9 +301,9 @@ function layoutProblems(outline: PlanOutline): string[] {
             : `Station \`${key}\` is listed on Line \`${owner}\` and Line \`${line.key}\`; a Station belongs to one Line.`
         )
     }
-  if (owners.size > maxStations)
+  if (owners.size > planLimits.stations)
     problems.push(
-      `The plan has ${owners.size} Stations; the most is ${maxStations}.`
+      `The plan has ${owners.size} Stations; the most is ${planLimits.stations}.`
     )
 
   const placed = new Map<string, string>()
@@ -352,16 +349,16 @@ function layoutProblems(outline: PlanOutline): string[] {
   const topLevel = [...lines.values()].filter((line) => !placed.has(line.key))
   if (!topLevel.length && !outline.junctions?.length)
     problems.push("The plan needs at least one top-level Line or Junction.")
-  if (topLevel.length > maxTopLevelLines)
+  if (topLevel.length > planLimits.lines)
     problems.push(
-      `The plan has ${topLevel.length} top-level Lines; the most is ${maxTopLevelLines}. Junction and baseline-fix Lines do not count.`
+      `The plan has ${topLevel.length} top-level Lines; the most is ${planLimits.lines}. Junction and baseline-fix Lines do not count.`
     )
   for (const line of topLevel) {
     if (!line.stations.length)
       problems.push(`Line \`${line.key}\` needs at least one Station.`)
-    if (line.stations.length > maxStationsPerLine)
+    if (line.stations.length > planLimits.stationsPerLine)
       problems.push(
-        `Line \`${line.key}\` has ${line.stations.length} Stations; a top-level Line has at most ${maxStationsPerLine}.`
+        `Line \`${line.key}\` has ${line.stations.length} Stations; a top-level Line has at most ${planLimits.stationsPerLine}.`
       )
     if (!line.unloadRecommendation)
       problems.push(`Line \`${line.key}\` needs an \`unloadRecommendation\`.`)

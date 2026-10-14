@@ -58,14 +58,6 @@ export function DispatcherButton({
   )
 }
 
-/** Example goals for an empty thread. They fill the composer; the user
- * still decides what to send. */
-const starters = [
-  "Add an accessible footer with links and a copyright line, with tests",
-  "Add a light/dark theme toggle that remembers the choice",
-  "Improve the README with setup and contribution instructions",
-]
-
 type Sent = {
   goal: string
   requestId: string
@@ -370,12 +362,6 @@ export function DispatcherPanel({
           <p>You review the plan. Nothing runs until you launch it.</p>
           {empty && (
             <div className="starters">
-              <p className="starters-label">Try one of these</p>
-              {starters.map((starter) => (
-                <button key={starter} onClick={() => refine(starter, false)}>
-                  {starter}
-                </button>
-              ))}
               <div className="starters-demo">
                 <span>Just exploring?</span>
                 <Button
@@ -453,7 +439,6 @@ export function DispatcherPanel({
             />
             <ConflictMessages
               snapshot={snapshot}
-              show="reported"
               pending={pending}
               command={command}
               openTrain={openTrain}
@@ -466,13 +451,6 @@ export function DispatcherPanel({
             />
           </>
         )}
-        <ConflictMessages
-          snapshot={snapshot}
-          show="checking"
-          pending={pending}
-          command={command}
-          openTrain={openTrain}
-        />
       </div>
 
       <form className="composer" onSubmit={submit}>
