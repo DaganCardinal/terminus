@@ -7,6 +7,7 @@
 <p align="center"><strong>A new model for coordinating software development, built for teams of coding agents on Cloudflare Workers and Artifacts.</strong></p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-experimental-yellow" alt="Status: experimental">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white" alt="Cloudflare Workers">
   <img src="https://img.shields.io/badge/Cloudflare-Artifacts-F38020?logo=cloudflare&logoColor=white" alt="Cloudflare Artifacts">
@@ -22,6 +23,9 @@
 <p align="center">
   <img src="docs/images/terminus-map.png" alt="The Terminus railway map with four Lines running at once, each Train under Conductor review" width="900">
 </p>
+
+> [!NOTE]
+> **Terminus is experimental.** Expect rough edges and breaking changes between versions. The offline demo is free, but running real agents is billed to your own Cloudflare account: read [Costs and access](#costs-and-access) before you go live.
 
 Coding agents have gotten very good at writing code, but coordinating several of them on one project is still a mess. What can safely happen in parallel? How do agents avoid stepping on each other? How does everything come back together without a pile of merge conflicts?
 
@@ -141,6 +145,25 @@ Cloudflare isn't just hosting the app. Much of the architecture came from what t
 | **R2** | A disposable npm dependency cache shared by Sandbox installs. |
 | **Workers Builds** | Deploys a project's published Terminus state when you choose to publish. |
 
+## Costs and access
+
+The fake environment costs nothing. Live mode runs real agents on your own Cloudflare account, which is billed for:
+
+- **Models**, for every role: Workers AI by usage, and Anthropic and OpenAI models through AI Gateway [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/) credits. This includes local `npm run dev:worker`.
+- **Sandboxes**, which are Containers. A deployment starts one for every Station run, Conductor review, Dispatcher plan, Technician repair, integration check and preview, and a Station returned for revision runs again (up to three automatic revisions by default). Under `npm run dev:worker` they run in your local Docker instead.
+- **Workers, Workflows, D1, R2 and Artifacts** usage.
+
+Cost grows with the number of Lines running at once, the models you choose and how often work is returned for revision. To keep it in check:
+
+- Choose a smaller model preset in **Settings → Agents**. The default is Medium; Extra-light uses GLM-5.3 Flash for every text role.
+- Lower the per-network Sandbox limits and sizes in **Settings → Sandboxes** (default 25 agent Sandboxes at standard-3 and 20 agentless at standard-2).
+- Set AI Gateway spend limits if you use Anthropic or OpenAI models (see [Live setup](docs/live-setup.md#provider-routing)).
+- Use **Emergency Brake** from a network's actions menu to stop all of its Station agents and hold the network. It doesn't stop Dispatcher, Conductor, integration, repair or preview containers.
+
+The in-app stress test runs ten Trains on real Sandboxes and Artifacts with scripted Station agents and Conductor reviews, so its cost is mostly containers rather than models.
+
+A deployment has no per-user permissions. Everyone listed in `ACCESS_ALLOWED_EMAILS` can see every network, launch and stop work, change Settings, approve unloading and publish, all billed to your account. Only add people you'd trust with that.
+
 ## Real repositories and agents
 
 Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default Medium preset uses GLM-5.3 for planning, reviews and repairs, Kimi K2.7 Code for Station work, and Clef for Engineer decisions.
@@ -175,7 +198,7 @@ Configure these Worker secrets; local `.dev.vars` are not deployed:
 | --- | --- |
 | `ARTIFACTS_API_TOKEN` | Account-scoped token with Artifacts Read and Edit |
 | `AI_GATEWAY_TOKEN` | Account-scoped token with Workers AI Read, plus AI Gateway Run for native Anthropic/OpenAI routes |
-| `ACCESS_ALLOWED_EMAILS` | Comma-separated emails permitted to use the app |
+| `ACCESS_ALLOWED_EMAILS` | Comma-separated emails permitted to use the app, each with full control (see [Costs and access](#costs-and-access)) |
 
 For a first deployment, put all three in a temporary `NAME=value` secrets file outside the repository. Leave `APP_ORIGIN`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` empty until Access is configured; public requests fail closed. From the repository root:
 
