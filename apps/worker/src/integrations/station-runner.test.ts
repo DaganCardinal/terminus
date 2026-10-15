@@ -180,9 +180,6 @@ describe("Station execution boundary", () => {
       })
     )
     const logs = JSON.stringify([info.mock.calls, failed.mock.calls])
-    // The failed harness is classified without logging its message.
-    expect(logs).toContain("harness.failed")
-    expect(logs).toContain("unclassified reference=abc123")
     for (const secret of [
       "test-worker-token",
       "test-station-token",

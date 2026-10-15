@@ -5,7 +5,6 @@ import {
 } from "@terminus/protocol"
 import {
   harnessResult,
-  logHarnessTimeline,
   executionConfig,
   agentProvenance,
   stationHarnessAgent,
@@ -23,8 +22,6 @@ import {
 import type { AgentConfig } from "@terminus/domain"
 import {
   commandResultSchema,
-  errorKind,
-  PerfPhases,
   validationCommandsSchema,
 } from "@terminus/protocol"
 import type { NetworkStore } from "./network-store"
@@ -101,18 +98,8 @@ export class SandboxStationRunner implements StationRunner {
       throw new Error(
         "Use the explicit stress-test command before resuming this fixture"
       )
-    // TEMPORARY benchmark instrumentation.
-    const phases = new PerfPhases("station.run", {
-      runId: input.runId,
-      stationId: input.stationId,
-      revision: !!input.feedback,
-    })
-    phases.enter("checkpoint lookup")
     const checkpoint = await this.#store.agentCheckpoint(input, this.config)
-    if (checkpoint?.published) {
-      phases.finish({ ok: true, reused: "published checkpoint" })
-      return checkpoint.result
-    }
+    if (checkpoint?.published) return checkpoint.result
     if (!this.#scripted) gatewayConfig(this.#env, this.config.model)
     const validation = validationCommandsSchema.parse(input.validation)
     for (const name of input.manifest.expectedEvidence) {
@@ -123,7 +110,6 @@ export class SandboxStationRunner implements StationRunner {
     }
     const station = await this.#store.station(input.stationId)
     if (!station) throw new Error("Unknown Station")
-    phases.enter("access")
     const access = await this.#repositories.access(
       input.workspace.repoId,
       "write"
@@ -132,7 +118,6 @@ export class SandboxStationRunner implements StationRunner {
     let phase = "checkout"
     const enter = (next: string) => {
       phase = next
-      phases.enter(next)
     }
     const workspace: GitWorkspace = {
       run: async (args, cwd, env) => {
@@ -176,7 +161,6 @@ export class SandboxStationRunner implements StationRunner {
     let saved = false
     let unpublishedCandidate = !!checkpoint
     try {
-      phases.enter("configure (container start)")
       await sandbox.configure({
         repositories: [
           { remote: access.remote, token: access.token, scope: "write" },
@@ -250,29 +234,9 @@ export class SandboxStationRunner implements StationRunner {
             run: workspace.run,
           },
           prepared,
-          repoDirectory,
-          undefined,
-          undefined,
-          {
-            role: "Station",
-            sandbox: `station-${input.runId}`,
-            runId: input.runId,
-            kind: "start",
-          }
+          repoDirectory
         )
         const outcome = harnessResult(prepared.harness, harness)
-        logHarnessTimeline(
-          {
-            role: "Station",
-            sandbox: `station-${input.runId}`,
-            runId: input.runId,
-            kind: "start",
-            error: outcome.error?.slice(0, 300),
-            finalChars: outcome.summary?.length,
-          },
-          harness,
-          phases.currentMs()
-        )
         if (outcome.error) throw new Error(outcome.error)
         summary = outcome.summary
       }
@@ -319,13 +283,8 @@ export class SandboxStationRunner implements StationRunner {
       await repository.publish(headCommit)
       await this.#store.publishAgentRun(input, this.config)
       saved = true
-      phases.enter("close")
       return result
     } catch (error) {
-      phases.finish({
-        ok: false,
-        error: errorKind(error),
-      })
       // The Engineer triages failed runs, so report where this one stopped.
       throw new StationExecutionError(
         phase,
@@ -349,7 +308,6 @@ export class SandboxStationRunner implements StationRunner {
         }
       } finally {
         await this.#repositories.revoke(access)
-        if (saved) phases.finish({ ok: true })
       }
     }
   }

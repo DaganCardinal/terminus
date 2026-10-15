@@ -3,7 +3,6 @@
 // Runtime types generated with workerd@1.20261006.1 2026-08-15 nodejs_compat
 interface __BaseEnv_Env {
 	DEPENDENCY_CACHE: R2Bucket;
-	PERF_LOGS: R2Bucket;
 	DB: D1Database;
 	ASSETS: Fetcher;
 	REPOSITORY_MODE: string;
@@ -55,7 +54,6 @@ declare namespace Cloudflare {
 	}
 	interface FakeEnv {
 		DEPENDENCY_CACHE: R2Bucket;
-		PERF_LOGS: R2Bucket;
 		DB: D1Database;
 		ASSETS: Fetcher;
 		REPOSITORY_MODE: string;

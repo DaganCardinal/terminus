@@ -15,10 +15,6 @@
   "observability": {
     "enabled": true,
   },
-  // TEMPORARY benchmark instrumentation, with PERF_LOGS below: every `[perf]`
-  // line is also copied to R2 by apps/perf-tail, because Workers Logs loses
-  // whole invocations. Deploy terminus-perf-tail first. Not inherited by envs.
-  "tail_consumers": [{ "service": "terminus-perf-tail" }],
   "build": { "command": "npm run build --workspace @terminus/web" },
   "assets": {
     "directory": "../web/dist",
@@ -47,9 +43,6 @@
       "bucket_name": "terminus-dependency-cache",
       "binding": "terminus_dependency_cache",
     },
-    // TEMPORARY: `[perf]` lines written by apps/perf-tail, read by
-    // GET /api/perf-logs.
-    { "binding": "PERF_LOGS", "bucket_name": "terminus-perf-logs" },
   ],
   // Browser Run, used only by the deployed transport proof until it passes
   // (docs/browser-run.md). BROWSER_RUN_ENABLED below gates every use.
@@ -256,8 +249,6 @@
       // request as that zone's hostname instead of localhost, losing the local
       // APP_ORIGIN exemption and *.localhost preview hostnames.
       "routes": [],
-      // Local runs keep their `[perf]` lines in the terminal.
-      "tail_consumers": [],
       "secrets": { "required": [] },
       "containers": [],
       "durable_objects": {
@@ -302,7 +293,6 @@
           "binding": "DEPENDENCY_CACHE",
           "bucket_name": "terminus-dependency-cache",
         },
-        { "binding": "PERF_LOGS", "bucket_name": "terminus-perf-logs" },
       ],
       "workflows": [
         {

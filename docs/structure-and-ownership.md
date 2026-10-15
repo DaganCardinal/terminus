@@ -19,7 +19,6 @@ apps/
     workflows/        Durable Train, Station, integration, planning and repair execution
     integrations/     D1, Sandbox, provider transport and Worker Git adapters
   stress-test/        Explicit ten-Train CLI and local rehearsal
-  perf-tail/          Temporary benchmark log collection
 packages/
   domain/             Pure railway concepts, transitions, invariants and gates
   protocol/           Zod schemas, commands, events, snapshots and shared contracts
@@ -110,7 +109,7 @@ Unloading approval, repair approval and feature release are separate Dispatcher-
 | Disposable checkouts and running processes | Sandboxes |
 | Selection, zoom, layout and animation | React |
 
-The domain event log powers both user activity and audit history. Safe harness observations and temporary benchmark logs are separate telemetry with no authority over orchestration. R2 dependency caches are disposable; losing them causes an install rather than loss of work.
+The domain event log powers both user activity and audit history. Safe harness observations are separate telemetry with no authority over orchestration. R2 dependency caches are disposable; losing them causes an install rather than loss of work.
 
 ## Map and interaction
 

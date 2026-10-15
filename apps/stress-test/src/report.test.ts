@@ -1,34 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { stressTimings, latencySummary, phaseTimings } from "./report.ts"
+import { stressTimings, latencySummary } from "./report.ts"
 
 const event = (seconds: number, type: string, trainId = "a") => ({
   occurredAt: new Date(seconds * 1000).toISOString(),
   event: { type, trainId },
 })
 describe("stress report", () => {
-  it("groups relevant phase and capacity timings while excluding unrelated work", () => {
-    const records = [
-      {
-        message:
-          '[perf] station.run.done {"stationId":"s1","phases":{"checkout":100,"dependencies":200}}',
-      },
-      {
-        message:
-          '[perf] station.run.done {"stationId":"other","phases":{"checkout":999}}',
-      },
-      {
-        message:
-          '[perf] sandbox.lease {"sandbox":"station-s1-s1-r0","waitedMs":50}',
-      },
-    ]
-    expect(
-      phaseTimings(records, { stations: [{ id: "s1" }], trains: [], cars: [] })
-    ).toMatchObject({
-      "station.run.done:checkout": { totalMs: 100, requests: 1 },
-      "station.run.done:dependencies": { totalMs: 200 },
-      "sandbox.capacity_wait": { totalMs: 50 },
-    })
-  })
   it("separates work, queue wait and integration service time, including a backlog", () => {
     const report = stressTimings([
       event(0, "train.departed"),

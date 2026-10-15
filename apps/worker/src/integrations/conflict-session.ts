@@ -81,7 +81,6 @@ class SandboxConflictSession implements ConflictSession {
     this.#input = input
     this.#harness = new HarnessSession(env, sandbox, {
       role: "Dispatcher",
-      label: conflictSandboxName(input.id),
       model: input.model,
       execution: input.execution,
       directory: sealedDirectory,

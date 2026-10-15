@@ -229,7 +229,6 @@ describe("Harness agent configuration", () => {
       "--format",
       "json",
       "--auto",
-      "--thinking",
       "--agent",
       "dispatcher",
       "--model",
@@ -492,39 +491,6 @@ describe("Plan tool calls", () => {
       error: null,
     })
     expect(output.stdout).not.toContain("PRIVATE")
-  })
-})
-
-describe("Harness step timeline", () => {
-  it("records absolute step and tool-end times, to line up with the Worker's model calls", async () => {
-    const output = await filterEvents([
-      { type: "step_start", timestamp: 1_000, sessionID, part: {} },
-      {
-        type: "tool_use",
-        timestamp: 1_400,
-        sessionID,
-        part: {
-          tool: "read",
-          state: {
-            status: "completed",
-            input: { filePath: "src/a.ts" },
-            time: { start: 1_100, end: 1_300 },
-          },
-        },
-      },
-      {
-        type: "step_finish",
-        timestamp: 1_500,
-        sessionID,
-        part: { reason: "tool-calls", tokens: {} },
-      },
-    ])
-    const step = output.stdout
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .find((line) => line.type === "perf_step")
-    expect(step).toMatchObject({ startAt: 1_000, toolsEndAt: 1_300 })
   })
 })
 

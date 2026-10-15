@@ -50,7 +50,7 @@ This runs the local ten-Train Workflow rehearsal and real local Git oracle, with
 
 Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default preset uses `@cf/zai-org/glm-5.3-flash` for every role.
 
-See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness and provider configuration, troubleshooting and temporary performance logging.
+See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness and provider configuration, and troubleshooting.
 
 ## Deployment
 
@@ -58,7 +58,7 @@ One Worker hosts the React assets, API and Workflows, with separate agent and ag
 
 ### Configure account resources
 
-In `apps/worker/wrangler.jsonc`, set `account_id`, `ARTIFACTS_ACCOUNT_ID` and `AI_GATEWAY_ACCOUNT_ID` to your account, and `AI_GATEWAY_ID` to your Gateway. Replace the app/Access origins, audience, preview domain and zone route with your own values; these are specific to each deployment. Do the same for `account_id` in `apps/perf-tail/wrangler.jsonc` while temporary logging remains enabled.
+In `apps/worker/wrangler.jsonc`, set `account_id`, `ARTIFACTS_ACCOUNT_ID` and `AI_GATEWAY_ACCOUNT_ID` to your account, and `AI_GATEWAY_ID` to your Gateway. Replace the app/Access origins, audience, preview domain and zone route with your own values; these are specific to each deployment.
 
 From `apps/worker`, authenticate and create resources you have not already provisioned:
 
@@ -70,7 +70,7 @@ npx wrangler r2 bucket create terminus-dependency-cache
 npx wrangler r2 bucket lifecycle add terminus-dependency-cache expire-cache --expire-days 30
 ```
 
-Copy the returned D1 `database_id` into the top-level `d1_databases` entry, leaving `env.fake` local-only. The dependency bucket holds disposable npm caches; expired entries are rebuilt. Provision and deploy the temporary Perf Tail resources as described in [Live setup](docs/live-setup.md#deployment) before deploying the main Worker.
+Copy the returned D1 `database_id` into the top-level `d1_databases` entry, leaving `env.fake` local-only. The dependency bucket holds disposable npm caches; expired entries are rebuilt.
 
 ### Bootstrap and protect the Worker
 

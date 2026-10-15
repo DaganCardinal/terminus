@@ -65,7 +65,7 @@ npm run stress:ten -- \
 
 It now creates the fixture Network automatically. `--network NETWORK_ID` optionally selects an existing empty, compatible Network. Protected live CLI requests still require `CF_ACCESS_TOKEN`, an Access login JWT for an allowed maintainer email. This is an advanced CLI authentication option; the browser flow never asks for it. Tokens are sent only to the selected origin, redirects are refused, and credentials are never journaled. Local real-infrastructure Workers use `http://localhost:8787` without live Access authentication.
 
-The CLI writes `run.json`, `scenario.json`, `events.json`, `report.json`, and `perf.json`. It exits nonzero on a correctness failure or deadline and does not retry mutations automatically. Its report also includes API latency and the existing Perf Tail records, grouped by phase when available. Tail delivery can lag, and `complete=false` identifies an incomplete window. Missing perf data does not invalidate the correctness oracle. The browser report focuses on durable event timings and correctness.
+The CLI writes `run.json`, `scenario.json`, `events.json` and `report.json`. It exits nonzero on a correctness failure or deadline and does not retry mutations automatically. Its report also includes API latency. The browser report focuses on durable event timings and correctness.
 
 Failed requests print the Worker's message and findings.
 

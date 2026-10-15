@@ -57,29 +57,6 @@ describe("live harness activity transport", () => {
       )
     ).toEqual({ exitCode: 1 })
   })
-  it("hands each model step to the timeline as it arrives, never to the observer", async () => {
-    const activities: AgentActivity[] = []
-    const steps: Record<string, unknown>[] = []
-    const step = JSON.stringify({
-      type: "perf_step",
-      step: 1,
-      notes: [{ excerpt: "x".repeat(20_000) }],
-    })
-    const exit = await consumeHarnessActivity(
-      stream([
-        step.slice(0, 10_000),
-        `${step.slice(10_000)}\n`,
-        '{"type":"harness_exit","exitCode":0,"stopped":"proposal_rejected"}\n',
-      ]),
-      (activity) => activities.push(activity),
-      (value) => steps.push(value)
-    )
-    expect(exit).toEqual({ exitCode: 0, stopped: "proposal_rejected" })
-    expect(activities).toEqual([])
-    expect(steps).toEqual([
-      expect.objectContaining({ step: 1, type: undefined }),
-    ])
-  })
   it("carries an early stop and abnormal-exit diagnosis, but no unknown fields", async () => {
     expect(
       await consumeHarnessActivity(
@@ -149,7 +126,6 @@ describe("live harness stream loss", () => {
       (activity) => {
         if (activity.kind === "tool" && activity.path) paths.push(activity.path)
       },
-      undefined,
       reattach
     )
     expect(reattach).toHaveBeenCalledExactlyOnceWith(2, lost)
@@ -168,7 +144,6 @@ describe("live harness stream loss", () => {
       await consumeHarnessActivity(
         dropped([read("src/a.ts")], lost),
         () => {},
-        undefined,
         reattach
       )
     ).toEqual({ exitCode: 0 })
@@ -183,7 +158,6 @@ describe("live harness stream loss", () => {
       consumeHarnessActivity(
         dropped([read("src/a.ts")], lost),
         () => {},
-        undefined,
         async () => null
       )
     ).rejects.toBe(lost)
@@ -194,7 +168,6 @@ describe("live harness stream loss", () => {
       await consumeHarnessActivity(
         dropped(['{"type":"harness_exit","exitCode":0}\n'], lost),
         () => {},
-        undefined,
         async () => null
       )
     ).toEqual({ exitCode: 0 })
@@ -203,12 +176,7 @@ describe("live harness stream loss", () => {
   it("never follows a malformed stream again", async () => {
     const reattach = vi.fn(async () => stream([]))
     await expect(
-      consumeHarnessActivity(
-        stream(["x".repeat(70_000)]),
-        () => {},
-        undefined,
-        reattach
-      )
+      consumeHarnessActivity(stream(["x".repeat(70_000)]), () => {}, reattach)
     ).rejects.toThrow("Invalid activity stream")
     expect(reattach).not.toHaveBeenCalled()
   })

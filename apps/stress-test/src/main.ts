@@ -12,12 +12,7 @@ import {
   stressStatusSchema,
   stressVerificationSchema,
 } from "../../../packages/protocol/src/stress-test.ts"
-import {
-  stressTimings,
-  latencySummary,
-  phaseTimings,
-  type TimingEvent,
-} from "./report.ts"
+import { stressTimings, latencySummary, type TimingEvent } from "./report.ts"
 
 const { values } = parseArgs({
   options: {
@@ -366,27 +361,6 @@ try {
   failure = error instanceof Error ? error.message : String(error)
 }
 
-const perfSchema = z
-  .object({
-    complete: z.boolean(),
-    records: z.array(z.object({ message: z.string() }).passthrough()),
-  })
-  .passthrough()
-let perfLogs: z.infer<typeof perfSchema> | { available: false; reason: string }
-try {
-  perfLogs = perfSchema.parse(
-    await api(
-      `/perf-logs?from=${encodeURIComponent(state.startedAt)}&to=${encodeURIComponent(new Date().toISOString())}`
-    )
-  )
-} catch {
-  perfLogs = {
-    available: false,
-    reason:
-      "Perf Tail storage unavailable; durable timings and API samples remain in the report",
-  }
-}
-await save("perf", perfLogs)
 await save("events", events)
 await save("report", {
   passed: !failure,
@@ -396,17 +370,10 @@ await save("report", {
   verification,
   status,
   timings: stressTimings(events),
-  phaseTimings: phaseTimings(
-    "records" in perfLogs ? perfLogs.records : undefined,
-    snapshot,
-    events
-  ),
   apiLatency: latencySummary(samples),
   apiSamples: samples,
   observations: observed,
   snapshot,
-  perfLogsAvailable: "records" in perfLogs && !!perfLogs.records.length,
-  perfLogsComplete: "complete" in perfLogs && perfLogs.complete,
 })
 console.log(`${failure ? "FAILED" : "PASSED"}: ${output}/report.json`)
 if (failure) {

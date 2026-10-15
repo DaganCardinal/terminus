@@ -35,7 +35,6 @@ import {
   type RepositoryAccess,
   type GitWorkspace,
 } from "./git"
-import { perf, perfSpan } from "@terminus/protocol"
 
 type ForkInput = Parameters<RepositoryHost["fork"]>[0]
 
@@ -198,14 +197,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
-  /** TEMPORARY benchmark instrumentation wrapper. */
-  prepareIntegration(input: IntegrationMergeInput): Promise<IntegrationMerge> {
-    return perfSpan("artifacts.prepare_integration", { id: input.id }, () =>
-      this.prepareIntegrationUntimed(input)
-    )
-  }
-
-  private async prepareIntegrationUntimed(
+  async prepareIntegration(
     input: IntegrationMergeInput
   ): Promise<IntegrationMerge> {
     for (const commit of [
@@ -260,7 +252,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           throw new Error("Crossing diff exceeds review limit")
         return inspected
       }
-      perf("artifacts.inspect_workspace_fallback", { repo: name })
     }
     return this.withWorkspace(
       [{ repoId: candidate.repoId, scope: "read" }],
@@ -424,14 +415,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     )
   }
 
-  /** TEMPORARY benchmark instrumentation wrapper. */
-  fork(input: ForkInput): Promise<RepoRef> {
-    return perfSpan("artifacts.fork", { name: input.name }, () =>
-      this.forkUntimed(input)
-    )
-  }
-
-  private async forkUntimed(input: ForkInput): Promise<RepoRef> {
+  async fork(input: ForkInput): Promise<RepoRef> {
     requireCommit(input.commit)
     const id = siblingRepoId(input.sourceRepoId, input.name)
     const description = (source: string) =>
@@ -449,10 +433,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         preferred && (await this.headIfReadable(preferred)) === input.commit
           ? preferred
           : input.sourceRepoId
-      perf("artifacts.fork_source", {
-        name: input.name,
-        source: parseRepoId(source).name,
-      })
       await this.createFork(source, fork, description(source), {
         // The preferred source's head was just read.
         checkHead: source !== preferred,
@@ -472,7 +452,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
       )
     // The preferred source moved while Artifacts forked it. That copy is this
     // operation's own and can never be used, so fork the source instead.
-    perf("artifacts.fork_replaced", { name: input.name })
     {
       using copy = await this.ready(id)
       await copy.delete()
@@ -549,21 +528,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     }
   }
 
-  /** TEMPORARY benchmark instrumentation wrapper. */
-  fastForward(input: {
-    targetRepoId: string
-    sourceRepoId: string
-    fromCommit: string
-    toCommit: string
-  }): Promise<void> {
-    return perfSpan(
-      "artifacts.fast_forward",
-      { target: parseRepoId(input.targetRepoId).name },
-      () => this.fastForwardUntimed(input)
-    )
-  }
-
-  private async fastForwardUntimed(input: {
+  async fastForward(input: {
     targetRepoId: string
     sourceRepoId: string
     fromCommit: string
@@ -577,9 +542,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         return
       } catch (error) {
         if (!(error instanceof GitCapacityError)) throw error
-        perf("artifacts.promotion_workspace_fallback", {
-          target: parseRepoId(input.targetRepoId).name,
-        })
       }
     }
     const readHead = this.readHead
@@ -713,22 +675,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     repoId: string,
     scope: "read" | "write"
   ): Promise<RepositoryAccess> {
-    const started = Date.now()
-    try {
-      return await this.accessUntimed(repoId, scope)
-    } finally {
-      perf("artifacts.access", {
-        repo: parseRepoId(repoId).name,
-        scope,
-        ms: Date.now() - started,
-      })
-    }
-  }
-
-  private async accessUntimed(
-    repoId: string,
-    scope: "read" | "write"
-  ): Promise<RepositoryAccess> {
     using repo = await this.ready(repoId)
     const info = await repo.info()
     const token = await repo.createToken(scope, 3600)
@@ -743,26 +689,13 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async revoke(access: RepositoryAccess): Promise<void> {
-    const started = Date.now()
     await this.artifacts
       .namespace(parseRepoId(access.repoId).namespace)
       .revokeToken(access.tokenId)
-    perf("artifacts.revoke", {
-      repo: parseRepoId(access.repoId).name,
-      ms: Date.now() - started,
-    })
   }
 
   /** The default-branch head, read without a Sandbox when the host can. */
   private async currentHead(repoId: string): Promise<string | null> {
-    return perfSpan(
-      "artifacts.head",
-      { repo: parseRepoId(repoId).name, viaSandbox: !this.readHead },
-      () => this.currentHeadUntimed(repoId)
-    )
-  }
-
-  private async currentHeadUntimed(repoId: string): Promise<string | null> {
     if (!this.readHead)
       return this.withWorkspace(
         [{ repoId, scope: "read" }],
@@ -797,10 +730,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     let workspace: GitWorkspace | undefined
     let result: T
     let cleanupFailed: boolean
-    // TEMPORARY benchmark instrumentation.
-    const started = Date.now()
-    let openedAt = started
-    let ranAt = started
     try {
       // Minted together; whichever succeed are revoked below if another fails.
       const minted = await Promise.allSettled(
@@ -813,7 +742,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           outcome.status === "rejected"
       )
       if (refused) throw refused.reason
-      const accessedAt = Date.now()
       // Settle both, so a failed check never leaves an opening Sandbox unclosed.
       const [opened, checked] = await Promise.allSettled([
         this.workspaces.open(accesses),
@@ -822,16 +750,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
       if (opened.status === "rejected") throw opened.reason
       workspace = opened.value
       if (checked.status === "rejected") throw checked.reason
-      openedAt = Date.now()
-      perf("artifacts.workspace_opened", {
-        repos: specs.map(
-          (spec) => `${parseRepoId(spec.repoId).name}:${spec.scope}`
-        ),
-        accessMs: accessedAt - started,
-        openMs: openedAt - accessedAt,
-      })
       result = await run(workspace, accesses, checked.value)
-      ranAt = Date.now()
     } finally {
       // Cleanup all credentials even if workspace creation or shutdown fails.
       const results = await Promise.allSettled([
@@ -839,14 +758,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         ...accesses.map((access) => this.revoke(access)),
       ])
       cleanupFailed = results.some((result) => result.status === "rejected")
-      perf("artifacts.workspace", {
-        repos: specs.map(
-          (spec) => `${parseRepoId(spec.repoId).name}:${spec.scope}`
-        ),
-        totalMs: Date.now() - started,
-        runMs: ranAt > openedAt ? ranAt - openedAt : null,
-        cleanupMs: Date.now() - Math.max(ranAt, openedAt),
-      })
     }
     if (cleanupFailed) throw new Error("Repository workspace cleanup failed")
     return result
@@ -862,7 +773,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         if (isTransientDenial(error) && denials < transientDenialRetries) {
           // Backs off 1, 2, 4, then 8 pauses at a time: about a minute in all.
           const pauses = Math.min(2 ** denials++, 8)
-          perf("artifacts.denied_pause", { name, attempt: denials, pauses })
           for (let pause = 0; pause < pauses; pause++) await this.pause()
           continue
         }
@@ -872,7 +782,6 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
             !hasCode(error, "FORK_IN_PROGRESS"))
         )
           throw error
-        perf("artifacts.not_ready_pause", { name, attempt })
         await this.pause()
       }
     }

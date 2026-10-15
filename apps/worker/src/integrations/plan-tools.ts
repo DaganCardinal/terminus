@@ -4,7 +4,7 @@ import {
   planToolServer,
   planTools,
 } from "@terminus/agent-runtime"
-import { perf, type PlanDraft, type SandboxNetwork } from "@terminus/protocol"
+import type { PlanDraft, SandboxNetwork } from "@terminus/protocol"
 import type { DispatchDraftStore } from "./dispatch-draft-store"
 
 type PlanCheck = NonNullable<SandboxNetwork["proposalCheck"]>
@@ -66,15 +66,6 @@ export async function planToolResponse(
       } catch {
         return toolError(id, "Terminus could not save this call.")
       }
-      // TEMPORARY benchmark instrumentation: rejections say why, so a failed
-      // plan can be read from the tail log.
-      perf("dispatcher.plan_tool", {
-        tool: name,
-        outcome: reply.outcome,
-        ...(reply.outcome === "rejected"
-          ? { reply: reply.text.slice(0, 600) }
-          : {}),
-      })
       // Not an MCP error: a rejected piece is an ordinary answer the agent acts on.
       return rpcResult(id, { content: [{ type: "text", text: reply.text }] })
     }

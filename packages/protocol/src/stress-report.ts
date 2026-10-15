@@ -1,5 +1,3 @@
-import { z } from "zod"
-
 export interface TimingEvent {
   occurredAt: string
   event: { type: string; trainId?: string; integrationId?: string }
@@ -15,23 +13,6 @@ interface TrainTiming {
   grantedAt?: number
   promotedAt?: number
 }
-interface PhaseSnapshot {
-  stations: { id: string }[]
-  trains: { train: { id: string } }[]
-  cars: { acceptedCommit: string }[]
-}
-const phaseSchema = z.object({
-  stationId: z.string().optional(),
-  trainId: z.string().optional(),
-  integrationId: z.string().optional(),
-  candidate: z.string().optional(),
-  runId: z.string().optional(),
-  sandbox: z.string().optional(),
-  ok: z.boolean().optional(),
-  ms: z.number().optional(),
-  waitedMs: z.number().optional(),
-  phases: z.record(z.string(), z.number()).optional(),
-})
 /** Durations come from durable event timestamps; polling cadence cannot inflate them. */
 export function stressTimings(events: TimingEvent[]) {
   const queue = new Map<string, number>()
@@ -171,47 +152,6 @@ export function stressInterventions(
   })
 }
 
-const placementRetrySchema = z.object({
-  sandbox: z.string(),
-  binding: z.string(),
-  pauseMs: z.number(),
-})
-
-/**
- * TEMPORARY, with the perf logs it reads: one warning per Sandbox whose
- * container Cloudflare could not place, in order of its first retry. Sandbox
- * start retries these below the Station run and records no event, so
- * otherwise a run that spent minutes on them only looks slow.
- */
-export function stressPlacementRetries(
-  records: { message: string }[],
-  inRun: (sandbox: string, binding: string) => boolean,
-  label: (sandbox: string) => string
-): string[] {
-  const sandboxes = new Map<string, { retries: number; pausedMs: number }>()
-  for (const record of records) {
-    const match = /^\[perf\] sandbox\.placement_retry (\{.*\})$/.exec(
-      record.message
-    )
-    if (!match) continue
-    let fields: z.infer<typeof placementRetrySchema>
-    try {
-      fields = placementRetrySchema.parse(JSON.parse(match[1]!))
-    } catch {
-      continue
-    }
-    if (!inRun(fields.sandbox, fields.binding)) continue
-    const sandbox = sandboxes.get(fields.sandbox) ?? { retries: 0, pausedMs: 0 }
-    sandboxes.set(fields.sandbox, sandbox)
-    sandbox.retries++
-    sandbox.pausedMs += fields.pauseMs
-  }
-  return [...sandboxes].map(
-    ([name, { retries, pausedMs }]) =>
-      `${label(name)}: Cloudflare could not place its container ${retries === 1 ? "once" : `${retries} times`} and retried after ${Math.round(pausedMs / 1000)} s of pauses`
-  )
-}
-
 export function latencySummary(samples: ApiSample[]) {
   if (!samples.length) return null
   const sorted = samples.map((sample) => sample.ms).sort((a, b) => a - b)
@@ -224,68 +164,4 @@ export function latencySummary(samples: ApiSample[]) {
     p95Ms: percentile(0.95),
     maxMs: sorted.at(-1),
   }
-}
-
-/** Scope spans by durable identities; the raw Perf Tail window may contain other work. */
-export function phaseTimings(
-  records: { message: string }[] | undefined,
-  snapshot: PhaseSnapshot | undefined,
-  events: TimingEvent[] = []
-) {
-  const stations = new Set(
-    snapshot?.stations.map((station) => station.id) ?? []
-  )
-  const trains = new Set(snapshot?.trains.map(({ train }) => train.id) ?? [])
-  const candidates = new Set(
-    snapshot?.cars.map((car) => car.acceptedCommit.slice(0, 12)) ?? []
-  )
-  const integrations = new Set(
-    events.flatMap(({ event }) =>
-      event.integrationId ? [event.integrationId] : []
-    )
-  )
-  const groups = new Map<string, ApiSample[]>()
-  for (const record of records ?? []) {
-    const match = /^\[perf\] (\S+) (\{.*\})$/.exec(record.message)
-    if (!match) continue
-    let fields: z.infer<typeof phaseSchema>
-    try {
-      fields = phaseSchema.parse(JSON.parse(match[2]!))
-    } catch {
-      continue
-    }
-    if (
-      !stations.has(fields.stationId ?? "") &&
-      !trains.has(fields.trainId ?? "") &&
-      !candidates.has(fields.candidate ?? "") &&
-      !integrations.has(fields.integrationId ?? "") &&
-      ![...stations].some(
-        (id) =>
-          fields.runId?.startsWith(`${id}-`) ||
-          fields.sandbox?.startsWith(`station-${id}-`)
-      )
-    )
-      continue
-    const add = (name: string, ms: number | undefined) => {
-      if (ms === undefined || !Number.isFinite(ms)) return
-      const group = groups.get(name) ?? []
-      group.push({ ms, ok: fields.ok !== false })
-      groups.set(name, group)
-    }
-    if (fields.phases)
-      for (const [phase, ms] of Object.entries(fields.phases))
-        add(`${match[1]}:${phase}`, ms)
-    else if (match[1] === "sandbox.lease")
-      add("sandbox.capacity_wait", fields.waitedMs)
-    else if (!match[1].endsWith(".phase")) add(match[1], fields.ms)
-  }
-  return Object.fromEntries(
-    [...groups].map(([name, samples]) => [
-      name,
-      {
-        ...latencySummary(samples),
-        totalMs: samples.reduce((sum, sample) => sum + sample.ms, 0),
-      },
-    ])
-  )
 }

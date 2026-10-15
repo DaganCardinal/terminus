@@ -12,7 +12,6 @@ import type { RepositoryHost } from "@terminus/artifacts"
 import {
   conductorVerdictSchema,
   evidenceSchema,
-  perf,
   type IntegrationAttempt,
   type IntegrationCandidate,
   type IntegrationResult,
@@ -212,11 +211,6 @@ async function reusableCarEvidence(
   if (!car || car.crossingId || car.copiedAt) return null
   const evidence = evidenceSchema.parse(car.evidence)
   if (!evidenceCovers(evidence, input.validation)) return null
-  perf("integration.validate.reused", {
-    id: input.id,
-    carId: car.id,
-    commit: input.trainCommit.slice(0, 12),
-  })
   return evidence
 }
 

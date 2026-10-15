@@ -8,7 +8,6 @@ import {
   planToolAgentName,
   planToolNames,
 } from "./dispatch-draft"
-import { harnessTimelineScript } from "./opencode"
 
 /** No tool output, reasoning, messages, commands or search expressions leave here. */
 export function filteredHarnessActivity(
@@ -123,9 +122,8 @@ export function liveHarnessHeartbeat(activity: string): string {
 }
 
 /** Runs beside the harness INSIDE the Sandbox. stdout contains only activity and exit status,
- * plus a short stderr tail after an abnormal exit and the per-step timeline as each step ends,
- * which orchestration logs but never displays. Logging steps as they end keeps them when the
- * run is cut short. Raw events remain in the local file for the existing final-outcome parser.
+ * plus a short stderr tail after an abnormal exit. Raw events remain in the local file for the
+ * existing final-outcome parser.
  * Once \`finalize_plan\` accepts the Dispatcher's plan, the harness is stopped: the saved draft
  * is the answer, and the model's closing message would cost another round trip. It is stopped
  * too after \`maxRejectedFinalizations\` rejected finalizations or \`maxRejectedPlanCalls\`
@@ -208,7 +206,6 @@ function line(text) {
   let event
   try { event = JSON.parse(text) } catch { return }
   stopAtPlanOutcome(event)
-  if (harness === "opencode") perfEvent(event)
   if (harness === "claude-code" && event.type === "assistant" && Array.isArray(event.message?.content)) {
     for (const block of event.message.content) emit({ type: "assistant", message: { content: [block] } })
   } else emit(event)
@@ -227,8 +224,6 @@ child.on("error", () => { process.exitCode = 1 })
 child.on("close", (code, signal) => {
   buffer += decoder.end()
   if (!dropping && buffer) line(buffer)
-  // A step the stop cut off still reports what it did.
-  if (harness === "opencode") perfFlush()
   // A signal reads as a shell would report it, e.g. 143 for SIGTERM.
   const exitCode = stopped ? 0 : code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1)
   const outcome = { type: "harness_exit", exitCode }
@@ -245,8 +240,7 @@ child.on("close", (code, signal) => {
   else raw.once("finish", done)
 })
 raw.on("error", () => { child.kill(); process.exitCode = 1 })
-
-${harnessTimelineScript}`
+`
 
 /** Runs INSIDE the Sandbox as the streamed command, and is all a lost Worker stream takes down.
  * \`start <activity> <runner command…>\` starts the live runner in its own session with its

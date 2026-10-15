@@ -41,11 +41,7 @@ import {
   planToolNames,
   reviewPlanDraft,
 } from "./dispatch-draft"
-import {
-  perf,
-  type RoleExecution,
-  type ActivityObserver,
-} from "@terminus/protocol"
+import { type RoleExecution, type ActivityObserver } from "@terminus/protocol"
 
 /**
  * One read-only harness session over the exact planning baseline. The
@@ -373,8 +369,6 @@ export class HarnessDispatcher implements DispatchPlanner {
         })
       // Stopped after repeated rejected plan tool calls: the saved draft is final.
       let exhausted = false
-      // The harness failed after its saved plan was already complete.
-      let recovered = false
       let formatStalled = false
       const answer = async (run: Promise<string>) => {
         formatStalled = false
@@ -396,7 +390,6 @@ export class HarnessDispatcher implements DispatchPlanner {
             ? await reviewDraft().catch(() => null)
             : null
           if (saved?.kind !== "valid") throw error
-          recovered = true
           return ""
         }
       }
@@ -425,45 +418,6 @@ export class HarnessDispatcher implements DispatchPlanner {
         const review = this.planTools
           ? await reviewDraft()
           : reviewProposalText(text, input.network, baseline)
-        // TEMPORARY benchmark instrumentation.
-        perf("dispatcher.proposal_review", {
-          attempt,
-          exhausted,
-          recovered,
-          formatStalled,
-          planTools: this.planTools,
-          kind: review.kind,
-          finalChars: text.length,
-          ...(review.kind === "valid"
-            ? {
-                lines: review.proposal.lines.length,
-                stations: review.proposal.lines.reduce(
-                  (sum, line) => sum + line.stations.length,
-                  0
-                ),
-                junctions: review.proposal.junctions?.length,
-                findings: review.proposal.findings?.length,
-              }
-            : review.kind === "schema"
-              ? {
-                  issues: review.issues.slice(0, 10),
-                  ...("parseError" in review
-                    ? { parseError: review.parseError?.slice(0, 200) }
-                    : {}),
-                }
-              : {
-                  errors: review.errors
-                    .slice(0, 10)
-                    .map((e) => e.slice(0, 200)),
-                }),
-          ...("problems" in review
-            ? {
-                problems: review.problems
-                  .slice(0, 10)
-                  .map((p) => p.slice(0, 300)),
-              }
-            : {}),
-        })
         if (review.kind === "valid")
           return { proposal: review.proposal, baseline }
         if (attempt === attempts || exhausted) {

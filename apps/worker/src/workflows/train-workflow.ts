@@ -3,7 +3,6 @@ import { watchNewCars } from "./conflict-watch-operations"
 import {
   stationOutcomeSchema,
   integrationOutcomeSchema,
-  timedStep,
   trainClearEventSchema,
   type IntegrationOutcome,
   type StationOutcome,
@@ -47,26 +46,14 @@ export class TrainWorkflow extends WorkflowEntrypoint<
   async run(event: WorkflowEvent<TrainWorkflowParams>, step: WorkflowStep) {
     const { trainId } = event.payload
     // A Train keeps the models its network chose when it started running.
-    const models = await step.do(
-      "resolve role models",
-      stepConfig,
-      timedStep("train", trainId, "resolve role models", () =>
-        trainModels(this.env, trainId)
-      )
+    const models = await step.do("resolve role models", stepConfig, () =>
+      trainModels(this.env, trainId)
     )
     const ports = trainPorts(this.env, models)
 
     for (let leg = 1; ; leg++) {
-      const move = await step.do(
-        `advance ${leg}`,
-        stepConfig,
-        timedStep(
-          "train",
-          trainId,
-          `advance ${leg}`,
-          () => advanceTrain(ports, trainId),
-          (result) => ({ move: result })
-        )
+      const move = await step.do(`advance ${leg}`, stepConfig, () =>
+        advanceTrain(ports, trainId)
       )
       await step.do(`Engineer observation ${leg}`, stepConfig, () =>
         observeEngineer(ports, trainId)
@@ -97,16 +84,7 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             const recorded = await step.do(
               `record ${move.runId} (${leg})`,
               stepConfig,
-              timedStep(
-                "train",
-                trainId,
-                `record ${move.runId} (${leg})`,
-                () => recordStationOutcome(ports, trainId, outcome),
-                (result) => ({
-                  ok: outcome.result.ok,
-                  backoff: result?.backoff,
-                })
-              )
+              () => recordStationOutcome(ports, trainId, outcome)
             )
             await step.do(
               `Engineer outcome observation ${move.runId} (${leg})`,
@@ -127,23 +105,13 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             await step.do(
               `review ${move.stationId} (${leg})`,
               reviewConfig,
-              timedStep(
-                "train",
-                trainId,
-                `review ${move.stationId} (${leg})`,
-                () => reviewStation(ports, trainId)
-              )
+              () => reviewStation(ports, trainId)
             )
           } catch {
             await step.do(
               `review failed ${move.stationId} (${leg})`,
               stepConfig,
-              timedStep(
-                "train",
-                trainId,
-                `review failed ${move.stationId} (${leg})`,
-                () => failReview(ports, trainId)
-              )
+              () => failReview(ports, trainId)
             )
           }
           break
@@ -162,12 +130,8 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             payload !== null &&
             !trainClearEventSchema.parse(payload).reevaluateOnly
           ) {
-            await step.do(
-              `clear (${leg})`,
-              stepConfig,
-              timedStep("train", trainId, `clear (${leg})`, () =>
-                clearTrain(ports, trainId)
-              )
+            await step.do(`clear (${leg})`, stepConfig, () =>
+              clearTrain(ports, trainId)
             )
           }
           break
@@ -192,12 +156,7 @@ export class TrainWorkflow extends WorkflowEntrypoint<
             await step.do(
               `record integration ${move.integrationId} (${leg})`,
               stepConfig,
-              timedStep(
-                "train",
-                trainId,
-                `record integration ${move.integrationId} (${leg})`,
-                () => recordIntegrationOutcome(ports, trainId, outcome)
-              )
+              () => recordIntegrationOutcome(ports, trainId, outcome)
             )
           }
           break

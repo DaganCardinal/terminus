@@ -13,13 +13,10 @@ import {
   HarnessConflictInvestigator,
 } from "@terminus/agent-runtime"
 import {
-  PERF_LOG_PREFIX,
   PIPELINE_STRESS_PROFILE,
-  perfLogHour,
   scriptedStressAgent,
   stressLines,
   stressTask,
-  type PerfLogRecord,
 } from "@terminus/protocol"
 import { drive, seedLine, seedNetwork, testPorts } from "../../test/fixtures"
 import {
@@ -35,7 +32,6 @@ import {
 import { FakeIntegrationValidator } from "../integrations/integration-validator"
 import { handleApi } from "./router"
 import {
-  placementWarnings,
   stressFindings,
   stressOracle,
   stressReport,
@@ -316,93 +312,6 @@ describe("pipeline stress profile", () => {
     expect(report).toMatchObject({ passed: false, mode: "fake" })
     expect(report.findings).toEqual([
       `Train 3: Station run failed, blocked and cleared by intervention (Error: ${unplaced})`,
-    ])
-  })
-
-  it("warns about Sandbox placement retries in this run, from the perf logs", async () => {
-    const ports = testPorts()
-    const network = await seedNetwork(ports)
-    for (const line of stressLines(runId).slice(0, 2))
-      await seedLine(ports, network.id, line)
-    const snapshot = (await new NetworkStore(env.DB).snapshot(network.id))!
-    const namespace = parseRepoId(snapshot.network.terminusRepoId).namespace
-    const station = snapshot.stations.find(
-      (entry) => stressTask(entry.manifest).train === 2
-    )!
-    const stationSandbox = `station-${stationRunId(station, 1)}`
-    const gitSandbox = `git-${crypto.randomUUID()}`
-    const register = (
-      sandbox: string,
-      binding: "SANDBOX" | "WORKSPACE_SANDBOX"
-    ) =>
-      env.DB.prepare(
-        "INSERT INTO network_sandboxes (object_id, namespace, binding) VALUES (?, ?, ?)"
-      )
-        .bind(env[binding].idFromName(sandbox).toString(), namespace, binding)
-        .run()
-    await register(stationSandbox, "SANDBOX")
-    await register(gitSandbox, "WORKSPACE_SANDBOX")
-    const line = (t: string, event: string, fields: object) => ({
-      t,
-      entrypoint: "ExecutionSandboxStandard1",
-      invocation: `${t}-${crypto.randomUUID()}`,
-      outcome: "ok",
-      truncated: false,
-      message: `[perf] ${event} ${JSON.stringify({ t, ...fields })}`,
-    })
-    const retry = (
-      t: string,
-      sandbox: string,
-      pauseMs: number,
-      binding = "SANDBOX"
-    ) =>
-      line(t, "sandbox.placement_retry", {
-        sandbox,
-        binding,
-        attempt: 1,
-        pauseMs,
-      })
-    const records: PerfLogRecord[] = [
-      line("2026-01-01T10:04:00.000Z", "sandbox.setup", {
-        sandbox: stationSandbox,
-      }),
-      retry("2026-01-01T10:05:00.000Z", stationSandbox, 5_000),
-      retry("2026-01-01T10:05:10.000Z", stationSandbox, 10_000),
-      retry("2026-01-01T10:06:00.000Z", gitSandbox, 5_000, "WORKSPACE_SANDBOX"),
-      // Another Network's Sandbox, and a retry after this run ended.
-      retry("2026-01-01T10:07:00.000Z", "station-elsewhere-s1-r0", 5_000),
-      retry("2026-01-01T10:45:00.000Z", stationSandbox, 20_000),
-    ]
-    for (const record of records)
-      await env.PERF_LOGS.put(
-        `${PERF_LOG_PREFIX}${perfLogHour(record.t)}/${record.invocation}.json`,
-        JSON.stringify([record])
-      )
-    expect(
-      await placementWarnings(env, snapshot, {
-        from: "2026-01-01T10:00:00.000Z",
-        to: "2026-01-01T10:30:00.000Z",
-      })
-    ).toEqual([
-      "Train 2 Station Sandbox: Cloudflare could not place its container 2 times and retried after 15 s of pauses",
-      `Git workspace Sandbox ${gitSandbox}: Cloudflare could not place its container once and retried after 5 s of pauses`,
-    ])
-    // Perf logs are best effort: a run they don't cover is a warning only.
-    expect(
-      await placementWarnings(env, snapshot, {
-        from: "2026-01-02T10:00:00.000Z",
-        to: "2026-01-02T10:30:00.000Z",
-      })
-    ).toEqual([
-      "Sandbox placement retries could not be checked: no perf logs were found for this run",
-    ])
-    expect(
-      await placementWarnings(env, snapshot, {
-        from: "2026-01-01T00:00:00.000Z",
-        to: "2026-01-01T10:30:00.000Z",
-      })
-    ).toEqual([
-      "Sandbox placement retries could not be checked: A window may span at most six hours",
     ])
   })
 })

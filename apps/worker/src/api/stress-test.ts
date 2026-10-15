@@ -9,7 +9,6 @@ import {
   stressFiles,
   stressReportPending,
   stressInterventions,
-  stressPlacementRetries,
   stressTask,
   stressTimings,
   stressReportSchema,
@@ -20,11 +19,9 @@ import {
 import type { WorkManifest } from "@terminus/domain"
 import { DispatchError } from "../agents/dispatcher"
 import { artifactsRepositories } from "../integrations/artifacts-repositories"
-import type { SandboxBinding } from "../integrations/execution-sandbox"
 import { NetworkStore } from "../integrations/network-store"
 import { SandboxWorkspaces } from "../integrations/sandbox-workspaces"
 import { stressRun } from "../agents/stress-test"
-import { readPerfLogs } from "./perf-logs"
 
 export function stressRepositoryMode(env: Env): "artifacts" | "fake" {
   if (env.REPOSITORY_MODE !== "artifacts" && env.REPOSITORY_MODE !== "fake")
@@ -283,72 +280,6 @@ function integrationFindings(status: StressStatus): string[] {
     : []
 }
 
-/** Station Sandboxes name their Train; review and Git Sandboxes are random. */
-function sandboxLabels(snapshot: NetworkSnapshot): (sandbox: string) => string {
-  return (sandbox) => {
-    const station = snapshot.stations.find((entry) =>
-      sandbox.startsWith(`station-${entry.id}-`)
-    )
-    const task = station && fixtureTask(station.manifest)
-    if (task) return `Train ${task.train} Station Sandbox`
-    if (sandbox.startsWith("station-")) return `Station Sandbox ${sandbox}`
-    if (sandbox.startsWith("conductor-"))
-      return `Conductor review Sandbox ${sandbox}`
-    if (sandbox.startsWith("git-")) return `Git workspace Sandbox ${sandbox}`
-    return `Sandbox ${sandbox}`
-  }
-}
-
-/**
- * TEMPORARY, with the perf logs it reads: Sandbox placement retries in the
- * window, for this Network's Sandboxes only. Perf logs are best effort, so a
- * read that fails or is partial is itself a warning, never a finding.
- */
-export async function placementWarnings(
-  env: Env,
-  snapshot: NetworkSnapshot,
-  window: { from: string; to: string }
-): Promise<string[]> {
-  const unchecked = "Sandbox placement retries could not be checked"
-  try {
-    const logs = await readPerfLogs(env.PERF_LOGS, new URLSearchParams(window))
-    if ("error" in logs) return [`${unchecked}: ${logs.error}`]
-    if (!logs.records.length)
-      return [`${unchecked}: no perf logs were found for this run`]
-    // Every Sandbox registers its object id under its Network's namespace
-    // before its container starts, and keeps it until the Network is deleted.
-    const namespace = parseRepoId(snapshot.network.terminusRepoId).namespace
-    const { results } = await env.DB.prepare(
-      "SELECT object_id, binding FROM network_sandboxes WHERE namespace = ?"
-    )
-      .bind(namespace)
-      .all<{ object_id: string; binding: SandboxBinding }>()
-    const registered = new Set(
-      results.map((row) => `${row.binding}/${row.object_id}`)
-    )
-    const inRun = (sandbox: string, binding: string) =>
-      (binding === "SANDBOX" || binding === "WORKSPACE_SANDBOX") &&
-      registered.has(
-        `${binding}/${env[binding].idFromName(sandbox).toString()}`
-      )
-    const warnings = stressPlacementRetries(
-      logs.records,
-      inRun,
-      sandboxLabels(snapshot)
-    )
-    return logs.complete
-      ? warnings
-      : [
-          ...warnings,
-          `${unchecked} fully: the run's perf logs are larger than one read covers, so some retries may be missing`,
-        ]
-  } catch (error) {
-    return [
-      `${unchecked}: ${error instanceof Error ? error.message : String(error)}`,
-    ]
-  }
-}
-
 /** A 409 from verification carries its individual findings. */
 function errorFindings(error: DispatchError): string[] {
   const details = error.details as { findings?: unknown } | undefined
@@ -484,16 +415,6 @@ export async function stressReport(env: Env, networkId: string) {
         `${plural(before.expiredLeases, "expired Sandbox lease row")} remained from Sandboxes that stopped without releasing their slot, for example across a deploy; capacity no longer counts them`,
       ]
     : []
-  // After verification, so its hundreds of R2 reads can't use up the
-  // subrequests verification needs. The window ends at the run's last event,
-  // so this report's own Git check is not counted.
-  if (mode === "artifacts")
-    warnings.push(
-      ...(await placementWarnings(env, snapshot, {
-        from: snapshot.network.createdAt,
-        to: events.at(-1)?.occurredAt ?? new Date().toISOString(),
-      }))
-    )
   return stressReportSchema.parse({
     passed: !findings.length,
     findings,

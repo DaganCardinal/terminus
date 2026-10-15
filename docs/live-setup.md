@@ -73,12 +73,3 @@ Repository heads (fork checks and canonical-head reads) are read from the Worker
 For the single-maintainer live beta, follow [Deployment](../README.md#deployment): bind remote D1, configure both Worker secrets, apply migrations, protect the Worker with Cloudflare Access, and set `APP_ORIGIN` to the exact public HTTPS origin. An empty `APP_ORIGIN` permits local development only. Access is the live authentication boundary; the app has no user accounts.
 
 `npm run deploy` from the repository root builds the React app and publishes it with the API, Workflows and execution container. Cloudflare deployment/version preview URLs are explicitly disabled; Train/Terminus application previews use their own wildcard domain (see [Previews](previews.md)). Deployment is a maintainer action.
-
-**Temporary benchmark logging.** While the speed analysis runs, `terminus` names a Tail Worker, `terminus-perf-tail` (`apps/perf-tail`), that copies every `[perf]` line to the `terminus-perf-logs` R2 bucket, because Workers Logs loses whole invocations. Before the first deploy that includes it, create the bucket and deploy the Tail Worker:
-
-```sh
-npx wrangler r2 bucket create terminus-perf-logs
-npm run deploy -w @terminus/perf-tail
-```
-
-Optionally expire old lines with `npx wrangler r2 bucket lifecycle add terminus-perf-logs perf-expiry perf/ --expire-days 14`. Read a run back from the deployed app with `GET /api/perf-logs?from=<ISO time>&to=<ISO time>` (at most six hours; Access applies). Each record carries its invocation id and the runtime's `outcome` and `truncated` flags, and an invocation that ended badly is recorded even without `[perf]` lines. Remove the app, `tail_consumers`, the `PERF_LOGS` bindings and `/api/perf-logs` with the rest of the perf instrumentation.

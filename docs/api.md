@@ -8,8 +8,6 @@ Use **Emergency Brake** in Network Overview or the Terminus tab to stop all Stat
 
 Sandbox limits: `GET`/`PUT /api/settings/sandboxes` reads or saves the General limits as `{ "agent": 10, "agentless": 10, "sizes": { "agent": "standard-2", "agentless": "standard-2" } }`: limits are whole numbers from 1 to 100, and sizes are `standard-1`, `standard-2` or `standard-3` (omitting `sizes` saves the defaults). `GET`/`PUT /api/networks/:networkId/settings/sandboxes` reads `{ override, general, updatedAt }` and saves `{ "override": { "agent": 20, "agentless": 5, "sizes": { "agent": "standard-3", "agentless": "standard-1" } } }`; `{ "override": null }` follows General again. See [Sandboxes and limits](live-setup.md#sandboxes-and-limits).
 
-Temporary benchmark logging: `GET /api/perf-logs?from=<ISO time>&to=<ISO time>` returns `{ from, to, invocations, complete, records }`, the `[perf]` lines stored by the perf Tail Worker, oldest first. `to` defaults to now and `from` to an hour earlier; a window may span six hours. `complete` is false when the window held more stored objects than one request reads. See [Deployment](live-setup.md#deployment).
-
 The explicit [ten-Train stress-test command](pipeline-stress-test.md) creates its own fixture Network, freezes scripted execution for those Trains, and adds resource diagnostics and a canonical Git oracle. The browser uses normal application login; no deployment-wide test mode is needed.
 
 ## Browsing accepted changes

@@ -12,7 +12,7 @@ import {
   type RepositoryAccess,
 } from "@terminus/artifacts"
 import type { BaselineReport, CheckResult } from "@terminus/domain"
-import { PerfPhases, validationCommandsSchema } from "@terminus/protocol"
+import { validationCommandsSchema } from "@terminus/protocol"
 import { DispatchDraftStore } from "./dispatch-draft-store"
 import { gatewayConfig, modelGrant } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
@@ -23,7 +23,7 @@ type Repositories = Pick<ArtifactsRepositoryHost, "access" | "revoke">
 type FactoryInput = Parameters<DispatchSessionFactory["open"]>[0]
 type OpenInput = FactoryInput & {
   execution?: RoleExecution
-  /** TEMPORARY benchmark instrumentation: the Sandbox name. */
+  /** The Sandbox name, for operational logs. */
   label?: string
 }
 /** The plan whose draft the plan tools write is always known in a session. */
@@ -91,19 +91,12 @@ class SandboxDispatchSession implements DispatchSession {
   readonly #drafts: DispatchDraftStore
   #access: RepositoryAccess | undefined
   #usedSandbox = false
-  /** TEMPORARY benchmark instrumentation. */
-  readonly #phases: PerfPhases
-  #resumes = 0
   constructor(
     env: Env,
     repositories: Repositories,
     sandbox: StationSandbox,
     input: SessionInput
   ) {
-    this.#phases = new PerfPhases("dispatcher.session", {
-      sandbox: input.label,
-      checkBaseline: input.checkBaseline,
-    })
     this.#env = env
     this.#repositories = repositories
     this.#sandbox = sandbox
@@ -111,7 +104,6 @@ class SandboxDispatchSession implements DispatchSession {
     this.#drafts = new DispatchDraftStore(env.DB)
     this.#harness = new HarnessSession(env, sandbox, {
       role: "Dispatcher",
-      label: input.label,
       model: input.model,
       execution: input.execution,
       directory: sealedDirectory,
@@ -160,14 +152,12 @@ class SandboxDispatchSession implements DispatchSession {
     gatewayConfig(this.#env, model)
     const validation = validationCommandsSchema.parse(this.#input.validation)
     const saved = await this.restore()
-    this.#phases.enter("access")
     this.#input.onActivity?.({ kind: "phase", phase: "preparing_workspace" })
     // A harness outlives a lost stream so it can be followed again. An earlier
     // attempt whose Worker stopped before closing may have left one running in
     // this plan's Sandbox, so never grant repository access beside it.
     if (this.#input.persistent) await this.#sandbox.close()
     this.#access = await this.#repositories.access(repository.repoId, "read")
-    this.#phases.enter("configure (container start)")
     this.#input.onActivity?.({ kind: "phase", phase: "waiting_for_sandbox" })
     this.#usedSandbox = true
     await this.#sandbox.configure({
@@ -180,14 +170,12 @@ class SandboxDispatchSession implements DispatchSession {
       ],
       allowModel: false,
     })
-    this.#phases.enter("checkout")
     this.#input.onActivity?.({ kind: "phase", phase: "checking_out" })
     await checkoutSealedWorkspace(
       this.#workspace("checkout"),
       this.#access,
       repository.commit
     )
-    this.#phases.enter("baseline checks")
     if (checkBaseline && !saved)
       this.#input.onActivity?.({ kind: "phase", phase: "checking_baseline" })
     const baseline = saved
@@ -204,10 +192,8 @@ class SandboxDispatchSession implements DispatchSession {
         : null
     if (this.#input.persistent)
       await this.#drafts.begin(this.#input.planId, this.#context(), baseline)
-    this.#phases.enter("seal")
     this.#input.onActivity?.({ kind: "phase", phase: "sealing_workspace" })
     await sealWorkspace(this.#workspace("seal"))
-    this.#phases.enter("grant model")
     // Exploration needs no repository access; only the configured model and
     // the plan tools, which answer inside the outbound handler, are reachable.
     await this.#sandbox.configure({
@@ -227,14 +213,11 @@ class SandboxDispatchSession implements DispatchSession {
   }
 
   start(system: string, message: string): Promise<string> {
-    this.#phases.enter("harness start")
     this.#input.onActivity?.({ kind: "phase", phase: "starting_agent" })
     return this.#harness.start(dispatcherHarnessAgent(system), message)
   }
 
   resume(message: string): Promise<string> {
-    this.#resumes++
-    this.#phases.enter("harness resume (proposal correction)")
     return this.#harness.resume(message)
   }
 
@@ -245,14 +228,12 @@ class SandboxDispatchSession implements DispatchSession {
   async close(): Promise<void> {
     // Restoring a complete draft never starts or touches its named Sandbox.
     if (!this.#usedSandbox && !this.#access) return
-    this.#phases.enter("close")
     this.#input.onActivity?.({ kind: "phase", phase: "closing_workspace" })
     const results = await Promise.allSettled([
       this.#sandbox.close(),
       ...(this.#access ? [this.#repositories.revoke(this.#access)] : []),
     ])
     this.#access = undefined
-    this.#phases.finish({ resumes: this.#resumes })
     if (results.some((result) => result.status === "rejected")) {
       // The planner keeps its outcome, so this log is the only record.
       console.error("Dispatcher workspace cleanup failed", {

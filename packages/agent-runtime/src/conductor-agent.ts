@@ -9,8 +9,6 @@ import {
   type JunctionReviewInput,
   type StationVerdict,
   type ValidationCommand,
-  errorKind,
-  perf,
 } from "@terminus/protocol"
 import { z } from "zod"
 import {
@@ -353,11 +351,6 @@ async function preparedSession(
       await session.close().catch(() => {})
       const delay = preparationRetryDelays[attempt]
       if (delay === undefined) throw error
-      perf("conductor.prepare_retry", {
-        attempt: attempt + 1,
-        error: errorKind(error),
-        delayMs: delay * 1000,
-      })
       await new Promise((resolve) => setTimeout(resolve, delay * 1000))
     }
   }
@@ -384,10 +377,6 @@ async function collectAndVerify(
     const evidence = preparation.evidence ?? { checks: [] }
     const collected = { ...input, proposal: { ...input.proposal, evidence } }
     const prechecked = precheckedVerdict(collected)
-    perf("conductor.evidence_collected", {
-      checks: evidence.checks.map((c) => ({ name: c.name, status: c.status })),
-      prechecked: prechecked?.verdict ?? null,
-    })
     const verdict =
       prechecked ??
       (await converse(session, stationReview(collected, context), preparation))
@@ -414,13 +403,6 @@ async function converse(
     try {
       const parsed = conductorVerdictSchema.safeParse(finalMessageJson(text))
       if (parsed.success) {
-        // TEMPORARY benchmark instrumentation.
-        perf("conductor.verdict", {
-          attempt,
-          verdict: parsed.data.verdict,
-          findings: parsed.data.findings.length,
-          summary: parsed.data.summary.slice(0, 300),
-        })
         return parsed.data
       }
       problems = issues(parsed.error)
@@ -428,12 +410,6 @@ async function converse(
       problems = [{ path: "$", code: "invalid_json" }]
       parseError = error instanceof Error ? error.message : undefined
     }
-    perf("conductor.verdict_invalid", {
-      attempt,
-      problems,
-      parseError: parseError?.slice(0, 200),
-      finalChars: text.length,
-    })
     if (attempt === attempts)
       throw new Error(
         `Conductor verdict failed validation after ${attempts} attempts: ${problems.map((p) => `${p.path} (${p.code})`).join("; ")}`

@@ -431,30 +431,6 @@ describe("filtered harness activity", () => {
     expect(Date.now() - started).toBeLessThan(4000)
   })
 
-  it("reports each model step as it ends, and the step a stop cut off", async () => {
-    const events = [
-      { type: "step_start", timestamp: 1_000 },
-      { type: "step_finish", timestamp: 1_200, part: { reason: "tool-calls" } },
-      { type: "step_start", timestamp: 1_300 },
-    ]
-    const { output } = await runLive(
-      `${events.map((event) => `console.log(${JSON.stringify(JSON.stringify(event))})`).join(";")}; setTimeout(() => { console.log(${planCall(finalizeTool, `${planAcceptedReply} use it.`)}) }, 250); setInterval(() => {}, 1000)`
-    )
-    const lines = output
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((line) => line.type !== "activity")
-    expect(lines.map((line) => [line.type, line.step])).toEqual([
-      ["perf_step", 1],
-      ["perf_step", 2],
-      ["harness_exit", undefined],
-    ])
-    expect(lines[1]!.tools).toEqual([
-      expect.objectContaining({ tool: finalizeTool }),
-    ])
-  })
-
   it("reports a signal and the end of stderr after an abnormal exit", async () => {
     const failed = await runLive(
       `process.stderr.write("x".repeat(2000) + "\\u001b[31mfatal: provider stream closed\\u0007"); process.exitCode = 3`

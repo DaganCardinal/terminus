@@ -81,7 +81,6 @@ import type {
   StationRunResult,
 } from "@terminus/agent-runtime"
 import { defaultValidation } from "./execution-config"
-import { perf } from "@terminus/protocol"
 import type {
   EventEnvelope,
   NetworkSnapshot,
@@ -1472,34 +1471,7 @@ export class NetworkStore {
    * Applies writes and appends their events in one atomic batch. Throws
    * StaleWriteError if any versioned row changed since it was read.
    */
-  /** TEMPORARY benchmark instrumentation wrapper: logs each state change's events. */
   async commit(
-    networkId: NetworkId,
-    writes: Write[],
-    events: DomainEvent[]
-  ): Promise<void> {
-    const started = Date.now()
-    await this.commitUntimed(networkId, writes, events)
-    perf("domain.commit", {
-      events: events.map((event) => event.type),
-      writes: writes.map((write) => write.kind),
-      ...Object.fromEntries(
-        (["trainId", "stationId", "integrationId", "planId"] as const).flatMap(
-          (key) => {
-            const value = events.find(
-              (event) =>
-                key in event &&
-                typeof (event as Record<string, unknown>)[key] === "string"
-            ) as Record<string, unknown> | undefined
-            return value ? [[key, value[key]]] : []
-          }
-        )
-      ),
-      ms: Date.now() - started,
-    })
-  }
-
-  private async commitUntimed(
     networkId: NetworkId,
     writes: Write[],
     events: DomainEvent[]

@@ -21,10 +21,9 @@ Terminus coordinates concurrent coding agents through a railway domain model. Th
 | Execution | Cloudflare Sandboxes/Containers | Disposable checkouts, harnesses, builds, tests, Git merges and previews |
 | Models | Workers AI and AI Gateway | Configured text harness models and direct Clef decisions |
 | Dependency cache | R2 | Disposable npm download caches keyed by lockfile |
-| Temporary performance logs | Tail Worker and R2 | Benchmark records; separate from the domain event log |
 | Browser transport proof | Browser Run and Playwright Core | Gated hosted Chromium proof; agent browser tools and project browser checks remain unimplemented |
 
-The existing R2 cache, benchmark instrumentation and Browser Run proof have bounded purposes. Additional infrastructure still requires approval; do not add a second authoritative state store. Sandbox Durable Objects adapt container execution rather than owning railway lifecycle rules.
+The existing R2 cache and Browser Run proof have bounded purposes. Additional infrastructure still requires approval; do not add a second authoritative state store. Sandbox Durable Objects adapt container execution rather than owning railway lifecycle rules.
 
 ## Backend and UI boundary
 

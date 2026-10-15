@@ -4,7 +4,6 @@ import {
   catalogModel,
   utilityModel,
   harnessEventSchema,
-  perf,
   type CommandResult,
   type ReasoningLevel,
 } from "@terminus/protocol"
@@ -397,8 +396,6 @@ export function opencodeRunCommand(
     "--format",
     "json",
     "--auto",
-    // TEMPORARY benchmark instrumentation: prints reasoning events for the timeline.
-    "--thinking",
     "--agent",
     agent,
     "--model",
@@ -623,82 +620,6 @@ export function harnessOutcome(output: CommandResult): {
 }
 
 /**
- * TEMPORARY benchmark instrumentation, shared by the event filter and the live
- * runner: \`perfEvent(event)\` prints one \`perf_step\` line per finished model
- * step, so the live runner can report each step while the harness still runs.
- */
-export const harnessTimelineScript = `// TEMPORARY benchmark timeline: one line per model step, with its tool calls.
-var perfFirst, perfLast, perfStep, perfSteps, perfTotals
-function perfClip(value, length) {
-  if (typeof value !== "string") return undefined
-  const text = value.replace(/\\s+/g, " ").trim()
-  return text.length > length ? text.slice(0, length) + "…" : text
-}
-function perfFlush() {
-  if (perfStep && perfSteps <= 300) {
-    // The live runner's transport takes lines up to 64 KiB.
-    let line = JSON.stringify({ type: "perf_step", ...perfStep })
-    if (line.length > 16384) line = JSON.stringify({ type: "perf_step", ...perfStep, tools: perfStep.tools.slice(0, 10), toolsTrimmed: perfStep.tools.length })
-    console.log(line)
-  }
-  perfStep = null
-}
-function perfEvent(event) {
-  perfSteps ??= 0
-  perfTotals ??= { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, toolMs: 0, tools: 0 }
-  const ts = typeof event.timestamp === "number" ? event.timestamp : null
-  if (ts !== null) { perfFirst ??= ts; perfLast = ts }
-  const at = ts === null ? null : ts - perfFirst
-  const part = event.part ?? {}
-  if (event.type === "step_start") {
-    perfFlush()
-    perfSteps++
-    // Absolute times line steps up with the Worker's model.call records.
-    perfStep = { step: perfSteps, atMs: at, startAt: ts, tools: [], notes: [] }
-  } else if (event.type === "reasoning" || event.type === "text") {
-    const text = typeof part.text === "string" ? part.text : ""
-    if (perfStep && perfStep.notes.length < 4) perfStep.notes.push({ kind: event.type, chars: text.length, excerpt: perfClip(text, 300) })
-  } else if (event.type === "tool_use") {
-    const state = part.state ?? {}
-    const input = state.input ?? {}
-    const ms = state.time?.end && state.time?.start ? state.time.end - state.time.start : null
-    perfTotals.tools++
-    perfTotals.toolMs += ms ?? 0
-    if (perfStep) perfStep.toolMs = (perfStep.toolMs ?? 0) + (ms ?? 0)
-    if (perfStep && typeof state.time?.end === "number") perfStep.toolsEndAt = Math.max(perfStep.toolsEndAt ?? 0, state.time.end)
-    if (perfStep && perfStep.tools.length < 40) perfStep.tools.push({
-      tool: part.tool,
-      status: state.status,
-      ms,
-      target: perfClip(input.filePath ?? input.path ?? input.pattern ?? input.command ?? input.subagent_type, 200),
-      why: perfClip(input.description, 160),
-      ...(part.tool === "task" ? { prompt: perfClip(input.prompt, 300) } : {}),
-      ...(part.tool === "todowrite" && Array.isArray(input.todos) ? { todos: input.todos.slice(0, 10).map((todo) => perfClip((todo.status ?? "") + ": " + (todo.content ?? ""), 100)) } : {}),
-      outChars: typeof state.output === "string" ? state.output.length : undefined,
-      // OpenCode's \`invalid\` tool echoes the unparseable arguments; the parser's error is at the end.
-      ...(part.tool === "invalid" && typeof state.output === "string" ? { invalid: perfClip(state.output.slice(-300), 300) } : {}),
-      ...(state.status === "error" ? { error: perfClip(String(state.error ?? ""), 200) } : {}),
-    })
-  } else if (event.type === "step_finish") {
-    const tokens = part.tokens ?? {}
-    perfTotals.input += tokens.input ?? 0
-    perfTotals.output += tokens.output ?? 0
-    perfTotals.reasoning += tokens.reasoning ?? 0
-    perfTotals.cacheRead += tokens.cache?.read ?? 0
-    perfTotals.cacheWrite += tokens.cache?.write ?? 0
-    if (perfStep) {
-      perfStep.ms = at === null || perfStep.atMs === null ? null : at - perfStep.atMs
-      perfStep.reason = part.reason
-      perfStep.tokens = { input: tokens.input, output: tokens.output, reasoning: tokens.reasoning, cacheRead: tokens.cache?.read, cacheWrite: tokens.cache?.write }
-    }
-    perfFlush()
-  } else if (event.type === "error") {
-    if (perfStep) perfStep.error = perfClip(JSON.stringify(event.error ?? null), 300)
-  }
-}
-`
-
-/**
  * Reduces raw `--format json` output, which includes every file the agent
  * read, to the session, outcome events, and tool-use counts. Runs in the
  * Sandbox with Node: `node <script> <events.jsonl>`.
@@ -720,49 +641,9 @@ for await (const line of createInterface({ input: createReadStream(process.argv[
     const tool = event.part?.tool === "task" ? "task:" + event.part?.state?.input?.subagent_type : event.part?.tool
     counts[tool] = (counts[tool] ?? 0) + 1
   }
-  perfEvent(event)
 }
-perfFlush()
-console.log(JSON.stringify({ type: "perf_summary", steps: perfSteps, wallMs: perfFirst === null ? null : perfLast - perfFirst, totals: perfTotals }))
 console.log(JSON.stringify({ type: "tool_counts", counts }))
-
-${harnessTimelineScript}`
-
-/**
- * TEMPORARY benchmark instrumentation: logs the per-step timeline the event
- * filter emitted (`perf_step`, `perf_summary`) for one harness run.
- */
-export function logHarnessTimeline(
-  fields: Record<string, unknown>,
-  output: CommandResult,
-  durationMs: number
-): void {
-  for (const line of output.stdout.split("\n")) {
-    if (!line.includes('"perf_')) continue
-    let value: { type?: unknown; wallMs?: unknown } & Record<string, unknown>
-    try {
-      value = JSON.parse(line) as typeof value
-    } catch {
-      continue
-    }
-    // JSON drops the `type: undefined` override, so the filter's line type is not repeated.
-    if (value.type === "perf_step")
-      perf("harness.step", { ...fields, ...value, type: undefined })
-    else if (value.type === "perf_summary") {
-      perf("harness.summary", {
-        ...fields,
-        ...value,
-        type: undefined,
-        harnessMs: durationMs,
-        // Process start, OpenCode boot and the first model request before its first event.
-        startupMs:
-          typeof value.wallMs === "number" ? durationMs - value.wallMs : null,
-        exitCode: output.exitCode,
-        tools: harnessToolCounts(output),
-      })
-    }
-  }
-}
+`
 
 const toolCountsSchema = z.object({
   type: z.literal("tool_counts"),

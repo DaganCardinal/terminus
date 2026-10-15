@@ -1,4 +1,4 @@
-import { perf, type CommandResult } from "@terminus/protocol"
+import type { CommandResult } from "@terminus/protocol"
 
 /** npm's download cache in every Sandbox, set for all commands through the environment. */
 export const npmCacheDirectory = "/var/cache/npm"
@@ -48,14 +48,10 @@ export async function installDependencies(
 ): Promise<CommandResult> {
   const started = Date.now()
   const key = await lockfileKey(container, cwd)
-  const keyMs = Date.now() - started
   let outcome: CacheOutcome = "miss"
   if (key && (await restore(container, bucket, key))) outcome = "hit"
   else if (key && (await store(container, bucket, cwd, key))) outcome = "stored"
-  const cacheMs = Date.now() - started - keyMs
-  const ciStarted = Date.now()
   let installed = await container.run(installCommand, cwd)
-  const ciMs = Date.now() - ciStarted
   if (outcome === "hit" && installed.exitCode !== 0) {
     // Only a restored cache could have caused this; retry from the registry.
     await container.run(["rm", "-rf", npmCacheDirectory])
@@ -68,16 +64,6 @@ export async function installDependencies(
   console.info("Dependency install completed", {
     cache: outcome,
     durationMs: Date.now() - started,
-    exitCode: installed.exitCode,
-  })
-  // TEMPORARY benchmark instrumentation.
-  perf("dependencies.install", {
-    cwd,
-    cache: outcome,
-    ms: Date.now() - started,
-    keyMs,
-    cacheMs,
-    ciMs,
     exitCode: installed.exitCode,
   })
   return installed
@@ -97,14 +83,8 @@ async function restore(
   bucket: R2Bucket,
   key: string
 ): Promise<boolean> {
-  const fetched = Date.now()
   const object = await bucket.get(key)
   if (!object) return false
-  perf("dependencies.cache_object", {
-    key: key.slice(-16),
-    mb: Math.round((object.size / 1048576) * 10) / 10,
-    getMs: Date.now() - fetched,
-  })
   await container.run(["mkdir", "-p", npmCacheDirectory])
   const extracted = await container.stream(
     ["tar", "-xf", "-", "--no-same-owner", "-C", npmCacheDirectory],

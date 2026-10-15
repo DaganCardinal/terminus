@@ -1,9 +1,7 @@
 import {
   catalogModel,
-  errorKind,
   utilityModel,
   modelCallSchema,
-  perf,
   sandboxNetworkSchema,
   type SandboxNetwork,
 } from "@terminus/protocol"
@@ -115,8 +113,6 @@ export async function outboundRequest(
     // Claude Code's SDK client always sends `?beta=true`; nothing else is allowed.
     (!url.search || (provider === "anthropic" && url.search === "?beta=true"))
   ) {
-    // TEMPORARY benchmark instrumentation: when the request reached the Worker.
-    const entered = Date.now()
     const payload = modelCallSchema.safeParse(
       await request
         .clone()
@@ -164,7 +160,6 @@ export async function outboundRequest(
         : []),
     ]
     if (declared.some(hosted)) return denied()
-    const bodyMs = Date.now() - entered
     const headers = cleanHeaders(request.headers)
     if (provider === "workers-ai") {
       headers.set("authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
@@ -188,36 +183,6 @@ export async function outboundRequest(
         ? { ...body, reasoning_effort: reasoning }
         : body
     )
-    // TEMPORARY benchmark instrumentation.
-    const shape = body as Record<string, unknown>
-    const messages = Array.isArray(shape.messages) ? shape.messages : []
-    const request_ = {
-      requestId: requestId.slice(0, 8),
-      model: body.model,
-      provider,
-      affinity: network.sessionAffinity?.slice(0, 16),
-      kb: Math.round(forwarded.length / 1024),
-      messages: messages.length,
-      systemKB: Math.round(
-        JSON.stringify(
-          messages.filter(
-            (m) =>
-              !!m &&
-              typeof m === "object" &&
-              (m as { role?: unknown }).role === "system"
-          )
-        ).length / 1024
-      ),
-      tools: Array.isArray(shape.tools) ? shape.tools.length : 0,
-      maxTokens: shape.max_tokens ?? shape.max_completion_tokens,
-      stream: shape.stream === true,
-      // When the request reached this handler, comparable with the harness
-      // step timestamps from the Sandbox. Receiving its body is the only wait
-      // before it leaves the Worker: Worker clocks do not advance during CPU work.
-      at: entered,
-      bodyMs,
-      inFlight: ++modelCallsInFlight,
-    }
     try {
       const { response, hedge } = await hedgedSend(
         (copy, signal) => {
@@ -236,7 +201,6 @@ export async function outboundRequest(
         },
         provider === "workers-ai" && body.stream === true ? hedgeAfterMs : null
       )
-      Object.assign(request_, hedge)
       console.info("Station model response received", {
         requestId,
         provider,
@@ -245,27 +209,12 @@ export async function outboundRequest(
         ray: response.headers.get("cf-ray"),
         ...hedge,
       })
-      if (response.status >= 300 && response.status < 400) {
-        modelCallsInFlight--
-        perf("model.call", {
-          ...request_,
-          outcome: "redirect",
-          status: response.status,
-          headersMs: Date.now() - started,
-        })
+      if (response.status >= 300 && response.status < 400)
         return new Response("Model redirects are not permitted", {
           status: 502,
         })
-      }
-      return await timedModelResponse(response, request_, started)
+      return response
     } catch (error) {
-      modelCallsInFlight--
-      perf("model.call", {
-        ...request_,
-        outcome: "error",
-        error: errorKind(error),
-        headersMs: Date.now() - started,
-      })
       console.error("Station model request failed", {
         requestId,
         provider,
@@ -440,136 +389,4 @@ function hedgedSend(
         send(1)
       }, afterMs)
   })
-}
-
-/** TEMPORARY benchmark instrumentation: model calls this isolate is serving. */
-let modelCallsInFlight = 0
-
-/** AI Gateway and Cloudflare response metadata, safe to log. */
-function gatewayHeaders(headers: Headers): Record<string, unknown> {
-  const gateway: Record<string, string> = {}
-  for (const [name, value] of headers)
-    if (name.startsWith("cf-aig-") && Object.keys(gateway).length < 12)
-      gateway[name.slice("cf-aig-".length)] = value.slice(0, 120)
-  return {
-    gateway,
-    ray: headers.get("cf-ray"),
-    serverTiming: headers.get("server-timing")?.slice(0, 300) ?? undefined,
-    // Names only, to discover what else the gateway and provider report.
-    headerNames: [...headers.keys()].slice(0, 40),
-  }
-}
-
-/** Long runs of word characters may be tokens or ids, so they are dropped. */
-function errorSnippet(text: string): string {
-  return text
-    .replace(/[A-Za-z0-9_-]{24,}/g, "…")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 300)
-}
-
-/**
- * TEMPORARY benchmark instrumentation: passes the response through unchanged
- * and logs when its first and last bytes arrived, with the usage the final
- * chunk reports and the gateway's response metadata. Only token counts are
- * read from a successful body. Calls that end early (the harness stopped or
- * the stream failed) are logged too, so a stall is visible even when it never
- * finishes.
- */
-async function timedModelResponse(
-  response: Response,
-  request: Record<string, unknown>,
-  started: number
-): Promise<Response> {
-  const headersMs = Date.now() - started
-  const metadata = gatewayHeaders(response.headers)
-  const failure = response.ok
-    ? {}
-    : {
-        errorBody: errorSnippet(
-          await response
-            .clone()
-            .text()
-            .catch(() => "")
-        ),
-      }
-  if (!response.body) {
-    modelCallsInFlight--
-    perf("model.call", {
-      ...request,
-      ...metadata,
-      ...failure,
-      outcome: "complete",
-      status: response.status,
-      headersMs,
-    })
-    return response
-  }
-  const decoder = new TextDecoder()
-  let firstChunkMs: number | null = null
-  let bytes = 0
-  let chunks = 0
-  let tail = ""
-  let logged = false
-  const number = (pattern: RegExp) => {
-    const matches = [...tail.matchAll(pattern)]
-    const last = matches.at(-1)?.[1]
-    return last === undefined ? undefined : Number(last)
-  }
-  const log = (outcome: "complete" | "canceled" | "stream_error") => {
-    if (logged) return
-    logged = true
-    modelCallsInFlight--
-    const totalMs = Date.now() - started
-    perf("model.call", {
-      ...request,
-      ...metadata,
-      ...failure,
-      outcome,
-      status: response.status,
-      headersMs,
-      firstChunkMs,
-      totalMs,
-      generateMs: firstChunkMs === null ? null : totalMs - firstChunkMs,
-      responseKB: Math.round(bytes / 1024),
-      chunks,
-      promptTokens: number(/"prompt_tokens"\s*:\s*(\d+)/g),
-      completionTokens: number(/"completion_tokens"\s*:\s*(\d+)/g),
-      cachedTokens: number(/"cached_tokens"\s*:\s*(\d+)/g),
-      reasoningTokens: number(/"reasoning_tokens"\s*:\s*(\d+)/g),
-      finish: tail
-        .match(/"finish_reason"\s*:\s*"([a-z_]+)"/g)
-        ?.at(-1)
-        ?.split('"')[3],
-    })
-  }
-  const reader = response.body.getReader()
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      let next: ReadableStreamReadResult<Uint8Array>
-      try {
-        next = await reader.read()
-      } catch (error) {
-        log("stream_error")
-        controller.error(error)
-        return
-      }
-      if (next.done) {
-        log("complete")
-        controller.close()
-        return
-      }
-      firstChunkMs ??= Date.now() - started
-      bytes += next.value.byteLength
-      chunks++
-      tail = (tail + decoder.decode(next.value, { stream: true })).slice(-8192)
-      controller.enqueue(next.value)
-    },
-    async cancel(reason) {
-      log("canceled")
-      await reader.cancel(reason)
-    },
-  })
-  return new Response(body, response)
 }

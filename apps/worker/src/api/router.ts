@@ -7,7 +7,6 @@ import {
 import { launchStressTest, stressRun } from "../agents/stress-test"
 import { layJunction } from "../agents/junctions"
 import { readTrainChanges } from "./changes"
-import { readPerfLogs } from "./perf-logs"
 import { browserRunEnabled, proveBrowserRun } from "../integrations/browser-run"
 import { emergencyBrake } from "../agents/emergency-brake"
 import { deleteNetwork } from "../agents/delete-network"
@@ -929,18 +928,6 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
       browserRunEnabled(env)
         ? json(await proveBrowserRun(env))
         : notFound("Browser Run is disabled"),
-  ],
-  [
-    // TEMPORARY benchmark instrumentation; see perf-logs.ts.
-    "GET",
-    new URLPattern({ pathname: "/api/perf-logs" }),
-    async (request, env) => {
-      const logs = await readPerfLogs(
-        env.PERF_LOGS,
-        new URL(request.url).searchParams
-      )
-      return "error" in logs ? error(400, logs.error) : json(logs)
-    },
   ],
   [
     "GET",

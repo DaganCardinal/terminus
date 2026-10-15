@@ -36,9 +36,6 @@ import {
 import {
   scriptedStressAgent,
   harnessRoles,
-  errorKind,
-  perf,
-  perfSpan,
   type RoleExecutions,
   type RoleExecution,
   type ReasoningLevel,
@@ -468,13 +465,8 @@ export function dispatchPlanningPorts(
         await instance.restart()
       try {
         await instance.sendEvent({ type: DISPATCH_EVENTS.launch, payload: {} })
-        perf("dispatch.launch_event_sent", { planId })
-      } catch (error) {
+      } catch {
         // A periodic gate read observes the already persisted launch command.
-        perf("dispatch.launch_event_failed", {
-          planId,
-          error: errorKind(error),
-        })
       }
     },
     stopPlan: async (planId) => {
@@ -734,10 +726,8 @@ async function startStationRun(
 }
 
 async function wakeTrain(env: Env, trainId: string): Promise<void> {
-  await perfSpan("train.wake_sent", { trainId }, async () => {
-    const instance = await env.TRAIN_WORKFLOW.get(trainId)
-    await instance.sendEvent({ type: TRAIN_EVENTS.wake, payload: {} })
-  })
+  const instance = await env.TRAIN_WORKFLOW.get(trainId)
+  await instance.sendEvent({ type: TRAIN_EVENTS.wake, payload: {} })
 }
 
 function newId(prefix: string): string {

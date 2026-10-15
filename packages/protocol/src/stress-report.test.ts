@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { stressInterventions, stressPlacementRetries } from "./stress-report"
+import { stressInterventions } from "./stress-report"
 
 const unplaced =
   "Station run failed during checkout: There is no container instance that can be provided to this Durable Object, try again later"
@@ -51,52 +51,5 @@ describe("stress interventions", () => {
         label
       )
     ).toEqual([])
-  })
-})
-
-const retry = (sandbox: string, pauseMs: number, binding = "SANDBOX") => ({
-  message: `[perf] sandbox.placement_retry ${JSON.stringify({
-    t: "2026-10-14T18:20:00.000Z",
-    sandbox,
-    binding,
-    attempt: 1,
-    pauseMs,
-  })}`,
-})
-
-describe("stress placement retries", () => {
-  it("warns once per Sandbox of this run, in order of its first retry", () => {
-    expect(
-      stressPlacementRetries(
-        [
-          { message: '[perf] sandbox.setup {"sandbox":"station-s6-s1-r0"}' },
-          retry("station-s6-s1-r0", 5_000),
-          retry("git-a", 5_000, "WORKSPACE_SANDBOX"),
-          retry("station-other-s1-r0", 5_000),
-          retry("station-s6-s1-r0", 10_000),
-          { message: "[perf] sandbox.placement_retry {not json}" },
-          { message: '[perf] sandbox.placement_retry {"sandbox":"git-b"}' },
-          retry("station-s6-s1-r0", 20_000),
-        ],
-        (sandbox) => !sandbox.startsWith("station-other-"),
-        (sandbox) => `Sandbox ${sandbox}`
-      )
-    ).toEqual([
-      "Sandbox station-s6-s1-r0: Cloudflare could not place its container 3 times and retried after 35 s of pauses",
-      "Sandbox git-a: Cloudflare could not place its container once and retried after 5 s of pauses",
-    ])
-  })
-
-  it("passes each record's binding to the run check", () => {
-    const seen: string[] = []
-    stressPlacementRetries(
-      [retry("git-a", 5_000, "WORKSPACE_SANDBOX")],
-      (sandbox, binding) => {
-        seen.push(`${binding}/${sandbox}`)
-        return false
-      },
-      String
-    )
-    expect(seen).toEqual(["WORKSPACE_SANDBOX/git-a"])
   })
 })

@@ -94,9 +94,8 @@ In priority order:
 1. **Run Goal B live again.** The new rejection is only verified offline. The question is whether GLM fixes all 8 `scope` lists after one precise rejection.
 2. **Keep the text submission path** and the Zod and `assessPlan` gates. Don't use schema-constrained decoding for whole proposals: in 5 of 10 runs it turned slips into empty or invented plans.
 3. **For the demo, keep the model switch in reserve.** If GLM still can't converge, the Dispatcher model is a setting, and Kimi K2.7, Claude and GPT are in the catalog. `AGENTS.md` limits live testing to GLM, but switching is approved for the demo.
-4. **Log the rejections.** The `dispatcher.proposal_tool` perf record logs only `accepted`. Adding the parser message and the quoted excerpt would make the next failure readable from the tail log, without gateway exports.
-5. **Review the repair steps.** On some inputs `repairBrackets` and `jsonrepair` return valid JSON with the wrong shape; `jsonrepair` can split one string at an unescaped quote into two list items. Schema validation catches most of these, not all.
-6. **Later, submit in smaller pieces:** Junction metadata, Lines and Stations, assembled in code, so a slip costs one piece. That needs storage between tool calls and the cross-piece checks at assembly. Constrained decoding may be worth retrying per piece, where objects are small and the order is simple.
+4. **Review the repair steps.** On some inputs `repairBrackets` and `jsonrepair` return valid JSON with the wrong shape; `jsonrepair` can split one string at an unescaped quote into two list items. Schema validation catches most of these, not all.
+5. **Later, submit in smaller pieces:** Junction metadata, Lines and Stations, assembled in code, so a slip costs one piece. That needs storage between tool calls and the cross-piece checks at assembly. Constrained decoding may be worth retrying per piece, where objects are small and the order is simple.
 
 ## Evidence
 

@@ -29,7 +29,6 @@ async function fixture(failLine = false) {
       if (path.endsWith("/stress-test/verify")) return json({commit: "b".repeat(40), files: 20, reachableCars: 10, mergeCommits: Array.from({length: 10}, (_, i) => String(i).padStart(40, "0"))});
       if (path.endsWith("/stress-test")) return json({profile: "ten-trains-v1", leases: 0, expiredLeases: 0, activeIntegrations: 0, completedIntegrations: released ? 10 : 0, failedIntegrations: 0});
       if (path.endsWith("/events")) return json({events: Number(new URL(url).searchParams.get("after")) ? [] : events, lastSeq: 40});
-      if (path === "/api/perf-logs") return json({complete: true, records: []});
       return json({network: {id: "n", terminusCommit: baseline, validation: ["typecheck", "test", "build"].map(name => ({name, command: ["npm", "run", name]}))}, lines, stations: released ? lines.map((line, i) => ({id: "s" + i, revisionCount: 0, state: {status: "complete"}})) : [], trains: released ? lines.map((line, i) => ({train: {id: "t" + i, state: {status: "unloaded"}}})) : [], cars: [], holds: [], plans: [], conflicts: [], lastSeq: released ? 40 : 0});
     };
   `

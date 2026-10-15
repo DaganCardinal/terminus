@@ -71,8 +71,6 @@ describe("Sandbox outbound capabilities", () => {
         })
       const grant = { repositories: [], allowModel: true, provider, model }
       const response = await outboundRequest(request(), env, grant, send)
-      // TEMPORARY benchmark instrumentation pipes the body through a timing
-      // pass-through; restore `expect(response.body).toBe(stream)` with it.
       expect(await response.text()).toBe("data: first\n\n")
       const forwarded = send.mock.calls[0]![0] as Request
       expect(forwarded.headers.get("cf-aig-authorization")).toBe(
@@ -272,120 +270,6 @@ describe("Sandbox outbound capabilities", () => {
     for (const secret of ["worker-secret", "station-token", "private-prompt"])
       expect(logs).not.toContain(secret)
   })
-  it("times each model call with the gateway's metadata, including calls that end early", async () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {})
-    const calls = () =>
-      info.mock.calls
-        .map(([line]) => String(line))
-        .filter((line) => line.startsWith("[perf] model.call "))
-        .map(
-          (line) =>
-            JSON.parse(line.slice("[perf] model.call ".length)) as Record<
-              string,
-              unknown
-            >
-        )
-    const request = () =>
-      new Request(
-        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            model,
-            stream: true,
-            messages: [{ role: "user", content: "private-prompt" }],
-          }),
-        }
-      )
-    const streamed = (chunks: string[]) =>
-      vi.fn<typeof fetch>(
-        async () =>
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                for (const chunk of chunks)
-                  controller.enqueue(new TextEncoder().encode(chunk))
-                controller.close()
-              },
-            }),
-            {
-              headers: {
-                "content-type": "text/event-stream",
-                "cf-aig-log-id": "01JLOGID",
-                "cf-aig-cache-status": "MISS",
-                "cf-ray": "abc-SJC",
-                "server-timing": "upstream;dur=812",
-                "set-cookie": "private-cookie",
-              },
-            }
-          )
-      )
-
-    const complete = await outboundRequest(
-      request(),
-      env,
-      network,
-      streamed([
-        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
-        'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\n',
-      ])
-    )
-    expect(await complete.text()).toContain('"content":"hi"')
-    expect(calls()[0]).toMatchObject({
-      outcome: "complete",
-      status: 200,
-      gateway: { "log-id": "01JLOGID", "cache-status": "MISS" },
-      ray: "abc-SJC",
-      serverTiming: "upstream;dur=812",
-      headerNames: expect.arrayContaining(["cf-aig-log-id", "set-cookie"]),
-      at: expect.any(Number),
-      bodyMs: expect.any(Number),
-      // Isolate-wide, so earlier tests' unread responses count too.
-      inFlight: expect.any(Number),
-      promptTokens: 12,
-      completionTokens: 3,
-      finish: "stop",
-    })
-
-    // The harness stopped reading mid-stream.
-    const canceled = await outboundRequest(
-      request(),
-      env,
-      network,
-      streamed(["data: {}\n\n", "data: {}\n\n"])
-    )
-    const reader = canceled.body!.getReader()
-    await reader.read()
-    await reader.cancel()
-    expect(calls()[1]).toMatchObject({ outcome: "canceled", chunks: 1 })
-
-    // Gateway errors keep their body for the client and a summary for us.
-    const rejected = await outboundRequest(
-      request(),
-      env,
-      network,
-      vi.fn<typeof fetch>(
-        async () =>
-          new Response("Capacity temporarily exceeded, retry later", {
-            status: 429,
-            headers: { "cf-aig-log-id": "01JLOGID2" },
-          })
-      )
-    )
-    expect(await rejected.text()).toBe(
-      "Capacity temporarily exceeded, retry later"
-    )
-    expect(calls()[2]).toMatchObject({
-      outcome: "complete",
-      status: 429,
-      gateway: { "log-id": "01JLOGID2" },
-      errorBody: "Capacity temporarily exceeded, retry later",
-    })
-
-    const logs = JSON.stringify(info.mock.calls)
-    for (const secret of ["worker-secret", "private-prompt", "private-cookie"])
-      expect(logs).not.toContain(secret)
-  })
   describe("hedging stalled Workers AI calls", () => {
     const workersAi =
       "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions"
@@ -580,14 +464,12 @@ describe("Sandbox outbound capabilities", () => {
       await (
         await outboundRequest(streamedRequest(), env, affine, send, 20)
       ).text()
-      const call = info.mock.calls
-        .map(([line]) => String(line))
-        .find((line) => line.startsWith("[perf] model.call "))!
-      expect(JSON.parse(call.slice("[perf] model.call ".length))).toMatchObject(
-        {
+      expect(info).toHaveBeenCalledWith(
+        "Station model response received",
+        expect.objectContaining({
           winner: "copy",
           hedgedAtMs: expect.any(Number),
-        }
+        })
       )
     })
   })

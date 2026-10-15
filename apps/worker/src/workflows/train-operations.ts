@@ -53,7 +53,6 @@ import {
   type TrainId,
 } from "@terminus/domain"
 import {
-  perfSpan,
   stationVerdictSchema,
   type StationOutcome,
   type IntegrationOutcome,
@@ -521,20 +520,14 @@ async function retryOrBlock(
   const advice =
     evaluateStationRetry(station.value, ports.stationMaxRetries).kind ===
     "clear"
-      ? await perfSpan(
-          "engineer.station_failure",
-          { stationId: station.value.id },
-          () =>
-            assessEngineer(
-              ports,
-              train.networkId,
-              train.value.id,
-              "station_failure",
-              runId,
-              situation,
-              () => ports.engineer.stationFailure(situation)
-            ),
-          (advice) => ({ advice })
+      ? await assessEngineer(
+          ports,
+          train.networkId,
+          train.value.id,
+          "station_failure",
+          runId,
+          situation,
+          () => ports.engineer.stationFailure(situation)
         )
       : null
   const freshTrain = await loadTrain(ports, train.value.id)
@@ -841,16 +834,10 @@ export async function reviewStation(
     throw new Error(`Station ${station.value.id} is not in review`)
   const repoId = station.value.state.workspace.repoId
   const verdict = stationVerdictSchema.parse(
-    await perfSpan(
-      "conductor.review",
-      { stationId: station.value.id, revision: station.value.revisionCount },
-      () =>
-        ports.conductor.review(input, {
-          repoId,
-          validation: network.validation,
-        }),
-      (result) => ({ verdict: result.verdict })
-    )
+    await ports.conductor.review(input, {
+      repoId,
+      validation: network.validation,
+    })
   )
   await ports.store.recordConductorReview(
     train.networkId,
@@ -986,20 +973,14 @@ async function returnWork(
       previousFeedback: feedbackContext.history[1]?.feedback ?? null,
       context,
     }
-    const advice = await perfSpan(
-      "engineer.revision",
-      { stationId: station.value.id },
-      () =>
-        assessEngineer(
-          ports,
-          train.networkId,
-          train.value.id,
-          "revision",
-          { runId, trainHead: train.value.headCommit },
-          situation,
-          () => ports.engineer.revision(situation)
-        ),
-      (result) => ({ advice: result })
+    const advice = await assessEngineer(
+      ports,
+      train.networkId,
+      train.value.id,
+      "revision",
+      { runId, trainHead: train.value.headCommit },
+      situation,
+      () => ports.engineer.revision(situation)
     )
     const current = await loadStation(ports, station.value.id)
     const currentTrain = await loadTrain(ports, train.value.id)
