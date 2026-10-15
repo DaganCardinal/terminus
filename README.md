@@ -1,50 +1,145 @@
-# Terminus
+<p align="center">
+  <img src="apps/web/public/terminus-favicon.svg" alt="Terminus logo" width="96" height="96">
+</p>
 
-Terminus coordinates coding agents on concurrent Lines of work. Each Train accumulates accepted Station work; D1 owns the railway state, Artifacts owns repositories, and Workflows coordinate execution. The browser polls snapshots and the domain event log.
+<h1 align="center">Terminus</h1>
 
-## Status
+<p align="center"><strong>A new model for coordinating software development, built for teams of coding agents on Cloudflare Workers and Artifacts.</strong></p>
 
-- **Implemented and live-verified:** the domain, persistence, API, Train/Station/Terminus integration Workflows, React/SVG railway map, and real Artifacts and Sandbox harness adapters (OpenCode by default) alongside fakes. The maintainer verified two concurrent Trains reaching and integrating into Terminus in a live test.
-- **Implemented, awaiting live verification:** Dispatcher planning (read-only exploration → persisted proposal → explicit launch), sandboxed Conductor reviews, Technician reconciliation of failed Terminus merges, commit-bound human unloading approval, and the Engineer's Clef decisions on failed Station runs and revision loops.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white" alt="Cloudflare Workers">
+  <img src="https://img.shields.io/badge/Cloudflare-Artifacts-F38020?logo=cloudflare&logoColor=white" alt="Cloudflare Artifacts">
+</p>
 
-## Quick start with fakes
+<p align="center">
+  <a href="#try-it-in-five-minutes">Try it in five minutes</a> ·
+  <a href="#how-terminus-handles-concurrent-agents">Concurrent agents</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#built-on-cloudflare">Built on Cloudflare</a>
+</p>
 
-Use Node 24 and npm. No Cloudflare credentials, Docker or model calls are needed for the fake environment.
+<p align="center">
+  <img src="docs/images/terminus-map.png" alt="The Terminus railway map with four Lines running at once, each Train under Conductor review" width="900">
+</p>
+
+Coding agents have gotten very good at writing code, but coordinating several of them on one project is still a mess. What can safely happen in parallel? How do agents avoid stepping on each other? How does everything come back together without a pile of merge conflicts?
+
+**Terminus doesn't just coordinate agents. It introduces a different model for coordinating software development itself, organized like a railway network.** The Dispatcher breaks your goal into tasks (**Stations**), groups related work into **Lines** and sends out **Trains** to carry the results. Each Station's coding agent works in its own isolated Sandbox, and a Conductor reviews the work before it's added to the Train.
+
+These aren't visual metaphors. Each Train carries a real, evolving Git repository in Cloudflare Artifacts with all the work it has accepted so far. Trains run independently, share accepted work through **Crossings** and come together at **Junctions** to build larger features. Once work has been reviewed and validated, it returns to **Terminus**, the project's canonical codebase. The map shows all of it: Trains move while agents work, Stations show their progress and signals make it obvious when something needs attention.
+
+Terminus doesn't replace Git or your editor. It's the coordination layer that lets teams of coding agents work together, while you stay informed and in control of the decisions that matter.
+
+## Try it in five minutes
+
+No Cloudflare account, Docker or model calls are needed. The fake environment runs the real domain rules, D1 state and Workflows locally in workerd; only the coding agents and the Git repositories are simulated, so nothing is billed.
+
+You need Node 24 (see `.nvmrc`) and npm.
 
 ```sh
+git clone https://github.com/DaganCardinal/terminus.git
+cd terminus
 npm install
 npm run dev:fake
 ```
 
-In another terminal:
+In a second terminal, from the same folder:
 
 ```sh
 npm run dev:web
 ```
 
-Open the URL Vite prints. Create a network and choose **Lay demo Lines**. The two Trains run independently; the Red Line has two ordered Stations, and the Blue Line has one. Fake reviews request one revision by default. Accepted work appears as Cars with events in the status page. Returning Trains integrate one at a time and finish at `unloaded`. Red unloads automatically; Blue waits in the review yard until you approve its accepted changes.
+Open the URL Vite prints (usually `http://localhost:5173`), then:
 
-The Dispatcher also offers **Lay Crossing demo** and **Lay Junction demo** in a fresh network.
+1. Enter any name in **Lay your first network** (later, choose **New network**), leave **Public Git URL** blank and choose **Create network**. Offline, every network uses a built-in sample project, and the network opens on its docs.
+2. Choose **Network Map**. The Dispatcher panel opens.
+3. Choose **Lay demo Lines**. Two Trains depart at once: the Red Line has two ordered Stations and the Blue Line has one.
+4. Watch them run side by side. Each fake Conductor review returns the Station's work once for revision, then accepts it and attaches it to the Train as a Car. **Activity** shows the event log.
+5. Returning Trains integrate into Terminus one at a time. Red unloads automatically; Blue waits in the review yard until you approve its accepted changes.
 
-## Checks
+In a fresh network, **Lay Crossing demo** shows one Line picking up another Line's accepted work, and **Lay Junction demo** shows several Lines converging on one feature before Terminus. You can also type a goal to the Dispatcher; offline, it proposes a simple simulated plan that you review and launch.
 
-```sh
-npm run typecheck
-npm test
-npm run lint
-npm run format:check
-npm run build
+`npm run stress:ten` runs ten concurrent Trains through the Workflows and checks the result against a real local Git oracle, also without credentials.
+
+The Worker terminal can print `The Workers runtime canceled this request because it detected that your Worker's code had hung` while local Workflows wait; the run is fine as long as the map keeps advancing. To start over, stop both processes and delete `apps/worker/.wrangler`.
+
+Train previews and real agents need live mode. To run real agents on real Artifacts repositories, see [Real repositories and agents](#real-repositories-and-agents) and [Deployment](#deployment). Both need a Workers Paid account with Artifacts and Sandboxes, and a network there needs a public npm project to import, such as [the demo app](https://github.com/DaganCardinal/term-demo-app); a blank URL creates a genuinely empty repository.
+
+## How Terminus handles concurrent agents
+
+| Challenge | How Terminus handles it |
+| --- | --- |
+| **Concurrency** | Every Line's Train runs in its own durable Workflow, and every Station runs in its own Sandbox on its own Artifacts fork. Trains run independently until they reach Terminus, except where the plan declares a dependency or Crossing. Per-network Sandbox limits are a setting, and `npm run stress:ten` runs ten Trains at once. |
+| **Coordination** | The Dispatcher turns a goal into a persisted plan of Lines, Stations and dependencies, and nothing runs until you launch it. Each Train's Engineer enforces hard rules that no model can override: failed checks, unmet dependencies, holds and unresolved conflicts all stop the Train. [Crossings](docs/crossings.md) and [Junctions](docs/junctions.md) move accepted work between Lines on purpose. |
+| **Context preservation** | A Work Manifest (goal, scope, areas to avoid, contracts, invariants, acceptance criteria, expected evidence) is a D1 domain object, not a prompt. Every Car records its manifest, agent configuration, commits, diff, evidence and review. Agent and model settings are frozen when work starts, and every state change writes a domain event in the same D1 batch. |
+| **Review** | Terminus runs the checks itself and never trusts the agent's own summary. A Conductor agent then builds, tests and runs the exact candidate commit in a sealed, read-only Sandbox, and either accepts it as a Car or returns it for revision. Completed Trains can wait in the review yard for human approval bound to an exact commit. |
+| **Conflict handling** | [Conflict watch](docs/conflict-watch.md) checks every accepted Car against the other running Trains and trial-merges suspicious pairs before they reach Terminus. Terminus integration uses merge commits and project-wide validation, and a failed merge goes to a [Technician](docs/technician.md), who prepares a reviewed repair in an isolated workspace for your approval. |
+
+## Railway terms, mapped to Git
+
+Terminus works on top of Git rather than replacing it, and the railway words are deliberate: each one is a domain object with its own rules, not a renamed Git feature.
+
+| Terminus | Closest Git idea | What's different |
+| --- | --- | --- |
+| **Terminus** | `main` | The canonical project state. Only a Train that passes integration checks is promoted into it, with a merge commit. |
+| **Line** | A long-running branch | An ordered workstream from a depot, through its Stations, to Terminus. Lines don't branch. |
+| **Station** | An issue or task | One clearly defined job, described by a Work Manifest with scope, contracts and acceptance criteria. |
+| **Train** | A feature branch | Its own Artifacts repository, forked from Terminus. It accumulates accepted work in order, and its Workflow is the only writer of its state. |
+| **Car** | A merged pull request | One accepted unit of work with full provenance: manifest, agent configuration, commits, diff, evidence and review. |
+| **Conductor** | A code reviewer | An agent that builds and runs the exact candidate before accepting it or returning it for revision. |
+| **Engineer** | Branch protection and CI gates | Deterministic movement control: whether a Train may depart, wait, retry or stop. |
+| **Review yard** | A pull request waiting for approval | Completed Trains held for human approval of an exact commit. |
+| **Crossing** | Merging another branch in | A one-way pickup of another Line's accepted checkpoint, with provenance copied across. |
+| **Junction** | An integration branch | Several Lines converge on one feature, which is reviewed and released before it heads to Terminus. |
+| **Technician** | Resolving a merge conflict | An agent that repairs a failed integration in an isolated workspace and produces a reviewable candidate. |
+| **Siding** | A closed pull request | An abandoned Train, parked but still inspectable. |
+
+## How it works
+
+```mermaid
+flowchart TD
+    G[Your goal] --> D[Dispatcher plan<br/>Lines and Work Manifests]
+    D -->|you launch| T[Train repository<br/>forked from Terminus]
+    T --> S[Station fork<br/>repo-scoped token]
+    S --> A[Station Agent<br/>in a Sandbox]
+    A --> V[Terminus runs<br/>build and tests]
+    V --> C{Conductor review<br/>sealed Sandbox}
+    C -->|return for revision| A
+    C -->|accept| K[Car attached<br/>Train fast-forwards]
+    K -.-> W[Conflict watch<br/>other running Trains]
+    K -->|next Station| S
+    K -->|last Station| I[Terminus integration<br/>merge, validate, promote]
+    I --> X[(Terminus)]
 ```
 
-Worker tests run in workerd with D1 and Workflows. Repository transport tests use real, temporary local Git repositories. Model tests use mock transports; they do not incur inference charges. The current workerd Workflow tests can print cancellation messages during teardown even when assertions pass.
+1. **Plan.** The Dispatcher explores the project read-only at the exact Terminus commit and proposes Lines, Stations and Work Manifests. You review the plan and launch it.
+2. **Depart.** Each Train gets its own Artifacts repository. When a Train departs toward a Station, that Station's workspace is forked from the Train's current state, and the Sandbox gets a short-lived token that can write only to that fork.
+3. **Work.** The Station Agent (OpenCode by default, or Claude Code or Codex) implements the manifest. The Sandbox has no internet access except through the Worker, holds no credentials and is disposable.
+4. **Review.** Terminus runs the project's checks itself, then the Conductor reviews the exact commit. Accepted work becomes a Car and fast-forwards the Train; returned work goes back for revision.
+5. **Integrate.** Returning Trains reserve Terminus clearance one at a time. Terminus merges, validates the whole project and promotes the result. A failed merge goes to the Technician.
 
-## Ten-Train stress test
+<p align="center">
+  <img src="docs/images/terminus-conductor-review.png" alt="A Train whose Conductor is reviewing its first Station, with its Cars loading and the Dispatcher's suggestion to require human approval" width="440">
+  <img src="docs/images/terminus-review-yard.png" alt="A finished Train held in the review yard, with Approve unloading bound to its exact commit" width="440">
+</p>
+<p align="center"><em>Left: a Conductor reviewing a Station's work. Right: a finished Train waiting in the review yard for approval of its exact commit.</em></p>
 
-```sh
-npm run stress:ten
-```
+## Built on Cloudflare
 
-This runs the local ten-Train Workflow rehearsal and real local Git oracle, without Cloudflare credentials or Docker. For full Cloudflare verification, open **Stress test** from the app's Networks page, run the test, then **Verify and download report**. It creates its own fixture Network and uses your existing browser login. No manual project import, stress-mode switch, or terminal Access token is needed. See [the run guide](docs/pipeline-stress-test.md).
+Cloudflare isn't just hosting the app. Much of the architecture came from what these services make possible: they provide the Git infrastructure, execution environments, orchestration and AI that Terminus is built from.
+
+| Product | What Terminus uses it for |
+| --- | --- |
+| **Artifacts** | The most important piece. Instead of every agent working against one repository, Terminus creates separate Git repositories for the canonical project state, each Train, each Station run, integration candidates and Technician workspaces, in one namespace per network. Accepted work is carried forward into the Train's repository as real commits and history. Sandboxes only ever receive short-lived, repo-scoped Git tokens. |
+| **Workers** | One Worker serves the React app and the API, handles commands and mediates every Sandbox's outbound traffic. |
+| **Workflows** | Every Train and Station has its own durable Workflow, as do integrations, Junctions, Dispatcher plans, Technician repairs and conflict watches. They wait for agents, trigger reviews, retry and integrate, without depending on one long-running process or an open browser tab. |
+| **Sandboxes and Containers** | Where the coding happens. Each agent gets an isolated environment with a coding harness (OpenCode by default) to inspect the repository, edit files, install dependencies and run tests. Conductors review in separate, read-only Sandboxes, and Git, validation and previews run in agentless ones. |
+| **D1** | The network itself: topology, Trains, Stations, Work Manifests, agent runs, Cars, reviews, settings and the domain event log that keeps the map current. |
+| **Workers AI and AI Gateway** | Models for every role, configured independently and authenticated in the Worker, so credentials never enter a Sandbox. Cloudflare's Clef decision model makes some of the Engineer's operational choices, while hard rules such as failed tests and unresolved conflicts stay enforced in code. |
+| **Cloudflare Access** | Authentication for the deployed app. |
+| **R2** | A disposable npm dependency cache shared by Sandbox installs. |
+| **Workers Builds** | Deploys a project's published Terminus state when you choose to publish. |
 
 ## Real repositories and agents
 
@@ -106,6 +201,31 @@ Run the [normal checks](#checks), finish active work before changing container i
 
 For a smoke test, import a public npm project, run two concurrent Lines, inspect accepted Cars and both integrations, test human unloading approval, and reload during execution. If previews are configured, verify the selected accepted snapshots and logged-out protection. The default Sandbox limits are 25 agent containers at standard-3 and 20 agentless containers at standard-2; adjust them through Settings rather than assuming a shared fixed cap. See [Harness selection](docs/harness-selection.md#release-verification) for outstanding provider checks.
 
+## Checks
+
+```sh
+npm run typecheck
+npm test
+npm run lint
+npm run format:check
+npm run build
+```
+
+Worker tests run in workerd with D1 and Workflows. Repository transport tests use real, temporary local Git repositories. Model tests use mock transports; they do not incur inference charges. The current workerd Workflow tests can print cancellation messages during teardown even when assertions pass.
+
+## Ten-Train stress test
+
+```sh
+npm run stress:ten
+```
+
+This runs the local ten-Train Workflow rehearsal and real local Git oracle, without Cloudflare credentials or Docker. For full Cloudflare verification, open **Stress test** from the app's Networks page, run the test, then **Verify and download report**. It creates its own fixture Network and uses your existing browser login. No manual project import, stress-mode switch, or terminal Access token is needed. See [the run guide](docs/pipeline-stress-test.md).
+
+## What's been verified
+
+- **Verified live on Cloudflare:** the domain, persistence, API, Train/Station/Terminus integration Workflows, React/SVG railway map, and real Artifacts and Sandbox harness adapters (OpenCode by default). Two concurrent Trains reached and integrated into Terminus in a live test.
+- **Verified offline with tests and the fake environment, live verification in progress:** Dispatcher planning (read-only exploration → persisted proposal → explicit launch), sandboxed Conductor reviews, Technician reconciliation of failed Terminus merges, commit-bound human unloading approval, and the Engineer's Clef decisions on failed Station runs and revision loops.
+
 ## Guides
 
 | Guide | Covers |
@@ -127,3 +247,7 @@ For a smoke test, import a public npm project, run two concurrent Lines, inspect
 | [Browser Run transport gate](docs/browser-run.md) | Passed hosted transport proof, reproducible probes and remaining browser release requirements |
 
 Architecture and ownership rules are in [AGENTS.md](./AGENTS.md), [the outline](./docs/outline-updated.md), and [technology architecture](./docs/technology-architecture.md).
+
+## License
+
+[MIT](LICENSE)

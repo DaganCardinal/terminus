@@ -11,7 +11,7 @@ Terminus is an orchestration platform that coordinates many coding agents workin
 Junction convergence, feature acceptance, human release, downstream routes, repairs and map/details are implemented and verified offline. Live Artifacts/Sandbox Junction verification remains maintainer-owned; see `docs/junctions.md`.
 
 - Terminus is being built as an entry for Cloudflare's "next Git platform" competition. **The submission deadline is October 14, 2026.** The project must use **Cloudflare Workers** and **Cloudflare Artifacts**. The minimum bar is a demo of multiple agents working on changes concurrently.
-- The submission must include a 5–10 minute demo video, source code under a permissive open-source license (MIT; see `license.md`), and instructions for running the project. Prioritize work that makes the end-to-end concurrent-agent flow real and demonstrable.
+- The submission must include a 5–10 minute demo video, source code under a permissive open-source license (MIT; see `LICENSE`), and instructions for running the project. Prioritize work that makes the end-to-end concurrent-agent flow real and demonstrable.
 - The Terminus source code is hosted on GitHub. The *projects Terminus manages* live in Artifacts.
 - `../terminus-demo-app` (a sibling of this repo) is the local demo project for testing Terminus end to end.
 

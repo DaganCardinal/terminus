@@ -14,18 +14,16 @@ A few independent improvements to the Supportdesk ticket workflow. They're unrel
 
 1. Bulk triage on the Tickets page
   a. Add row checkboxes with select-all-on-this-page and an "N selected" bar above the table.
-  b. Let agents change the status and priority of every selected ticket at once.
+  b. Let staff change the status and priority of every selected ticket at once.
   c. Add bulk reassign, then clear the selection and show a confirmation message.
 
 2. Saved replies
-  a. Add a Saved replies section to Settings with a few starter replies (a greeting, asking for more details, closing a resolved ticket). Agents can add, edit and delete them for the session.
+  a. Add a Saved replies section to Settings with a few starter replies (a greeting, asking for more details, closing a resolved ticket). Staff can add, edit and delete them for the session.
   b. Add an "Insert saved reply" picker next to the ticket reply box. It fills in the reply and replaces {first_name} with the customer's first name.
 
-3. Keyboard shortcuts
-  a. "g" then "h", "t", "c" or "s" jumps to Dashboard, Tickets, Customers or Settings, "/" focuses the current page's search, and "n" opens New ticket. None of them should fire while typing in a field, and the existing "D" theme shortcut must keep working.
-  b. Add a "?" help dialog that lists every shortcut, including "D".
+3. Dark mode / light mode theme toggle in the top bar, beside the user profile icon
 
-4. "My work" for the signed-in agent (Alex Morgan)
+4. "My work" for the signed-in user (Alex Morgan)
   a. Add an "Assigned to me" panel to the dashboard showing Alex's open and pending tickets, highest priority first.
   b. Add an assignee filter to the Tickets page, with a "Me" shortcut option, that combines with the existing filters.
 
@@ -39,7 +37,7 @@ Everything stays client-side and session-only like the rest of the demo, with no
 ## Goal B: an isolated feature assembled from four parts
 
 ```text
-Next, I want a Customer profile view: one page per customer, so agents get the full picture before they reply.
+Next, I want a Customer profile view: one page per customer, so staff get the full picture before they reply.
 
 This is a bigger feature and I want it built in isolation: nothing should land in the live app piece by piece. Build the parts separately, assemble them into one feature, and let me review and sign off on the complete profile before it's connected to the app.
 
@@ -47,7 +45,7 @@ The profile is made of four parts. Each one is a standalone component that takes
 
 1. Profile header: avatar, name, company, email, plan badge, "customer since" date, and total / open / resolved ticket counts.
 2. Ticket history: every ticket for the customer, newest first, with status and priority badges, each linking to the ticket.
-3. Customer notes: agents can add and delete short notes about the customer, with author and time. Session-only, like the rest of the demo.
+3. Customer notes: staff can add and delete short notes about the customer, with author and time. Session-only, like the rest of the demo.
 4. Account health: a simple derived signal (Healthy / Needs attention / At risk) based on how many open, high and urgent tickets the customer has, listing the reasons behind it.
 
 Once I've approved the assembled feature, connect it to the app:

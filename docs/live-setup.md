@@ -1,6 +1,6 @@
 # Live setup: real repositories and agents
 
-Running Terminus against real Artifacts repositories and Sandbox agents. For the credential-free fake environment, see the [README](../README.md#quick-start-with-fakes).
+Running Terminus against real Artifacts repositories and Sandbox agents. For the credential-free fake environment, see the [README](../README.md#try-it-in-five-minutes).
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ Docker, Cloudflare access to Artifacts and Sandboxes/Containers, and a public HT
 1. Authenticate Wrangler and select your Cloudflare account. In `apps/worker/wrangler.jsonc`, set `account_id` if necessary, and set `ARTIFACTS_ACCOUNT_ID`, `AI_GATEWAY_ACCOUNT_ID` and `AI_GATEWAY_ID`.
 2. Configure the `ARTIFACTS_API_TOKEN` Worker secret: a Cloudflare API token scoped to this account with **Artifacts > Read** and **Artifacts > Edit**. Each Network gets its own Artifacts namespace (`terminus-<network id>`), which the Workers binding cannot address because it is fixed to one namespace at deploy time, so Terminus uses the [Artifacts REST API](https://developers.cloudflare.com/artifacts/api/rest-api/). The API token stays in the Worker; Sandboxes only ever receive short-lived, repo-scoped Git tokens.
 3. Configure the `AI_GATEWAY_TOKEN` Worker secret. Despite its name, it is a Cloudflare API token scoped to this account with **Workers AI > Read**, required by the [Cloudflare model REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/). A token with only AI Gateway permissions is insufficient. Model credentials stay in the Worker.
-4. For local development, put those secrets and any local account/gateway overrides in the ignored `apps/worker/.dev.vars` file. Do not commit it. Start Docker, then run `npm run dev:worker` and `npm run dev:web`.
+4. For local development, copy `apps/worker/.dev.vars.example` to the ignored `apps/worker/.dev.vars` and fill in those secrets. Do not commit it. Start Docker, then run `npm run dev:worker` and `npm run dev:web`.
 5. Create a network using the public Git URL field. This imports the project into the network's own Artifacts namespace. Choose **Lay demo Lines** to run the demo manifests against that baseline.
 
 Local `.dev.vars` entries have this shape:

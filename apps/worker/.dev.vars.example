@@ -1,0 +1,15 @@
+# Local secrets for `npm run dev:worker` (real Artifacts and Sandboxes).
+# Copy to `.dev.vars` (ignored) and fill in. `npm run dev:fake` needs none of
+# these. See docs/live-setup.md for token permissions. Account IDs and the
+# AI Gateway ID are vars in wrangler.jsonc.
+
+# Account-scoped API token with Artifacts > Read and Artifacts > Edit.
+ARTIFACTS_API_TOKEN=YOUR_ACCOUNT_SCOPED_ARTIFACTS_TOKEN
+
+# Account-scoped API token with Workers AI > Read (plus AI Gateway > Run for
+# native Anthropic/OpenAI routes).
+AI_GATEWAY_TOKEN=YOUR_ACCOUNT_SCOPED_WORKERS_AI_TOKEN
+
+# Only checked by a deployed Worker behind Cloudflare Access; localhost
+# requests skip Access.
+ACCESS_ALLOWED_EMAILS=you@example.com
