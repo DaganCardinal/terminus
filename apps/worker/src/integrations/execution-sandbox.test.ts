@@ -198,6 +198,31 @@ describe("Sandbox streaming commands", () => {
     })
   })
 
+  it("reattaches only inside a running container, never starting one", async () => {
+    await withSandbox(async (sandbox, f) => {
+      const ready = vi
+        .spyOn(sandbox as unknown as { ready(): Promise<void> }, "ready")
+        .mockResolvedValue()
+      const follow = ["node", "/workspace/harness-follow.mjs", "attach"]
+      try {
+        f.container.running = false
+        await expect(
+          sandbox.runStream(follow, "/workspace", {}, 1000, { reattach: true })
+        ).rejects.toThrow("Sandbox container is not running")
+        expect(ready).not.toHaveBeenCalled()
+        expect(f.container.start).not.toHaveBeenCalled()
+        expect(f.container.exec).not.toHaveBeenCalled()
+        f.container.running = true
+        const output = await sandbox.runStream(follow, "/workspace", {}, 1000, {
+          reattach: true,
+        })
+        expect(await new Response(output).text()).toBe("filtered activity\n")
+      } finally {
+        ready.mockRestore()
+      }
+    })
+  })
+
   it("aborts the command when a streaming caller cancels", async () => {
     await withSandbox(async (sandbox, f) => {
       const ready = vi

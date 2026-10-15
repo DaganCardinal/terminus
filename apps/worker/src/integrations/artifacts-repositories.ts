@@ -10,7 +10,8 @@ import { workerGitPromotion } from "./worker-git"
 /**
  * Real repositories: Artifacts over its REST API, one namespace per Project,
  * with merge Git running in Sandboxes and bounded fast-forward promotion in
- * the Worker. Heads use smart HTTP; files and overviews use REST object reads.
+ * the Worker. Heads use smart HTTP; files, overviews and integration diffs
+ * use REST object reads.
  */
 export function artifactsRepositories(env: Env): ArtifactsRepositoryHost {
   const readHead = smartHttpHeadReader()

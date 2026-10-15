@@ -57,7 +57,9 @@ async function fixture(
         if (command[1] === "rev-parse") stdout = candidate
         if (command[1] === "ls-remote")
           stdout = `${candidate}\trefs/heads/main\n`
-        if (command.includes("-z")) stdout = "src/footer.tsx\0"
+        // The candidate changes no secret files, so the raw secret listing is empty.
+        if (command.includes("-z") && !command.includes("--raw"))
+          stdout = "src/footer.tsx\0"
         if (command.includes("--binary"))
           stdout = "+export function Footer() {}"
       }

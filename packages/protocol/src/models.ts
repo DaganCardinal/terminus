@@ -33,6 +33,30 @@ export const roleHarnessesSchema = z.strictObject({
 export type RoleHarnesses = z.infer<typeof roleHarnessesSchema>
 export const modelProviderSchema = z.enum(["workers-ai", "anthropic", "openai"])
 export type ModelProviderId = z.infer<typeof modelProviderSchema>
+/**
+ * How much a model reasons before it answers, cheapest first. Each catalog
+ * model lists the levels its provider accepts; an empty list means the
+ * model has no reasoning control (it may still always reason).
+ */
+export const REASONING_LEVELS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const
+export const reasoningLevelSchema = z.enum(REASONING_LEVELS)
+export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>
+/** What a role reasons at until someone chooses otherwise. */
+export const DEFAULT_REASONING_LEVEL: ReasoningLevel = "medium"
+/** A role without a level reasons at its model's default. */
+export const roleReasoningSchema = z.strictObject({
+  dispatcher: reasoningLevelSchema.optional(),
+  conductor: reasoningLevelSchema.optional(),
+  stationAgent: reasoningLevelSchema.optional(),
+  technician: reasoningLevelSchema.optional(),
+})
+export type RoleReasoning = z.infer<typeof roleReasoningSchema>
 
 export const MODEL_CATALOG = [
   {
@@ -44,6 +68,8 @@ export const MODEL_CATALOG = [
     provider: "workers-ai",
     harnesses: ["opencode"],
     costOrder: 0,
+    // Workers AI maps any other level, medium included, to max.
+    reasoning: ["low", "high", "max"],
   },
   {
     id: "@cf/zai-org/glm-5.3",
@@ -54,6 +80,7 @@ export const MODEL_CATALOG = [
     provider: "workers-ai",
     harnesses: ["opencode"],
     costOrder: 2,
+    reasoning: ["low", "high", "max"],
   },
   {
     id: "@cf/moonshotai/kimi-k2.7-code",
@@ -64,6 +91,8 @@ export const MODEL_CATALOG = [
     provider: "workers-ai",
     harnesses: ["opencode"],
     costOrder: 3,
+    // Always reasons; Workers AI offers no reasoning control.
+    reasoning: [],
   },
   {
     id: "@cf/cloudflare/clef-flash",
@@ -74,6 +103,7 @@ export const MODEL_CATALOG = [
     provider: "workers-ai",
     harnesses: [],
     costOrder: 0,
+    reasoning: [],
   },
   {
     id: "@cf/cloudflare/clef",
@@ -84,6 +114,7 @@ export const MODEL_CATALOG = [
     provider: "workers-ai",
     harnesses: [],
     costOrder: 1,
+    reasoning: [],
   },
   {
     id: "anthropic/claude-haiku-5-5",
@@ -94,6 +125,7 @@ export const MODEL_CATALOG = [
     provider: "anthropic",
     harnesses: ["opencode", "claude-code"],
     costOrder: 4,
+    reasoning: REASONING_LEVELS,
   },
   {
     id: "anthropic/claude-haiku-4-5-20251001",
@@ -104,6 +136,8 @@ export const MODEL_CATALOG = [
     provider: "anthropic",
     harnesses: ["opencode", "claude-code"],
     costOrder: 5,
+    // Thinks only with a token budget; the effort parameter is rejected.
+    reasoning: [],
   },
   {
     id: "anthropic/claude-sonnet-5-5",
@@ -114,6 +148,7 @@ export const MODEL_CATALOG = [
     provider: "anthropic",
     harnesses: ["opencode", "claude-code"],
     costOrder: 6,
+    reasoning: REASONING_LEVELS,
   },
   {
     id: "openai/gpt-6-luna",
@@ -124,6 +159,7 @@ export const MODEL_CATALOG = [
     provider: "openai",
     harnesses: ["opencode", "codex"],
     costOrder: 1,
+    reasoning: REASONING_LEVELS,
   },
   {
     id: "openai/gpt-6-sol",
@@ -134,6 +170,7 @@ export const MODEL_CATALOG = [
     provider: "openai",
     harnesses: ["opencode", "codex"],
     costOrder: 7,
+    reasoning: REASONING_LEVELS,
   },
 ] as const
 
@@ -141,6 +178,28 @@ export function catalogModel(id: string) {
   const model = MODEL_CATALOG.find((entry) => entry.id === id)
   if (!model) throw new Error(`Unknown curated model: ${id}`)
   return model
+}
+/** The reasoning levels a model accepts, cheapest first; empty without reasoning control. */
+export function reasoningLevels(model: string): readonly ReasoningLevel[] {
+  return catalogModel(model).reasoning
+}
+/**
+ * The level a model runs at for a requested one: the request when the model
+ * accepts it, otherwise its nearest accepted level, preferring the more
+ * expensive on a tie. Undefined when the model has no reasoning control.
+ */
+export function reasoningFor(
+  model: string,
+  requested: ReasoningLevel = DEFAULT_REASONING_LEVEL
+): ReasoningLevel | undefined {
+  const accepted = reasoningLevels(model)
+  if (accepted.includes(requested)) return requested
+  const rank = (level: ReasoningLevel) => REASONING_LEVELS.indexOf(level)
+  return [...accepted].sort(
+    (a, b) =>
+      Math.abs(rank(a) - rank(requested)) -
+        Math.abs(rank(b) - rank(requested)) || rank(b) - rank(a)
+  )[0]
 }
 export function compatibleModels(harness: Harness) {
   return MODEL_CATALOG.filter(
@@ -182,10 +241,19 @@ export const roleExecutionSchema = z
     model: z.string().min(1),
     version: z.string().min(1).optional(),
     provider: modelProviderSchema.optional(),
+    /** Absent in configurations frozen before reasoning was configurable. */
+    reasoning: reasoningLevelSchema.optional(),
   })
   .refine(
     (value) => compatibleModel(value.harness, value.model),
     "Model is incompatible with the selected harness"
+  )
+  .refine(
+    (value) =>
+      !value.reasoning ||
+      !compatibleModel(value.harness, value.model) ||
+      reasoningLevels(value.model).includes(value.reasoning),
+    "Model does not accept the reasoning level"
   )
   .refine(
     (value) =>
@@ -242,6 +310,7 @@ export const modelSettingsSchema = z
       preset: z.literal("custom"),
       models: roleModelsSchema,
       harnesses: roleHarnessesSchema.optional(),
+      reasoning: roleReasoningSchema.optional(),
     }),
   ])
   .superRefine((settings, context) => {
@@ -257,6 +326,13 @@ export const modelSettingsSchema = z
           code: "custom",
           path: ["models", role],
           message: "Model is incompatible with the selected harness",
+        })
+      const level = settings.reasoning?.[role]
+      if (level && !reasoningLevels(settings.models[role]).includes(level))
+        context.addIssue({
+          code: "custom",
+          path: ["reasoning", role],
+          message: "Model does not accept the reasoning level",
         })
     }
   })
@@ -337,9 +413,21 @@ export function roleHarnesses(settings: ModelSettings): RoleHarnesses {
     ? (settings.harnesses ?? { ...DEFAULT_ROLE_HARNESSES })
     : { ...DEFAULT_ROLE_HARNESSES }
 }
+/** The level each harness role reasons at; absent where its model has no reasoning control. */
+export function roleReasoning(settings: ModelSettings): RoleReasoning {
+  const models = roleModels(settings)
+  const chosen = settings.preset === "custom" ? settings.reasoning : undefined
+  return Object.fromEntries(
+    harnessRoles.flatMap((role) => {
+      const level = reasoningFor(models[role], chosen?.[role])
+      return level ? [[role, level]] : []
+    })
+  )
+}
 export function roleExecutions(settings: ModelSettings): RoleExecutions {
   const models = roleModels(settings)
   const harnesses = roleHarnesses(settings)
+  const reasoning = roleReasoning(settings)
   return {
     engineer: models.engineer,
     ...Object.fromEntries(
@@ -352,6 +440,7 @@ export function roleExecutions(settings: ModelSettings): RoleExecutions {
             (entry) => entry.id === harnesses[role]
           )!.version,
           provider: catalogModel(models[role]).provider,
+          ...(reasoning[role] ? { reasoning: reasoning[role] } : {}),
         },
       ])
     ),

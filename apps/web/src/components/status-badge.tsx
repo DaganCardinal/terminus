@@ -40,6 +40,7 @@ const pulsing = new Set([
   "ready_for_pickup",
   "in_review",
   "revising",
+  "collecting",
 ])
 
 const toneFor = (status: string) => toneByStatus[status] ?? "idle"
@@ -53,12 +54,16 @@ const label = (status: string) => {
 export function StatusBadge({
   status,
   dot = false,
+  tone: toneOverride,
 }: {
   status: string
   /** Leads with a status dot that pulses while work is underway. */
   dot?: boolean
+  /** For statuses whose tone differs by entity, such as a Junction's
+   * `ready`, which waits on the user rather than idling at a depot. */
+  tone?: keyof typeof tones
 }) {
-  const tone = toneFor(status)
+  const tone = toneOverride ?? toneFor(status)
   return (
     <span
       className={cn(

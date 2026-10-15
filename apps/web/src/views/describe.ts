@@ -1,11 +1,31 @@
-import type {
-  DomainEvent,
-  HoldReason,
-  Issue,
-  NetworkSnapshot,
-  Station,
-  TrainState,
+import {
+  reasoningLevelSchema,
+  type DomainEvent,
+  type HoldReason,
+  type Issue,
+  type NetworkSnapshot,
+  type ReasoningLevel,
+  type Station,
+  type TrainState,
 } from "@terminus/protocol"
+
+export const reasoningNames: Record<ReasoningLevel, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+}
+
+/** A model with the reasoning level it ran at, when its provenance records one. */
+export function modelWithReasoning(agent: {
+  model: string
+  reasoning?: string
+}): string {
+  if (!agent.reasoning) return agent.model
+  const level = reasoningLevelSchema.safeParse(agent.reasoning)
+  return `${agent.model} (${level.success ? reasoningNames[level.data] : agent.reasoning} reasoning)`
+}
 
 /** A status as words. A returning Train reads as approaching its destination,
  * which is how it looks on the map. */

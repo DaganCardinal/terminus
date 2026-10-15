@@ -178,8 +178,15 @@ export async function outboundRequest(
     const started = Date.now()
     const requestId = crypto.randomUUID()
     console.info("Station model request started", { requestId, provider })
+    // Workers AI reasoning is set here, not by the harness. The role model
+    // reasons at its frozen level; a separate utility model's housekeeping,
+    // and grants frozen before levels were configurable, stay low.
+    const reasoning =
+      body.model === apiModel ? (network.reasoning ?? "low") : "low"
     const forwarded = JSON.stringify(
-      provider === "workers-ai" ? { ...body, reasoning_effort: "low" } : body
+      provider === "workers-ai"
+        ? { ...body, reasoning_effort: reasoning }
+        : body
     )
     // TEMPORARY benchmark instrumentation.
     const shape = body as Record<string, unknown>

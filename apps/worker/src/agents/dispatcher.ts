@@ -7,6 +7,7 @@ import {
   createLine,
   createTrain,
   evaluateTerminusEntry,
+  openConflictsFor,
   placeHold as placeHoldTransition,
   releaseHold as releaseHoldTransition,
   resolveConflict as resolveConflictTransition,
@@ -338,7 +339,9 @@ export async function releaseHold(
 
 /**
  * Tells a blocked Train its issue has been dealt with. The Train's Workflow
- * clears the block itself.
+ * clears the block itself. An open conflict at Terminus is dealt with only by
+ * a Technician repair or by resolving the conflict, so clearing would just
+ * retry the same merge.
  */
 export async function clearTrain(
   ports: DispatcherPorts,
@@ -348,6 +351,15 @@ export async function clearTrain(
   if (!train) throw new DispatchError(404, `Unknown Train ${trainId}`)
   if (train.value.state.status !== "blocked") {
     throw new DispatchError(409, `Train ${trainId} is not blocked`)
+  }
+  if (
+    openConflictsFor(trainId, await ports.store.conflicts(train.networkId))
+      .length
+  ) {
+    throw new DispatchError(
+      409,
+      `Train ${trainId} has an open conflict at Terminus; dispatch a Technician to repair it`
+    )
   }
   await ports.clearTrain(trainId)
 }

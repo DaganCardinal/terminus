@@ -426,6 +426,7 @@ export const dispatchPlanSchema = z.object({
       model: z.string(),
       provider: z.string().optional(),
       harnessVersion: z.string().optional(),
+      reasoning: z.string().optional(),
     })
     .optional(),
   createdAt: z.string(),

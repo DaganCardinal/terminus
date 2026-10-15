@@ -41,6 +41,7 @@ import {
   perfSpan,
   type RoleExecutions,
   type RoleExecution,
+  type ReasoningLevel,
   type HarnessRole,
   type ModelRole,
 } from "@terminus/protocol"
@@ -633,7 +634,10 @@ function configuredConductor(
   // Verifying a candidate in a Sandbox needs its real repository; fake
   // repositories are reviewed from the supplied diff alone.
   if (env.REPOSITORY_MODE !== "artifacts")
-    return new ModelConductor(model, gatewayProvider(env, model))
+    return new ModelConductor(
+      model,
+      gatewayProvider(env, model, execution?.reasoning)
+    )
   return new HarnessConductor(
     model,
     conductorSessions(env, execution),
@@ -648,7 +652,10 @@ function repairConductor(
 ): RepairConductor {
   if (env.CONDUCTOR_MODEL === FAKE) return new FakeRepairConductor()
   if (env.REPOSITORY_MODE !== "artifacts")
-    return new ModelRepairConductor(model, gatewayProvider(env, model))
+    return new ModelRepairConductor(
+      model,
+      gatewayProvider(env, model, execution?.reasoning)
+    )
   return new HarnessRepairConductor(
     model,
     conductorSessions(env, execution),
@@ -682,11 +689,15 @@ function engineer(env: Env, model: string, scripted = false): EngineerAdvisor {
 }
 
 /** Gateway configuration is checked per call, so a misconfigured role fails its own step. */
-function gatewayProvider(env: Env, model: string): ModelProvider {
+function gatewayProvider(
+  env: Env,
+  model: string,
+  reasoning?: ReasoningLevel
+): ModelProvider {
   return {
     generateStructured: (request) =>
       new GatewayModelProvider(
-        directGatewayConfig(env, model),
+        { ...directGatewayConfig(env, model), reasoning },
         gatewayTransport
       ).generateStructured(request),
   }

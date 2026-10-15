@@ -11,7 +11,12 @@ import {
   approveTechnician,
   type TechnicianPorts,
 } from "../agents/technician"
-import { resolveConflict, placeHold, releaseHold } from "../agents/dispatcher"
+import {
+  clearTrain,
+  resolveConflict,
+  placeHold,
+  releaseHold,
+} from "../agents/dispatcher"
 import { drive, seedLine, seedNetwork, testPorts } from "../../test/fixtures"
 import { advanceTrain } from "./train-operations"
 import {
@@ -188,6 +193,20 @@ describe("Technician reconciliation orchestration", () => {
     expect((await f.ports.store.train(f.train.id))!.value.state.status).toBe(
       "blocked"
     )
+  })
+  it("refuses to clear a conflicted Train until its conflict is resolved", async () => {
+    const f = await fixture()
+    const clear = vi.spyOn(f.ports.dispatcher, "clearTrain")
+    await expect(
+      clearTrain(f.ports.dispatcher, f.train.id)
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("open conflict"),
+    })
+    expect(clear).not.toHaveBeenCalled()
+    await resolveConflict(f.ports.dispatcher, f.network.id, f.conflict.id)
+    await clearTrain(f.ports.dispatcher, f.train.id)
+    expect(clear).toHaveBeenCalledWith(f.train.id)
   })
   it("rejects stale approval and cross-network commands", async () => {
     const f = await fixture()

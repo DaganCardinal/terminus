@@ -1,8 +1,4 @@
-import {
-  catalogModel,
-  type PlanDraft,
-  type RoleExecution,
-} from "@terminus/protocol"
+import { type PlanDraft, type RoleExecution } from "@terminus/protocol"
 import {
   dispatcherHarnessAgent,
   type DispatchSession,
@@ -18,7 +14,7 @@ import {
 import type { BaselineReport, CheckResult } from "@terminus/domain"
 import { PerfPhases, validationCommandsSchema } from "@terminus/protocol"
 import { DispatchDraftStore } from "./dispatch-draft-store"
-import { gatewayConfig } from "./execution-config"
+import { gatewayConfig, modelGrant } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
 import { runProjectChecks } from "./project-checks"
 import type { StationSandbox } from "./station-runner"
@@ -166,6 +162,10 @@ class SandboxDispatchSession implements DispatchSession {
     const saved = await this.restore()
     this.#phases.enter("access")
     this.#input.onActivity?.({ kind: "phase", phase: "preparing_workspace" })
+    // A harness outlives a lost stream so it can be followed again. An earlier
+    // attempt whose Worker stopped before closing may have left one running in
+    // this plan's Sandbox, so never grant repository access beside it.
+    if (this.#input.persistent) await this.#sandbox.close()
     this.#access = await this.#repositories.access(repository.repoId, "read")
     this.#phases.enter("configure (container start)")
     this.#input.onActivity?.({ kind: "phase", phase: "waiting_for_sandbox" })
@@ -213,10 +213,7 @@ class SandboxDispatchSession implements DispatchSession {
     await this.#sandbox.configure({
       repositories: [],
       allowModel: true,
-      model,
-      ...(catalogModel(model).provider === "workers-ai"
-        ? {}
-        : { provider: catalogModel(model).provider }),
+      ...modelGrant(model, this.#input.execution),
       proposalCheck: {
         planId: this.#input.planId,
         network: this.#input.network,

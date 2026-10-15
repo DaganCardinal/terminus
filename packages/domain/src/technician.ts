@@ -21,6 +21,7 @@ export interface RepairReview {
   harness?: string
   provider?: string
   harnessVersion?: string
+  reasoning?: string
   model: string
   verdict: "accept" | "return" | "escalate"
   summary: string

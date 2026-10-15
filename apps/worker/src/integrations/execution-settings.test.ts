@@ -185,4 +185,67 @@ describe("immutable execution settings", () => {
         "configuration"
       )
   })
+
+  it("rejects Station and review checkpoint reuse at a different reasoning level", async () => {
+    const p = testPorts(),
+      network = await seedNetwork(p)
+    const { train, stations } = await seedLine(p, network.id)
+    const model = "@cf/zai-org/glm-5.3-flash"
+    const high = agentProvenance(executionConfig(model, "opencode", "high"))
+    const low = agentProvenance(executionConfig(model, "opencode", "low"))
+    const levelless = agentProvenance(executionConfig(model))
+    const run = (runId: string) => ({
+      stationId: stations[0]!.id,
+      runId,
+      manifest: stations[0]!.manifest,
+      workspace: { repoId: train.repoId, baseCommit: train.headCommit },
+      feedback: null,
+    })
+    const proposal = {
+      headCommit: "candidate",
+      changedPaths: ["src/a.ts"],
+      evidence: { checks: [] },
+      agent: high,
+      agentSummary: null,
+    }
+    await p.store.recordAgentRun(network.id, run("leveled"), high, {
+      ok: true,
+      proposal,
+    })
+    expect(await p.store.agentCheckpoint(run("leveled"), high)).not.toBeNull()
+    for (const different of [low, levelless, model])
+      await expect(
+        p.store.agentCheckpoint(run("leveled"), different)
+      ).rejects.toThrow("configuration")
+    // A model-only identity predates reasoning levels, so only level-less
+    // provenance reuses it.
+    await p.store.recordAgentRun(network.id, run("legacy"), model, {
+      ok: true,
+      proposal,
+    })
+    expect(
+      await p.store.agentCheckpoint(run("legacy"), levelless)
+    ).not.toBeNull()
+    await expect(p.store.agentCheckpoint(run("legacy"), high)).rejects.toThrow(
+      "configuration"
+    )
+
+    const review = {
+      stationId: stations[0]!.id,
+      manifest: stations[0]!.manifest,
+      trainHead: train.headCommit,
+      revisionCount: 0,
+      proposal,
+    }
+    const verdict = {
+      verdict: "accept" as const,
+      summary: "Accepted",
+      findings: [],
+    }
+    await p.store.recordConductorReview(network.id, review, high, verdict)
+    expect(await p.store.conductorReview(review, high)).toEqual(verdict)
+    await expect(p.store.conductorReview(review, low)).rejects.toThrow(
+      "configuration"
+    )
+  })
 })

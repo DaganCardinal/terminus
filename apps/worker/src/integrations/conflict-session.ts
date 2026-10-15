@@ -1,4 +1,4 @@
-import { catalogModel, type RoleExecution } from "@terminus/protocol"
+import type { RoleExecution } from "@terminus/protocol"
 import {
   conflictHarnessAgent,
   type ConflictSession,
@@ -13,7 +13,7 @@ import {
   type RepositoryAccess,
 } from "@terminus/artifacts"
 import { validationCommandsSchema } from "@terminus/protocol"
-import { gatewayConfig } from "./execution-config"
+import { gatewayConfig, modelGrant } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
 import { runProjectChecks } from "./project-checks"
 import type { StationSandbox } from "./station-runner"
@@ -149,10 +149,7 @@ class SandboxConflictSession implements ConflictSession {
     await this.#sandbox.configure({
       repositories: [],
       allowModel: true,
-      model,
-      ...(catalogModel(model).provider === "workers-ai"
-        ? {}
-        : { provider: catalogModel(model).provider }),
+      ...modelGrant(model, this.#input.execution),
     })
     await this.#revoke()
     return { trialMerge, checks }

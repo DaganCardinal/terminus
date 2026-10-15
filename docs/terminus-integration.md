@@ -20,7 +20,7 @@ Fast-forward promotion runs with isomorphic-git in the Worker, using disposable 
 
 ## Conflicts and recovery
 
-Conflicts become durable open conflict records, and the Train raises an issue to the Dispatcher. Failed integration validation also blocks the Train. After intervention, clear the blocked Train to start a new attempt; resolving a conflict record does not itself repair code, so unresolved Git conflicts will be detected again. A hold placed before promotion defers the attempt and holds the Train; releasing it resumes the Train automatically. To have a Technician reconcile a failed merge, see [Technician repairs](technician.md).
+Conflicts become durable open conflict records, and the Train raises an issue to the Dispatcher. Failed integration validation also blocks the Train. After intervention, clear the blocked Train to start a new attempt; resolving a conflict record does not itself repair code, so unresolved Git conflicts will be detected again. Clearing a Train is refused (`409`) while it still has an open conflict: dispatch a Technician, or resolve the conflict record first. A hold placed before promotion defers the attempt and holds the Train; releasing it resumes the Train automatically. To have a Technician reconcile a failed merge, see [Technician repairs](technician.md).
 
 After repairing an integration issue:
 

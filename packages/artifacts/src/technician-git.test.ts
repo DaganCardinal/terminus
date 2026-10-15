@@ -18,7 +18,8 @@ afterEach(async () => {
 })
 async function fixture(
   deletion = false,
-  mode: "conflict" | "checks" | "feature" = "conflict"
+  mode: "conflict" | "checks" | "feature" = "conflict",
+  trainSecret = false
 ) {
   const root = await mkdtemp(join(tmpdir(), "terminus-technician-git-"))
   temporary.push(root)
@@ -37,6 +38,7 @@ async function fixture(
   await run(["checkout", "-b", "train"])
   await writeFile(join(origin, "shared.ts"), "export const shared = 'train'\n")
   await writeFile(join(origin, "train-only.ts"), "accepted Train work\n")
+  if (trainSecret) await writeFile(join(origin, ".env"), "API_KEY=train\n")
   await run(["add", "."])
   await run(["commit", "-m", "Accepted Car"])
   const trainCommit = await run(["rev-parse", "HEAD"])
@@ -186,6 +188,30 @@ describe("Technician Git reconciliation", () => {
     const fresh = await f.workspace()
     expect(await fresh.git.prepare()).toBe(commit)
     expect(await fresh.git.snapshot(commit)).toEqual(snapshot)
+  })
+  it("withholds secret file contents from the repair diffs", async () => {
+    const f = await fixture(false, "conflict", true)
+    const workspace = await f.workspace()
+    expect(await workspace.git.prepare()).toBeNull()
+    await writeFile(
+      join(workspace.path, "shared.ts"),
+      "export const shared = ['terminus', 'train']\n"
+    )
+    const snapshot = await workspace.git.snapshot(
+      await workspace.git.candidateCommit()
+    )
+    expect(snapshot.changedPaths).toEqual([
+      ".env",
+      "shared.ts",
+      "train-only.ts",
+    ])
+    expect(snapshot.diff).toContain("+accepted Train work")
+    expect(snapshot.diff).toContain(
+      "diff --git a/.env b/.env\nnew file mode 100644\nSecret file contents withheld\n"
+    )
+    expect(snapshot.diff).not.toContain("API_KEY")
+    expect(snapshot.repairPaths).toEqual(["shared.ts"])
+    expect(snapshot.repairDiff).not.toContain(".env")
   })
   it("rejects edits outside the conflicted files before publication", async () => {
     const f = await fixture()

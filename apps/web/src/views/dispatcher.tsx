@@ -15,6 +15,7 @@ import { api, ApiRequestError } from "@/state/api"
 import {
   AttentionMessages,
   attentionTrains,
+  repairThreads,
   ConflictMessages,
   conflictThreads,
 } from "./dispatcher-alerts"
@@ -26,7 +27,7 @@ import {
 } from "./dispatcher-message"
 import { PlanExchange } from "./dispatcher-planner"
 import { dispatcherIndicator } from "./dispatcher-state"
-import { RepairMessages, repairThreads } from "./technician-repairs"
+import { RepairMessages } from "./technician-repairs"
 
 /** Floating Dispatcher button. Its colour and pulse reflect what the
  * Dispatcher is doing and whether it needs the user. */
@@ -121,7 +122,7 @@ export function DispatcherPanel({
     (showSent && (pending || sent.planning)
       ? (sent.planId ?? `dispatch-${sent.requestId.replaceAll("-", "")}`)
       : null)
-  const { blocked, awaiting } = attentionTrains(snapshot)
+  const { blocked, awaiting, notices } = attentionTrains(snapshot)
   const conflicts = conflictThreads(snapshot)
   const repairs = repairThreads(snapshot)
   const needs =
@@ -129,9 +130,7 @@ export function DispatcherPanel({
     awaiting.length +
     conflicts.reported.length +
     repairs.length +
-    (snapshot.engineerNotices?.filter(
-      (notice) => !blocked.some((view) => view.train.id === notice.trainId)
-    ).length ?? 0)
+    notices.length
   const running = snapshot.trains.filter(
     ({ train }) => !["unloaded", "siding"].includes(train.state.status)
   ).length
@@ -436,6 +435,7 @@ export function DispatcherPanel({
               snapshot={snapshot}
               pending={pending}
               command={command}
+              openTrain={openTrain}
             />
             <ConflictMessages
               snapshot={snapshot}

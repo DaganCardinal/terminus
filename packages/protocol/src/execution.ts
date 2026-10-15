@@ -1,6 +1,6 @@
 import type { BaselineReport, PlanningContext } from "@terminus/domain"
 import { z } from "zod"
-import { modelProviderSchema } from "./models"
+import { modelProviderSchema, reasoningLevelSchema } from "./models"
 
 const isObject = (value: unknown) => typeof value === "object" && value !== null
 
@@ -73,6 +73,12 @@ export const sandboxNetworkSchema = z.object({
    */
   model: z.string().min(1).optional(),
   provider: modelProviderSchema.optional(),
+  /**
+   * The role model's frozen reasoning level. The outbound handler applies it
+   * to Workers AI calls, where the harness cannot set it; other providers'
+   * harnesses send their own native setting.
+   */
+  reasoning: reasoningLevelSchema.optional(),
   /**
    * Routes the Sandbox's Workers AI requests to one model instance, so the
    * prompt prefix every harness turn repeats is read from its cache. The

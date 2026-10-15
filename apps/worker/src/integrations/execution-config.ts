@@ -2,6 +2,8 @@ import {
   catalogModel,
   validationCommandsSchema,
   stationMaxRetriesSchema,
+  type RoleExecution,
+  type SandboxNetwork,
   type ValidationCommand,
 } from "@terminus/protocol"
 import type { ModelTransport } from "@terminus/agent-runtime"
@@ -47,5 +49,22 @@ export function gatewayConfig(env: Env, model: string) {
     model,
     provider: entry.provider,
     apiModel: entry.apiModel,
+  }
+}
+
+/**
+ * The model a harness Sandbox may call: the role model, its provider when
+ * that is not Workers AI, and the frozen reasoning level the outbound handler
+ * applies to Workers AI calls.
+ */
+export function modelGrant(
+  model: string,
+  execution?: RoleExecution
+): Pick<SandboxNetwork, "model" | "provider" | "reasoning"> {
+  const { provider } = catalogModel(model)
+  return {
+    model,
+    ...(provider === "workers-ai" ? {} : { provider }),
+    ...(execution?.reasoning ? { reasoning: execution.reasoning } : {}),
   }
 }

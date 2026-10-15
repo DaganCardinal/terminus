@@ -5,10 +5,16 @@ import {
   modelForHarness,
   compatibleModels,
   utilityModel,
+  harnessRoles,
+  reasoningFor,
+  reasoningLevels,
+  roleReasoning,
   type Harness,
   type HarnessRole,
   type ModelProviderId,
+  type ReasoningLevel,
   type RoleHarnesses,
+  type RoleReasoning,
   MODEL_PRESETS,
   roleModels,
   type FixedModelPreset,
@@ -35,6 +41,7 @@ import {
 } from "react"
 import { RotateCw, X } from "lucide-react"
 import { api } from "@/state/api"
+import { reasoningNames } from "./describe"
 
 /** "general" follows the global settings; only a network offers it. */
 type Choice = "general" | FixedModelPreset | "custom"
@@ -64,7 +71,7 @@ const presets: {
   {
     id: "custom",
     name: "Custom",
-    detail: "Choose a harness and model for each role.",
+    detail: "Choose a harness, model and reasoning level for each role.",
   },
 ]
 
@@ -101,6 +108,10 @@ const roles: { id: ModelRole; name: string; detail: string }[] = [
 
 const catalog = (id: string) => MODEL_CATALOG.find((model) => model.id === id)
 
+/** The levels someone chose; roles without one reason at their model's default. */
+const chosenReasoning = (settings: ModelSettings): RoleReasoning =>
+  settings.preset === "custom" ? (settings.reasoning ?? {}) : {}
+
 /** The models a role may use: the Engineer only answers fixed questions. */
 const options = (role: ModelRole, harness: Harness = "opencode") =>
   role === "engineer"
@@ -111,22 +122,42 @@ interface Saved {
   choice: Choice
   custom: RoleModels
   harnesses: RoleHarnesses
+  reasoning: RoleReasoning
   general: ModelSettings
   updatedAt: string | null
   alternativesEnabled: boolean
   opencodeExternalEnabled: boolean
 }
 
+/** A chosen level the role's current model lacks becomes its nearest accepted level. */
+const acceptedReasoning = (
+  models: RoleModels,
+  reasoning: RoleReasoning
+): RoleReasoning =>
+  Object.fromEntries(
+    harnessRoles.flatMap((role) => {
+      const chosen = reasoning[role]
+      const level = chosen && reasoningFor(models[role], chosen)
+      return level ? [[role, level]] : []
+    })
+  )
+
 const settingsFor = (
   choice: Choice,
   custom: RoleModels,
-  harnesses: RoleHarnesses
-): ModelSettings | null =>
-  choice === "general"
-    ? null
-    : choice === "custom"
-      ? { preset: "custom", models: custom, harnesses }
-      : { preset: choice }
+  harnesses: RoleHarnesses,
+  reasoning: RoleReasoning
+): ModelSettings | null => {
+  if (choice === "general") return null
+  if (choice !== "custom") return { preset: choice }
+  const accepted = acceptedReasoning(custom, reasoning)
+  return {
+    preset: "custom",
+    models: custom,
+    harnesses,
+    ...(Object.keys(accepted).length ? { reasoning: accepted } : {}),
+  }
+}
 
 function toSaved(
   own: ModelSettings | null,
@@ -139,6 +170,7 @@ function toSaved(
     choice: own?.preset ?? "general",
     custom: roleModels(own ?? general),
     harnesses: roleHarnesses(own ?? general),
+    reasoning: chosenReasoning(own ?? general),
     general,
     updatedAt,
     alternativesEnabled,
@@ -287,10 +319,10 @@ export function SettingsDialog({
                 <h3 id="settings-agents-heading">Roles &amp; Models</h3>
                 <p>
                   {networkId
-                    ? "Choose harnesses and models for this network."
-                    : "Choose default harnesses and models for every network."}{" "}
+                    ? "Choose harnesses, models and reasoning for this network."
+                    : "Choose default harnesses, models and reasoning for every network."}{" "}
                   Changes apply to new Trains, plans and repairs; work already
-                  running keeps its harnesses and models.
+                  running keeps its harnesses, models and reasoning.
                 </p>
               </header>
               <ModelSettingsForm
@@ -365,6 +397,7 @@ function ModelSettingsForm({
   const [choice, setChoice] = useState<Choice>(saved.choice)
   const [custom, setCustom] = useState<RoleModels>(saved.custom)
   const [harnesses, setHarnesses] = useState<RoleHarnesses>(saved.harnesses)
+  const [reasoning, setReasoning] = useState<RoleReasoning>(saved.reasoning)
   const [modelChange, setModelChange] = useState<string | null>(null)
   const [customEdited, setCustomEdited] = useState(saved.choice === "custom")
   const [saving, setSaving] = useState(false)
@@ -382,6 +415,12 @@ function ModelSettingsForm({
       : choice === "custom"
         ? harnesses
         : roleHarnesses({ preset: choice })
+  const shownChosenReasoning =
+    choice === "general"
+      ? chosenReasoning(saved.general)
+      : choice === "custom"
+        ? reasoning
+        : {}
   /** Whether this deployment runs a harness with a model's provider. */
   const runnable = (harness: Harness, provider: ModelProviderId) =>
     harness === "opencode"
@@ -396,6 +435,7 @@ function ModelSettingsForm({
     ) as RoleModels[HarnessRole]
     setCustom({ ...shown, [role]: model })
     setHarnesses({ ...shownHarnesses, [role]: harness })
+    setReasoning(shownChosenReasoning)
     setCustomEdited(true)
     setChoice("custom")
     setError(null)
@@ -405,16 +445,29 @@ function ModelSettingsForm({
         : `${roles.find((item) => item.id === role)!.name} now uses ${catalog(model)!.name}, the lowest-cost compatible catalog model. Save to apply.`
     )
   }
-  const target = settingsFor(choice, custom, harnesses)
+  const changeReasoning = (role: HarnessRole, level: ReasoningLevel) => {
+    setCustom(shown)
+    setHarnesses(shownHarnesses)
+    setReasoning({ ...shownChosenReasoning, [role]: level })
+    setCustomEdited(true)
+    setChoice("custom")
+    setError(null)
+    setModelChange(null)
+  }
+  const target = settingsFor(choice, custom, harnesses, reasoning)
+  const shownReasoning = roleReasoning(target ?? saved.general)
   const dirty =
     JSON.stringify(target) !==
-    JSON.stringify(settingsFor(saved.choice, saved.custom, saved.harnesses))
+    JSON.stringify(
+      settingsFor(saved.choice, saved.custom, saved.harnesses, saved.reasoning)
+    )
 
   const choose = (next: Choice) => {
     // Custom starts from whatever is showing, until someone edits it.
     if (next === "custom" && !customEdited) {
       setCustom(shown)
       setHarnesses(shownHarnesses)
+      setReasoning(shownChosenReasoning)
     }
     setModelChange(null)
     setChoice(next)
@@ -525,19 +578,21 @@ function ModelSettingsForm({
           <h4 id="settings-roles">Role agents</h4>
           <p>
             {choice === "custom"
-              ? "Choose a harness and compatible model for each role. The Engineer uses a Clef decision model."
-              : "Choose a harness to customize a role, or choose Custom to edit models."}{" "}
-            Each harness names its sessions with the lowest-cost model from its
-            role model’s provider. That model never plans, writes code or
-            reviews.
+              ? "Choose a harness, compatible model and reasoning level for each role. The Engineer uses a Clef decision model."
+              : "Choose a harness or reasoning level to customize a role, or choose Custom to edit models."}{" "}
+            Roles reason at Medium unless you choose otherwise; a model without
+            Medium uses its nearest level, the more expensive on a tie. Each
+            harness names its sessions with the lowest-cost model from its role
+            model’s provider. That model never plans, writes code or reviews.
           </p>
         </div>
-        <table className="settings-roles panel">
+        <table className="settings-roles settings-agents panel">
           <thead>
             <tr>
               <th scope="col">Role</th>
               <th scope="col">Harness</th>
               <th scope="col">Model</th>
+              <th scope="col">Reasoning</th>
             </tr>
           </thead>
           <tbody>
@@ -545,6 +600,8 @@ function ModelSettingsForm({
               const model = catalog(shown[role.id])
               const utility =
                 role.id === "engineer" ? null : utilityModel(shown[role.id])
+              const levels =
+                role.id === "engineer" ? [] : reasoningLevels(shown[role.id])
               return (
                 <tr key={role.id}>
                   <th scope="row">
@@ -629,6 +686,44 @@ function ModelSettingsForm({
                       </small>
                     )}
                   </td>
+                  <td data-label="Reasoning">
+                    {role.id !== "engineer" && levels.length ? (
+                      <select
+                        aria-label={`${role.name} reasoning`}
+                        value={shownReasoning[role.id]}
+                        onChange={(event) =>
+                          changeReasoning(
+                            role.id as HarnessRole,
+                            event.target.value as ReasoningLevel
+                          )
+                        }
+                      >
+                        {levels.map((level) => (
+                          <option key={level} value={level}>
+                            {reasoningNames[level]}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <>
+                        <select
+                          aria-label={`${role.name} reasoning`}
+                          aria-describedby={`settings-reasoning-${role.id}`}
+                          value=""
+                          disabled
+                        >
+                          <option value="" />
+                        </select>
+                        <small
+                          id={`settings-reasoning-${role.id}`}
+                          className="settings-utility"
+                        >
+                          {model?.name ?? "This model"} doesn’t support
+                          reasoning levels
+                        </small>
+                      </>
+                    )}
+                  </td>
                 </tr>
               )
             })}
@@ -656,6 +751,7 @@ function ModelSettingsForm({
             setChoice(saved.choice)
             setCustom(saved.custom)
             setHarnesses(saved.harnesses)
+            setReasoning(saved.reasoning)
             setModelChange(null)
             setCustomEdited(saved.choice === "custom")
             setError(null)

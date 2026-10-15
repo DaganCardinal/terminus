@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -294,6 +294,49 @@ async function fixture(
     setBeforeToken: (callback: (() => Promise<void>) | null) => {
       beforeToken = callback
     },
+  }
+}
+
+/** A clone of `repoId` whose commits are pushed straight back to it. */
+async function worktree(
+  f: Awaited<ReturnType<typeof fixture>>,
+  repoId: string
+) {
+  const work = await mkdtemp(join(tmpdir(), "terminus-worktree-test-"))
+  temporary.push(work)
+  const remote = (await f.repos.get(repoId)!.info()).remote
+  await execute("git", ["clone", "--", remote, work])
+  const g = (...args: string[]) =>
+    execute("git", [
+      "-C",
+      work,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@localhost",
+      ...args,
+    ])
+  // `staged` commits the index as it is, keeping entries `add -A` would drop.
+  const commit = async (message: string, staged = false) => {
+    if (!staged) await g("add", "-A")
+    await g("commit", "-m", message)
+    await g("push", "origin", "HEAD:main")
+    return (await g("rev-parse", "HEAD")).stdout.trim()
+  }
+  return { work, g, commit }
+}
+
+/** A Crossing whose candidate compares `head` with `base`. */
+function crossing(base: string, head: string) {
+  return {
+    purpose: "crossing" as const,
+    id: "crossing",
+    terminusRepoId: "p/terminus",
+    terminusCommit: base,
+    trainRepoId: "p/train",
+    trainCommit: head,
+    trainBaseline: base,
+    acceptedCommits: [],
   }
 }
 
@@ -714,6 +757,169 @@ describe("Artifacts repository transport with real Git", () => {
     expect(f.tokens.size).toBe(0)
   })
 
+  it("inspects an integration with the patch Git prints, from objects and without a workspace", async () => {
+    const f = await fixture({ readObjectsDirectly: true })
+    const terminus = await f.host.createTerminus({ namespace: "p" })
+    const { work, g, commit } = await worktree(f, "p/terminus")
+    const numbered = Array.from({ length: 20 }, (_, i) => `line ${i + 1}\n`)
+    await mkdir(join(work, "src"))
+    await writeFile(join(work, "src/long.txt"), numbered.join(""))
+    await writeFile(join(work, "mod.txt"), "one\ntwo\n")
+    await writeFile(join(work, "gone.txt"), "gone\n")
+    await writeFile(join(work, "mode.sh"), "keep\n")
+    await writeFile(join(work, "both.sh"), "a\n")
+    await writeFile(join(work, "kind"), "x\n")
+    await writeFile(join(work, "emptied.txt"), "first\nsecond\n")
+    const base = await commit("Base")
+    numbered[9] = "line ten\n"
+    await writeFile(join(work, "src/long.txt"), numbered.join(""))
+    await writeFile(join(work, "src/new.ts"), "export const added = true\n")
+    await writeFile(join(work, "mod.txt"), "one\nTWO\n")
+    await rm(join(work, "gone.txt"))
+    await chmod(join(work, "mode.sh"), 0o755)
+    await writeFile(join(work, "both.sh"), "b\n")
+    await chmod(join(work, "both.sh"), 0o755)
+    await rm(join(work, "kind"))
+    await symlink("mod.txt", join(work, "kind"))
+    await writeFile(join(work, "emptied.txt"), "")
+    await writeFile(join(work, "empty.txt"), "")
+    await writeFile(join(work, "no-newline.txt"), "no newline")
+    await writeFile(join(work, "logo.png"), Buffer.from([0x89, 0x50, 0, 1]))
+    await g("add", "-A")
+    await g(
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${terminus.headCommit},vendor/lib`
+    )
+    const head = await commit("Head", true)
+    const opened = f.grants.length
+    const inspected = await f.host.inspectIntegration(crossing(base, head), {
+      repoId: "p/terminus",
+      headCommit: head,
+    })
+    const remote = (await f.repos.get("p/terminus")!.info()).remote
+    const native = async (...args: string[]) =>
+      (
+        await execute(
+          "git",
+          [
+            "--git-dir",
+            remote,
+            "diff",
+            "--no-renames",
+            "--full-index",
+            ...args,
+            base,
+            head,
+          ],
+          // The developer's own Git settings must not change the expectation.
+          {
+            env: {
+              ...process.env,
+              GIT_CONFIG_GLOBAL: "/dev/null",
+              GIT_CONFIG_NOSYSTEM: "1",
+            },
+          }
+        )
+      ).stdout
+    // Git also names the enclosing line after a hunk range; the Worker does not.
+    expect(inspected.diff).toBe(
+      (await native()).replace(/^(@@ [^@]+ @@).*$/gm, "$1")
+    )
+    expect(inspected.diff).toContain("@@ -7,7 +7,7 @@\n line 7\n")
+    expect(inspected.diff).toContain(
+      `+Subproject commit ${terminus.headCommit}\n`
+    )
+    expect(inspected.changedPaths).toEqual(
+      (await native("--name-only", "-z")).split("\0").filter(Boolean)
+    )
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("inspects oversized files with Git, and refuses diffs beyond the review limit without it", async () => {
+    const f = await fixture({ readObjectsDirectly: true })
+    await f.host.createTerminus({ namespace: "p" })
+    const { work, commit } = await worktree(f, "p/terminus")
+    const lines = Array.from({ length: 120_000 }, (_, i) => `line ${i}\n`)
+    await writeFile(join(work, "big.txt"), lines.join(""))
+    const base = await commit("Base")
+    lines[60_000] = "changed\n"
+    await writeFile(join(work, "big.txt"), lines.join(""))
+    const changed = await commit("Change one line")
+    let opened = f.grants.length
+    const inspected = await f.host.inspectIntegration(crossing(base, changed), {
+      repoId: "p/terminus",
+      headCommit: changed,
+    })
+    expect(inspected.changedPaths).toEqual(["big.txt"])
+    expect(inspected.diff).toContain("-line 60000\n+changed\n")
+    expect(f.grants).toHaveLength(opened + 1)
+
+    await writeFile(join(work, "long.txt"), "x".repeat(250_000))
+    const long = await commit("Add a long file")
+    opened = f.grants.length
+    await expect(
+      f.host.inspectIntegration(crossing(changed, long), {
+        repoId: "p/terminus",
+        headCommit: long,
+      })
+    ).rejects.toThrow("Crossing diff exceeds review limit")
+    expect(f.grants).toHaveLength(opened)
+    expect(f.tokens.size).toBe(0)
+  })
+
+  it("withholds secret file contents from Station and integration diffs", async () => {
+    const f = await fixture({ readObjectsDirectly: true })
+    await f.host.createTerminus({ namespace: "p" })
+    const station = await f.change("p/terminus", ".env", "API_KEY=hunter2\n")
+    expect(station.snapshot).toEqual({
+      changedPaths: [".env"],
+      diff: "diff --git a/.env b/.env\nnew file mode 100644\nSecret file contents withheld\n",
+    })
+    const { work, commit } = await worktree(f, "p/terminus")
+    await writeFile(join(work, "README.md"), "visible\n")
+    const base = await commit("Base")
+    await writeFile(join(work, ".env"), "API_KEY=changed\n")
+    await writeFile(join(work, "README.md"), "still visible\n")
+    await mkdir(join(work, "config"))
+    await writeFile(join(work, "config/server.key"), "PRIVATE KEY\n")
+    const head = await commit("Head")
+    const viaWorkspace = new ArtifactsRepositoryHost(
+      {
+        ensure: f.artifacts.ensure,
+        namespace: (namespace) => ({
+          ...f.artifacts.namespace(namespace),
+          objects: undefined,
+        }),
+      },
+      f.workspaces,
+      async () => {}
+    )
+    const inspected = await f.host.inspectIntegration(crossing(base, head), {
+      repoId: "p/terminus",
+      headCommit: head,
+    })
+    expect(inspected.changedPaths).toEqual([
+      ".env",
+      "README.md",
+      "config/server.key",
+    ])
+    expect(inspected.diff).toContain("+still visible\n")
+    expect(inspected.diff).toContain(
+      "diff --git a/config/server.key b/config/server.key\nnew file mode 100644\nSecret file contents withheld\n"
+    )
+    expect(inspected.diff).not.toMatch(/API_KEY|PRIVATE/)
+    expect(
+      await viaWorkspace.inspectIntegration(crossing(base, head), {
+        repoId: "p/terminus",
+        headCommit: head,
+      })
+    ).toEqual(inspected)
+    expect(f.tokens.size).toBe(0)
+  })
+
   it("revokes tokens when opening a workspace fails", async () => {
     const f = await fixture()
     f.workspaces.open = async () => {
@@ -1029,6 +1235,22 @@ describe("Artifacts repository transport with real Git", () => {
         sourceUrl: (await f.repos.get("original/terminus")!.info()).remote,
       })
     ).toEqual(imported)
+    expect(f.tokens.size).toBe(0)
+    expect(f.handles.size).toBe(0)
+  })
+
+  it("reads an imported project's head without opening a workspace", async () => {
+    const f = await fixture({ readHeadDirectly: true })
+    await f.host.createTerminus({ namespace: "original" })
+    const changed = await f.change("original/terminus")
+    const opened = f.grants.length
+    expect(
+      await f.host.createTerminus({
+        namespace: "imported",
+        sourceUrl: (await f.repos.get("original/terminus")!.info()).remote,
+      })
+    ).toEqual({ repoId: "imported/terminus", headCommit: changed.commit })
+    expect(f.grants).toHaveLength(opened)
     expect(f.tokens.size).toBe(0)
     expect(f.handles.size).toBe(0)
   })

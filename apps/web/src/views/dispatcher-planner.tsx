@@ -20,7 +20,6 @@ import {
 import { Button } from "@terminus/ui/components/button"
 import { lineBadge, lineColor } from "@/map/layout"
 import { crossingScope } from "./crossing-scope"
-import { UnloadModeSwitch } from "./unload-mode-switch"
 import { api } from "@/state/api"
 import { useDispatchActivity } from "@/state/use-dispatch-activity"
 import { activityLabel } from "@/state/dispatch-activity"
@@ -282,7 +281,10 @@ function Proposal({
   // slots and colours that are free now, including those finished Lines left.
   const predicted = lineIdentities(
     snapshot,
-    lines.map((line, index) => ({ id: `planned-${index}`, name: line.name }))
+    [...lines, ...featureLines].map((line, index) => ({
+      id: `planned-${index}`,
+      name: line.name,
+    }))
   )
   const badge = (index: number) => {
     const line = launchedLines[index]
@@ -352,59 +354,6 @@ function Proposal({
       ) : (
         <>
           <Prose text={proposal.summary} />
-          {(proposal.junctions ?? []).map((j) => (
-            <details className="plan-card" key={j.key}>
-              <summary>
-                {j.name} · Junction · {j.incoming.length} incoming Lines
-              </summary>
-              <Prose text={j.brief.goal} />
-              <p>
-                Frozen baseline {shortCommit(plan.terminusCommit)}. All inputs
-                must be accepted; human approval releases the complete feature.
-              </p>
-              <ul>
-                {j.incoming.map((l, i) => (
-                  <li key={i}>
-                    {l.name}: {l.stations.map((s) => s.name).join(" → ")} →{" "}
-                    {j.name}
-                    {l.route?.some((s) => s.kind === "crossing")
-                      ? " · internal Crossings"
-                      : ""}
-                  </li>
-                ))}
-              </ul>
-              <p>
-                {j.name} → {j.outgoing.stations.map((s) => s.name).join(" → ")}
-                {j.outgoing.stations.length ? " → " : ""}Terminus
-              </p>
-              <UnloadModeSwitch
-                mode={j.outgoing.unloadMode ?? "auto"}
-                disabled={pending || state.status !== "ready"}
-                onChange={(mode) => void selectMode(`${j.key}-outgoing`, mode)}
-              />
-              <ul>
-                {j.brief.acceptanceCriteria.map((c, i) => (
-                  <li key={i}>
-                    <Prose text={c} />
-                  </li>
-                ))}
-              </ul>
-              <details>
-                <summary>Feature checks and manifests</summary>
-                <pre className="unload-diff">
-                  {JSON.stringify(
-                    {
-                      brief: j.brief,
-                      incoming: j.incoming,
-                      outgoing: j.outgoing,
-                    },
-                    null,
-                    2
-                  )}
-                </pre>
-              </details>
-            </details>
-          ))}
           <section
             className="plan-card"
             aria-label={`Plan for: ${plan.goal.slice(0, 80)}`}
@@ -515,19 +464,44 @@ function Proposal({
             {proposal.findings && proposal.findings.length > 0 && (
               <Findings findings={proposal.findings} />
             )}
-            <div className="plan-lines">
-              {lines.map((line, index) => (
-                <PlannedLineView
-                  key={line.key}
-                  line={line}
-                  color={color(index)}
-                  number={number(index)}
+            {lines.length > 0 && (
+              <div className="plan-lines">
+                {lines.map((line, index) => (
+                  <PlannedLineView
+                    key={line.key}
+                    line={line}
+                    color={color(index)}
+                    number={number(index)}
+                    editable={state.status === "ready"}
+                    pending={pending}
+                    selectMode={(mode) => void selectMode(line.key, mode)}
+                  />
+                ))}
+              </div>
+            )}
+            {(proposal.junctions ?? []).map((j, index) => {
+              // Feature Lines follow the top-level Lines in launch order,
+              // each Junction's incoming Lines before its outgoing Line.
+              const first =
+                lines.length +
+                (proposal.junctions ?? [])
+                  .slice(0, index)
+                  .reduce((n, other) => n + other.incoming.length + 1, 0)
+              return (
+                <PlannedJunctionView
+                  key={j.key}
+                  junction={j}
+                  baseline={plan.terminusCommit}
+                  color={(i) => color(first + i)}
+                  number={(i) => number(first + i)}
                   editable={state.status === "ready"}
                   pending={pending}
-                  selectMode={(mode) => void selectMode(line.key, mode)}
+                  selectMode={(mode) =>
+                    void selectMode(`${j.key}-outgoing`, mode)
+                  }
                 />
-              ))}
-            </div>
+              )
+            })}
             {assessment.collisions.length > 0 && (
               <PlanNote
                 tone="held"
@@ -584,8 +558,104 @@ function Proposal({
   )
 }
 
+type PlannedJunction = NonNullable<Reviewed["proposal"]["junctions"]>[number]
+type ReviewLine = Pick<PlannedLine, "name" | "unloadMode" | "stations"> & {
+  unloadRecommendation?: PlannedLine["unloadRecommendation"]
+}
+
+/** A planned Junction: its feature brief, the incoming Lines that converge on
+ * it, and the outgoing Line that carries the released feature to Terminus. */
+function PlannedJunctionView({
+  junction,
+  baseline,
+  color,
+  number,
+  editable,
+  pending,
+  selectMode,
+}: {
+  junction: PlannedJunction
+  baseline: string
+  color: (index: number) => string
+  number: (index: number) => number
+  editable: boolean
+  pending: boolean
+  selectMode: (mode: UnloadMode) => void
+}) {
+  const { brief, incoming, outgoing } = junction
+  return (
+    <section className="plan-junction" aria-label={`Junction ${junction.name}`}>
+      <header className="plan-junction-head">
+        <span className="pstop-hub" aria-hidden="true">
+          J
+        </span>
+        <strong>{junction.name}</strong>
+        <span>Junction · {plural(incoming.length, "incoming Line")}</span>
+      </header>
+      <div className="plan-junction-brief">
+        <Prose text={brief.goal} />
+        <p className="plan-junction-note">
+          Every incoming Line forks Terminus{" "}
+          <code>{shortCommit(baseline)}</code>. Each input is reviewed as it
+          arrives; once all are accepted, the complete feature is validated and
+          waits for your release.
+        </p>
+        <h4>Feature acceptance</h4>
+        <ul>
+          {brief.acceptanceCriteria.map((c, i) => (
+            <li key={i}>
+              <Prose text={c} />
+            </li>
+          ))}
+        </ul>
+        <TechnicalDetails
+          summary="Scope, contracts and feature checks"
+          facts={[
+            { label: "Scope", value: brief.scope },
+            {
+              label: "Contracts",
+              value: brief.contracts.map(
+                (c) => `${c.name} · ${c.kind}, ${c.change.replaceAll("_", " ")}`
+              ),
+            },
+            { label: "Invariants", value: brief.invariants },
+            {
+              label: "Feature checks",
+              value: brief.validation.map((v) => v.name),
+            },
+          ]}
+        />
+      </div>
+      <div className="plan-lines">
+        {incoming.map((line, i) => (
+          <PlannedLineView
+            key={i}
+            line={line}
+            color={color(i)}
+            number={number(i)}
+            editable={editable}
+            pending={pending}
+            selectMode={() => {}}
+            to={junction.name}
+          />
+        ))}
+        <PlannedLineView
+          line={outgoing}
+          color={color(incoming.length)}
+          number={number(incoming.length)}
+          editable={editable}
+          pending={pending}
+          selectMode={selectMode}
+          from={junction.name}
+        />
+      </div>
+    </section>
+  )
+}
+
 /** A planned Line drawn the way the map draws it: a rail of Stations that
- * ends at Terminus, where its unloading choice applies. */
+ * ends at Terminus, where its unloading choice applies, or at the Junction it
+ * feeds. A Junction's outgoing Line starts at that Junction. */
 function PlannedLineView({
   line,
   color,
@@ -593,13 +663,19 @@ function PlannedLineView({
   editable,
   pending,
   selectMode,
+  from,
+  to,
 }: {
-  line: PlannedLine
+  line: ReviewLine
   color: string
   number: number
   editable: boolean
   pending: boolean
   selectMode: (mode: UnloadMode) => void
+  /** The Junction this Line leaves from once its feature is released. */
+  from?: string
+  /** The Junction this Line converges on, in place of Terminus. */
+  to?: string
 }) {
   const [open, setOpen] = useState<string | null>(null)
   const recommendation = line.unloadRecommendation
@@ -614,6 +690,17 @@ function PlannedLineView({
         <span>{plural(line.stations.length, "Station")}</span>
       </header>
       <ol className="pline-stops">
+        {from && (
+          <li className="pstop pstop-origin">
+            <div className="pstop-row">
+              <span className="pstop-hub" aria-hidden="true">
+                J
+              </span>
+              <span className="pstop-name">{from}</span>
+              <span className="pstop-kind">Departs on release</span>
+            </div>
+          </li>
+        )}
         {line.stations.map((station) => {
           const expanded = open === station.key
           const kind = station.manifest.repositoryChange?.kind
@@ -648,40 +735,52 @@ function PlannedLineView({
             </li>
           )
         })}
-        <li className="pstop pstop-terminus">
-          <div className="pstop-row">
-            <span className="pstop-hub" aria-hidden="true">
-              T
-            </span>
-            <span className="pstop-name">Terminus</span>
-            {!editable && (
-              <span className="pstop-kind">
-                {mode === "auto" ? "Auto-unload" : "Human approval"}
+        {to ? (
+          <li className="pstop pstop-terminus">
+            <div className="pstop-row">
+              <span className="pstop-hub" aria-hidden="true">
+                J
               </span>
-            )}
-          </div>
-          {editable && (
-            <div className="pstop-unload">
-              <UnloadToggle
-                mode={mode}
-                disabled={pending}
-                onChange={selectMode}
-                line={line.name}
-              />
-              {recommendation && (
-                <Prose
-                  className="pstop-reason"
-                  text={
-                    (recommendation.mode === mode
-                      ? "Why I suggest this: "
-                      : `I suggested ${recommendation.mode === "auto" ? "auto-unload" : "human approval"}: `) +
-                    recommendation.reason
-                  }
-                />
+              <span className="pstop-name">{to}</span>
+              <span className="pstop-kind">Converges at Junction</span>
+            </div>
+          </li>
+        ) : (
+          <li className="pstop pstop-terminus">
+            <div className="pstop-row">
+              <span className="pstop-hub" aria-hidden="true">
+                T
+              </span>
+              <span className="pstop-name">Terminus</span>
+              {!editable && (
+                <span className="pstop-kind">
+                  {mode === "auto" ? "Auto-unload" : "Human approval"}
+                </span>
               )}
             </div>
-          )}
-        </li>
+            {editable && (
+              <div className="pstop-unload">
+                <UnloadToggle
+                  mode={mode}
+                  disabled={pending}
+                  onChange={selectMode}
+                  line={line.name}
+                />
+                {recommendation && (
+                  <Prose
+                    className="pstop-reason"
+                    text={
+                      (recommendation.mode === mode
+                        ? "Why I suggest this: "
+                        : `I suggested ${recommendation.mode === "auto" ? "auto-unload" : "human approval"}: `) +
+                      recommendation.reason
+                    }
+                  />
+                )}
+              </div>
+            )}
+          </li>
+        )}
       </ol>
     </div>
   )

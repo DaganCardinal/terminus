@@ -1,23 +1,23 @@
 import { Prose } from "@terminus/ui/components/prose"
 import type { NetworkSnapshot, TechnicianRepair } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
-import { Check, Wrench } from "lucide-react"
+import { ArrowUpRight, Check, Wrench } from "lucide-react"
+import { lineBadge } from "@/map/layout"
 import { api } from "@/state/api"
-import { namesFor } from "./describe"
+import { modelWithReasoning, namesFor } from "./describe"
 import { CheckRow, Tags, shortCommit } from "./detail-parts"
-import { DispatcherMessage } from "./dispatcher-message"
+import {
+  AbsorbedNotices,
+  activeRepairStatuses,
+  repairThreads,
+} from "./dispatcher-alerts"
+import { DispatcherMessage, LineBadge } from "./dispatcher-message"
 import type { DispatcherTone } from "./dispatcher-state"
 
 type Command = (run: () => Promise<unknown>) => Promise<void>
 type Status = TechnicianRepair["state"]["status"]
 
-const active: Status[] = [
-  "requested",
-  "running",
-  "reviewing",
-  "ready",
-  "approved",
-]
+const active = activeRepairStatuses
 
 /** The path a repair travels; failures and staleness leave it. */
 const stages: { label: string; reached: Status[] }[] = [
@@ -41,50 +41,49 @@ const statusLines: Record<Status, string> = {
   stale: "The source moved after this repair was prepared.",
 }
 
-/** Conflicts found at Terminus and the Technician repairs that answer them,
- * one Dispatcher message per conflict. */
-export function repairThreads(snapshot: NetworkSnapshot) {
-  const repairs = snapshot.repairs ?? []
-  const latest = new Map<string, TechnicianRepair>()
-  for (const repair of repairs) latest.set(repair.conflictId, repair)
-  const ids = new Set([
-    ...snapshot.conflicts.filter((c) => c.status === "open").map((c) => c.id),
-    ...[...latest.values()]
-      .filter((repair) => active.includes(repair.state.status))
-      .map((repair) => repair.conflictId),
-  ])
-  return [...ids].map((id) => ({
-    conflict: snapshot.conflicts.find((c) => c.id === id),
-    repair: latest.get(id),
-  }))
+/** Where a conflict's latest repair stands. A stale candidate can no longer
+ * be approved, so only a fresh Technician moves it on. */
+export function repairProgress(
+  snapshot: NetworkSnapshot,
+  repair: TechnicianRepair | undefined
+) {
+  const state = repair?.state
+  const isStale =
+    !!repair &&
+    !!state &&
+    ["ready", "approved"].includes(state.status) &&
+    (repair.source.terminusCommit !== snapshot.network.terminusCommit ||
+      repair.source.trainCommit !==
+        snapshot.trains.find((view) => view.train.id === repair.source.trainId)
+          ?.train.headCommit)
+  const working =
+    !!repair && !!state && active.includes(state.status) && !isStale
+  return { isStale, working }
 }
 
+/** One card per conflict at Terminus. A Train the conflict blocked is told
+ * here too, rather than in a card of its own. */
 export function RepairMessages({
   snapshot,
   pending,
   command,
+  openTrain,
 }: {
   snapshot: NetworkSnapshot
   pending: boolean
   command: Command
+  openTrain: (lineId: string) => void
 }) {
   const name = namesFor(snapshot)
   const networkId = snapshot.network.id
-  const stale = (repair: TechnicianRepair) =>
-    repair.source.terminusCommit !== snapshot.network.terminusCommit ||
-    repair.source.trainCommit !==
-      snapshot.trains.find((view) => view.train.id === repair.source.trainId)
-        ?.train.headCommit
 
-  return repairThreads(snapshot).map(({ conflict, repair }) => {
+  return repairThreads(snapshot).map(({ conflict, repair, trainIds }) => {
+    const trains = trainIds.flatMap(
+      (id) => snapshot.trains.find((view) => view.train.id === id)?.train ?? []
+    )
+    const blocked = trains.filter((train) => train.state.status === "blocked")
     const state = repair?.state
-    const isStale =
-      !!repair &&
-      !!state &&
-      ["ready", "approved"].includes(state.status) &&
-      stale(repair)
-    const working =
-      !!repair && !!state && active.includes(state.status) && !isStale
+    const { isStale, working } = repairProgress(snapshot, repair)
     const tone: DispatcherTone =
       state?.status === "ready" && !isStale
         ? "review"
@@ -97,7 +96,21 @@ export function RepairMessages({
         card
         key={key}
         tone={tone}
-        meta={repair ? "Technician repair" : "Conflict at Terminus"}
+        meta={
+          <>
+            {trains.map((train) => {
+              const badge = lineBadge(snapshot, train.lineId)
+              return badge ? (
+                <LineBadge
+                  key={train.id}
+                  color={badge.color}
+                  number={badge.number}
+                />
+              ) : null
+            })}{" "}
+            {repair ? "Technician repair" : "Conflict at Terminus"}
+          </>
+        }
       >
         {conflict ? (
           <>
@@ -192,12 +205,13 @@ export function RepairMessages({
                     </dd>
                     <dt>Technician</dt>
                     <dd>
-                      {repair.agent.harness} · {repair.agent.model}
+                      {repair.agent.harness} ·{" "}
+                      {modelWithReasoning(repair.agent)}
                     </dd>
                     {"review" in state && (
                       <>
                         <dt>Conductor</dt>
-                        <dd>{state.review.model}</dd>
+                        <dd>{modelWithReasoning(state.review)}</dd>
                       </>
                     )}
                   </dl>
@@ -206,6 +220,27 @@ export function RepairMessages({
             )}
           </>
         )}
+
+        {blocked.map((train) => (
+          <div key={train.id}>
+            {train.state.status === "blocked" &&
+              train.state.issues
+                .filter((issue) => issue.kind !== "conflict")
+                .map((issue, index) => (
+                  <Prose
+                    key={index}
+                    className="dmsg-quote"
+                    text={issue.detail}
+                  />
+                ))}
+            <AbsorbedNotices
+              snapshot={snapshot}
+              trainId={train.id}
+              pending={pending}
+              command={command}
+            />
+          </div>
+        ))}
 
         <div className="dmsg-actions">
           {state?.status === "ready" && (
@@ -234,6 +269,17 @@ export function RepairMessages({
               {repair ? "Dispatch a fresh Technician" : "Dispatch Technician"}
             </Button>
           )}
+          {trains.map((train) => (
+            <Button
+              key={train.id}
+              size="sm"
+              variant="ghost"
+              onClick={() => openTrain(train.lineId)}
+            >
+              Open {trains.length > 1 ? name(train.id) : "Train"}{" "}
+              <ArrowUpRight size={14} />
+            </Button>
+          ))}
         </div>
         {conflict?.status === "open" && !repair && (
           <p className="dmsg-hint">

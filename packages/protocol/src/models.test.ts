@@ -11,6 +11,8 @@ import {
   modelForHarness,
   roleExecutionSchema,
   utilityModel,
+  reasoningFor,
+  roleReasoning,
 } from "./models"
 
 const custom = {
@@ -152,5 +154,72 @@ describe("model settings", () => {
         general,
       })
     ).toEqual(custom)
+  })
+})
+
+describe("reasoning levels", () => {
+  it("defaults to Medium, or the more expensive nearest level a model accepts", () => {
+    expect(reasoningFor("anthropic/claude-sonnet-5-5")).toBe("medium")
+    expect(reasoningFor("openai/gpt-6-luna", "xhigh")).toBe("xhigh")
+    // Workers AI's GLM accepts low, high and max; medium would mean max.
+    expect(reasoningFor("@cf/zai-org/glm-5.3-flash")).toBe("high")
+    expect(reasoningFor("@cf/zai-org/glm-5.3", "xhigh")).toBe("max")
+    expect(reasoningFor("@cf/moonshotai/kimi-k2.7-code")).toBeUndefined()
+    expect(reasoningFor("anthropic/claude-haiku-4-5-20251001")).toBeUndefined()
+    expect(reasoningFor("@cf/cloudflare/clef")).toBeUndefined()
+  })
+
+  it("freezes each harness role's level, omitting models without reasoning control", () => {
+    expect(roleExecutions(DEFAULT_MODEL_SETTINGS).dispatcher.reasoning).toBe(
+      "high"
+    )
+    const settings = modelSettingsSchema.parse({
+      preset: "custom",
+      models: { ...custom, dispatcher: "anthropic/claude-sonnet-5-5" },
+      harnesses: { ...DEFAULT_ROLE_HARNESSES, dispatcher: "claude-code" },
+      reasoning: { dispatcher: "high", technician: "max" },
+    })
+    expect(roleReasoning(settings)).toEqual({
+      dispatcher: "high",
+      stationAgent: "high",
+      technician: "max",
+    })
+    const executions = roleExecutions(settings)
+    expect(executions.dispatcher).toMatchObject({
+      harness: "claude-code",
+      reasoning: "high",
+    })
+    expect(executions.conductor).not.toHaveProperty("reasoning")
+    expect(roleExecutionSchema.parse(executions.dispatcher)).toEqual(
+      executions.dispatcher
+    )
+  })
+
+  it("rejects a level the role's model does not accept", () => {
+    for (const reasoning of [{ stationAgent: "medium" }, { conductor: "low" }])
+      expect(
+        modelSettingsSchema.safeParse({
+          preset: "custom",
+          models: custom,
+          reasoning,
+        }).success
+      ).toBe(false)
+    expect(
+      modelSettingsSchema.safeParse({ preset: "light", reasoning: {} }).success
+    ).toBe(false)
+    expect(
+      roleExecutionSchema.safeParse({
+        harness: "opencode",
+        model: "@cf/moonshotai/kimi-k2.7-code",
+        reasoning: "low",
+      }).success
+    ).toBe(false)
+    // Configurations frozen before reasoning was configurable stay valid.
+    expect(
+      roleExecutionSchema.safeParse({
+        harness: "opencode",
+        model: "@cf/zai-org/glm-5.3-flash",
+      }).success
+    ).toBe(true)
   })
 })

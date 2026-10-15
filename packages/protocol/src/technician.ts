@@ -20,6 +20,7 @@ const reviewed = candidate.extend({
     harness: z.string().optional(),
     provider: z.string().optional(),
     harnessVersion: z.string().optional(),
+    reasoning: z.string().optional(),
   }),
 })
 export const technicianRepairSchema = z.object({
@@ -52,6 +53,7 @@ export const technicianRepairSchema = z.object({
     model: z.string(),
     provider: z.string().optional(),
     harnessVersion: z.string().optional(),
+    reasoning: z.string().optional(),
   }),
   createdAt: z.string(),
   integrationFailure: z

@@ -5,6 +5,7 @@ import {
   type GitWorkspace,
   type RepositoryAccess,
 } from "./git"
+import { secretFilePatches, withoutSecrets } from "./secret-diff"
 
 export const stationDirectory = "/workspace/repo"
 
@@ -119,11 +120,26 @@ export class StationGit {
     )
       .split("\0")
       .filter(Boolean)
-    const diff = await git(
-      this.#workspace,
-      ["diff", "--binary", "--full-index", this.#baseCommit, head],
-      stationDirectory
-    )
+    const diff =
+      (await git(
+        this.#workspace,
+        [
+          "diff",
+          "--binary",
+          "--full-index",
+          this.#baseCommit,
+          head,
+          "--",
+          ...withoutSecrets,
+        ],
+        stationDirectory
+      )) +
+      (await secretFilePatches(
+        this.#workspace,
+        this.#baseCommit,
+        head,
+        stationDirectory
+      ))
     if (diff.length > 200_000)
       throw new Error(
         "Station diff exceeds the review limit; split the manifest into smaller tasks"

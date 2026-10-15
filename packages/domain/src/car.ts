@@ -8,12 +8,15 @@ export interface AgentConfig {
   model: string
   provider?: string
   harnessVersion?: string
+  /** The frozen reasoning level; absent in provenance recorded before it. */
+  reasoning?: string
 }
 
 export interface ConductorReview {
   harness?: string
   provider?: string
   harnessVersion?: string
+  reasoning?: string
   summary: string
   findings: string[]
   model: string

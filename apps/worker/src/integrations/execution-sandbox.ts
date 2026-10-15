@@ -74,6 +74,11 @@ function isPlacementFailure(error: unknown): boolean {
     )
 }
 
+export interface StreamOptions {
+  /** Follows a process already running in the container: fails rather than starting one. */
+  reattach?: boolean
+}
+
 /** The Durable Object bindings callers address Sandboxes by, one per kind,
  * as recorded for deletion. */
 export type SandboxBinding = "SANDBOX" | "WORKSPACE_SANDBOX"
@@ -153,9 +158,16 @@ export class ExecutionSandbox extends DurableObject<Env> {
     command: string[],
     cwd?: string,
     env?: Record<string, string>,
-    timeoutMs?: number
+    timeoutMs?: number,
+    options?: StreamOptions
   ): Promise<ReadableStream<Uint8Array>> {
-    return (await this.configured()).runStream(command, cwd, env, timeoutMs)
+    return (await this.configured()).runStream(
+      command,
+      cwd,
+      env,
+      timeoutMs,
+      options
+    )
   }
 
   async write(path: string, contents: string): Promise<void> {
@@ -725,13 +737,18 @@ export abstract class SandboxContainer extends DurableObject<Env> {
     })
   }
 
-  /** Streams command output across the existing Sandbox RPC boundary. */
+  /** Streams command output across the existing Sandbox RPC boundary.
+   * Cancelling the stream stops only this command. */
   async runStream(
     command: string[],
     cwd = "/workspace",
     env: Record<string, string> = {},
-    timeoutMs = commandTimeoutMs
+    timeoutMs = commandTimeoutMs,
+    options: StreamOptions = {}
   ): Promise<ReadableStream<Uint8Array>> {
+    // Reattaching follows work in this container, so it never starts a new one.
+    if (options.reattach && !this.container().running)
+      throw new Error("Sandbox container is not running")
     const readyStarted = Date.now()
     await this.ready()
     const execStarted = Date.now()
@@ -1231,9 +1248,13 @@ function commandLabel(command: string[]): string {
       "npm",
       ...rest.filter((arg) => !arg.startsWith("-")).slice(0, 2),
     ].join(" ")
-  if (program === "node")
-    return rest[0] === "-e"
-      ? "node -e"
-      : `node ${(rest[0] ?? "").split("/").pop()}`
+  if (program === "node") {
+    if (rest[0] === "-e") return "node -e"
+    const script = (rest[0] ?? "").split("/").pop()
+    // The live follower's mode tells a harness start from a reattach.
+    return script === "harness-follow.mjs"
+      ? `node ${script} ${rest[1] ?? ""}`
+      : `node ${script}`
+  }
   return program
 }

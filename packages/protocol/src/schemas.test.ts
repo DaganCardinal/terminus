@@ -8,8 +8,12 @@ import type {
 import { describe, expect, expectTypeOf, it } from "vitest"
 import type { z } from "zod"
 import { evidenceSchema, proposalSchema } from "./agents"
+import { carSchema } from "./crossing"
+import { dispatchPlanSchema } from "./dispatch"
 import { domainEventSchema, holdSchema } from "./events"
+import { integrationAttemptSchema } from "./integration"
 import { workManifestSchema } from "./manifest"
+import { technicianRepairSchema } from "./technician"
 
 describe("schemas match the domain", () => {
   it("covers every domain event and shared shape exactly", () => {
@@ -91,5 +95,64 @@ describe("workManifestSchema", () => {
         expectedEvidence: [],
       }).success
     ).toBe(false)
+  })
+})
+
+describe("agent provenance", () => {
+  const model = "@cf/zai-org/glm-5.3-flash"
+  const car = (stationAgent: object, review: object) => ({
+    id: "car-1",
+    trainId: "train-1",
+    stationId: "station-1",
+    position: 1,
+    manifest: {
+      goal: "Add a page",
+      scope: [],
+      expectedAreas: [],
+      avoidAreas: [],
+      contracts: [],
+      invariants: [],
+      dependencies: [],
+      acceptanceCriteria: [],
+      expectedEvidence: [],
+    },
+    stationAgent,
+    sourceCommit: "source",
+    acceptedCommit: "accepted",
+    changedPaths: [],
+    evidence: { checks: [] },
+    agentSummary: null,
+    review: { summary: "Accepted", findings: [], ...review },
+    acceptedAt: "2026-10-14T00:00:00.000Z",
+  })
+
+  it("keeps the reasoning level an agent ran at", () => {
+    const agent = {
+      harness: "opencode@1.18.32",
+      model,
+      provider: "workers-ai",
+      harnessVersion: "1.18.32",
+      reasoning: "high",
+    }
+    const parsed = carSchema.parse(car(agent, agent))
+    expect(parsed.stationAgent).toEqual(agent)
+    expect(parsed.review.reasoning).toBe("high")
+    for (const schema of [
+      proposalSchema.shape.agent,
+      technicianRepairSchema.shape.agent,
+      dispatchPlanSchema.shape.agent.unwrap(),
+      integrationAttemptSchema.shape.review.unwrap().unwrap(),
+    ])
+      expect(
+        schema.parse({ verdict: "accept", summary: "", findings: [], ...agent })
+      ).toMatchObject({ reasoning: "high" })
+  })
+
+  it("still parses Cars recorded before reasoning levels", () => {
+    const parsed = carSchema.parse(
+      car({ harness: "opencode", model }, { model })
+    )
+    expect(parsed.stationAgent).toEqual({ harness: "opencode", model })
+    expect(parsed.review).not.toHaveProperty("reasoning")
   })
 })

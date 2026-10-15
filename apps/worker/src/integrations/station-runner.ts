@@ -1,5 +1,4 @@
 import {
-  catalogModel,
   scriptedStressAgent,
   stressTask,
   type RoleExecution,
@@ -29,7 +28,7 @@ import {
   validationCommandsSchema,
 } from "@terminus/protocol"
 import type { NetworkStore } from "./network-store"
-import { gatewayConfig } from "./execution-config"
+import { gatewayConfig, modelGrant } from "./execution-config"
 import { prepareHarness, runPreparedHarness } from "./harness"
 import { runInstalledChecks } from "./project-checks"
 import { runStressStation } from "./scripted-stress"
@@ -49,7 +48,8 @@ export interface StationSandbox {
     command: string[],
     cwd?: string,
     env?: Record<string, string>,
-    timeoutMs?: number
+    timeoutMs?: number,
+    options?: import("./execution-sandbox").StreamOptions
   ): Promise<ReadableStream<Uint8Array>>
   /** Installs dependencies in `cwd` with the shared npm cache. */
   installDependencies(cwd: string): Promise<unknown>
@@ -184,12 +184,7 @@ export class SandboxStationRunner implements StationRunner {
         allowModel: !this.#scripted,
         ...(this.#scripted
           ? {}
-          : {
-              model: this.config.model,
-              ...(catalogModel(this.config.model).provider === "workers-ai"
-                ? {}
-                : { provider: catalogModel(this.config.model).provider }),
-            }),
+          : modelGrant(this.config.model, this.execution)),
       })
       // Each run starts from durable Station history, including prior revisions.
       const repository = new StationGit(

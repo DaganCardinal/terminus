@@ -7,6 +7,7 @@ import {
   type GitWorkspace,
   type RepositoryAccess,
 } from "./git"
+import { secretFilePatches, withoutSecrets } from "./secret-diff"
 
 export const technicianDirectory = "/workspace/repo"
 export interface RepairGitInput {
@@ -278,23 +279,29 @@ export class TechnicianGit {
     )
       .split("\0")
       .filter(Boolean)
-    const diff = await git(
-      this.workspace,
-      [
-        "diff",
-        "--no-ext-diff",
-        "--no-textconv",
-        this.input.source.terminusCommit,
-        commit,
-      ],
-      technicianDirectory
-    )
-    const repairDiff = await git(
-      this.workspace,
-      ["diff", "--no-ext-diff", "--no-textconv", this.baselineTree, commit],
-      technicianDirectory
-    )
+    const diff = await this.patch(this.input.source.terminusCommit, commit)
+    const repairDiff = await this.patch(this.baselineTree, commit)
     return { changedPaths, diff, repairPaths, repairDiff }
+  }
+
+  /** What a reviewer sees between two trees; secret files show no contents. */
+  private async patch(base: string, head: string): Promise<string> {
+    return (
+      (await git(
+        this.workspace,
+        [
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          base,
+          head,
+          "--",
+          ...withoutSecrets,
+        ],
+        technicianDirectory
+      )) +
+      (await secretFilePatches(this.workspace, base, head, technicianDirectory))
+    )
   }
 
   async publish(commit: string): Promise<void> {

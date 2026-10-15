@@ -112,6 +112,16 @@ export function filteredHarnessActivity(
   return activity
 }
 
+/** A live runner with no follower for this long assumes orchestration is gone and stops its harness. */
+export const liveHarnessOrphanMs = 60_000
+
+const heartbeatSuffix = ".follow"
+
+/** The file a live follower touches while it is attached, for the runner's orphan check. */
+export function liveHarnessHeartbeat(activity: string): string {
+  return `${activity}${heartbeatSuffix}`
+}
+
 /** Runs beside the harness INSIDE the Sandbox. stdout contains only activity and exit status,
  * plus a short stderr tail after an abnormal exit and the per-step timeline as each step ends,
  * which orchestration logs but never displays. Logging steps as they end keeps them when the
@@ -120,16 +130,34 @@ export function filteredHarnessActivity(
  * is the answer, and the model's closing message would cost another round trip. It is stopped
  * too after \`maxRejectedFinalizations\` rejected finalizations or \`maxRejectedPlanCalls\`
  * pieces that were not saved, and the saved draft is final. Repeated argument-format
- * failures pause the run earlier, allowing a bounded correction in the same session. */
+ * failures pause the run earlier, allowing a bounded correction in the same session.
+ *
+ * The follower below starts it detached, so it outlives a lost Worker stream. It therefore
+ * enforces its own \`timeoutMs\` (reporting \`timedOut\`), and stops the harness once its
+ * \`heartbeat\` file is \`orphanMs\` old: no follower is attached, so orchestration is gone. */
 export const liveHarnessActivityScript = `import { spawn } from "node:child_process"
-import { createWriteStream } from "node:fs"
+import { createWriteStream, statSync } from "node:fs"
 import { constants } from "node:os"
 import { StringDecoder } from "node:string_decoder"
 const filter = ${filteredHarnessActivity.toString()}
-const [events, harness, directory, command, ...args] = process.argv.slice(2)
+const [events, harness, directory, options, command, ...args] = process.argv.slice(2)
+const { timeoutMs = 0, heartbeat = "", orphanMs = ${liveHarnessOrphanMs} } = JSON.parse(options)
 const raw = createWriteStream(events, { mode: 0o600 })
 const child = spawn(command, args, { cwd: directory, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
 child.stdout.pipe(raw)
+let ended = null
+function endHarness(reason) {
+  if (stopped || ended || child.exitCode !== null || child.signalCode !== null) return
+  ended = reason
+  child.kill("SIGTERM")
+  setTimeout(() => child.kill("SIGKILL"), 5000).unref()
+}
+if (timeoutMs > 0) setTimeout(() => endHarness("timed_out"), timeoutMs).unref()
+if (heartbeat) setInterval(() => {
+  let followed = 0
+  try { followed = statSync(heartbeat).mtimeMs } catch {}
+  if (Date.now() - followed > orphanMs) endHarness("abandoned")
+}, Math.min(5000, orphanMs)).unref()
 let stderr = ""
 child.stderr.setEncoding("utf8")
 child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4000) })
@@ -205,6 +233,7 @@ child.on("close", (code, signal) => {
   const exitCode = stopped ? 0 : code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1)
   const outcome = { type: "harness_exit", exitCode }
   if (stopped) outcome.stopped = stopped
+  else if (ended === "timed_out") outcome.timedOut = true
   if (exitCode !== 0) {
     if (signal) outcome.signal = signal
     // Control characters are dropped so the line stays within the transport's limit.
@@ -218,3 +247,85 @@ child.on("close", (code, signal) => {
 raw.on("error", () => { child.kill(); process.exitCode = 1 })
 
 ${harnessTimelineScript}`
+
+/** Runs INSIDE the Sandbox as the streamed command, and is all a lost Worker stream takes down.
+ * \`start <activity> <runner command…>\` starts the live runner in its own session with its
+ * stdout in the \`activity\` file, records its pid beside it, then follows. \`attach <activity>
+ * <lines>\` follows a runner already started, after the first \`lines\` lines orchestration
+ * handled. Either copies the file's lines to stdout and ends once the runner has exited and
+ * every line is out, so a forged exit line cannot end it early. Following touches the
+ * heartbeat file the runner's orphan check reads. \`stop <activity>\` kills the runner's
+ * process group. Nothing else is written to stdout, so its lines are exactly the file's. */
+export const liveHarnessFollowerScript = `import { spawn } from "node:child_process"
+import { closeSync, existsSync, openSync, readFileSync, readlinkSync, readSync, utimesSync, writeFileSync } from "node:fs"
+const [mode, activity, ...rest] = process.argv.slice(2)
+const pidFile = activity + ".pid", heartbeat = activity + ${JSON.stringify(heartbeatSuffix)}
+const procfs = existsSync("/proc/self/stat")
+/** Whether \`pid\` is this activity file's runner and has not exited. */
+function running(pid) {
+  if (!(pid > 1)) return false
+  if (!procfs) try { process.kill(pid, 0); return true } catch (error) { return error.code === "EPERM" }
+  try {
+    const stat = readFileSync("/proc/" + pid + "/stat", "utf8")
+    // PID 1 (\`sleep infinity\`) never reaps an orphaned runner, so a zombie has exited.
+    if ("ZX".includes(stat[stat.lastIndexOf(")") + 2])) return false
+  } catch { return false }
+  // A reused pid writes elsewhere; the file name is unique. Unverifiable counts as running,
+  // since ending early would fail the run.
+  try { return readlinkSync("/proc/" + pid + "/fd/1").endsWith(activity.slice(activity.lastIndexOf("/"))) } catch { return true }
+}
+function runnerPid() {
+  try { return Number(readFileSync(pidFile, "utf8")) } catch { return 0 }
+}
+function stopRunner() {
+  const pid = runnerPid()
+  // The runner leads its own process group, which holds the harness.
+  if (running(pid)) try { process.kill(-pid, "SIGKILL") } catch {}
+}
+function beat() {
+  const now = new Date()
+  try { utimesSync(heartbeat, now, now) } catch { try { writeFileSync(heartbeat, "", { mode: 0o600 }) } catch {} }
+}
+function follow(skip) {
+  const pid = runnerPid()
+  let fd
+  try { fd = openSync(activity, "r") } catch { return }
+  const chunk = Buffer.alloc(65536)
+  let position = 0, pending = Buffer.alloc(0)
+  const drain = () => {
+    for (let read; (read = readSync(fd, chunk, 0, chunk.length, position)); ) {
+      position += read
+      const data = Buffer.concat([pending, chunk.subarray(0, read)])
+      let start = 0
+      for (let end; (end = data.indexOf(10, start)) !== -1; start = end + 1) {
+        if (skip > 0) skip--
+        else process.stdout.write(data.subarray(start, end + 1))
+      }
+      pending = data.subarray(start)
+    }
+  }
+  const tick = () => {
+    beat()
+    // Checked before reading, so every line the runner wrote before exiting is read.
+    const exited = !running(pid)
+    drain()
+    if (!exited) return void setTimeout(tick, 200)
+    if (pending.length && skip === 0) process.stdout.write(pending)
+    closeSync(fd)
+  }
+  tick()
+}
+if (mode === "stop") stopRunner()
+else if (mode === "start") {
+  // Each start has its own file, so following never reads an earlier run's lines.
+  const out = openSync(activity, "wx", 0o600)
+  const runner = spawn(rest[0], rest.slice(1), { detached: true, stdio: ["ignore", out, "ignore"] })
+  closeSync(out)
+  runner.on("error", () => {})
+  if (!runner.pid) process.exit(1)
+  writeFileSync(pidFile, String(runner.pid), { mode: 0o600 })
+  runner.unref()
+  follow(0)
+} else if (mode === "attach") follow(Number(rest[0]) || 0)
+else process.exit(2)
+`

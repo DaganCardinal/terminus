@@ -26,6 +26,8 @@ export const proposalSchema = z.object({
     model: z.string(),
     provider: z.string().optional(),
     harnessVersion: z.string().optional(),
+    /** The frozen reasoning level; absent in provenance recorded before it. */
+    reasoning: z.string().optional(),
   }),
   agentSummary: z.string().nullable(),
 })

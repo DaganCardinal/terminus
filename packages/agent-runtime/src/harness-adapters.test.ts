@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  agentProvenance,
   harnessInvocation,
   executionConfig,
   harnessResult,
@@ -143,6 +144,66 @@ describe("role harness adapters", () => {
     }
   )
 
+  it("passes the frozen reasoning level to each harness's native setting", () => {
+    const invoke = (model: string, harness: Harness, reasoning?: "high") =>
+      harnessInvocation(
+        executionConfig(model, harness, reasoning),
+        roles[3]!,
+        gateway,
+        "/workspace/repo",
+        "x"
+      )
+    const claude = invoke("anthropic/claude-sonnet-5-5", "claude-code", "high")
+    expect(claude.command.join(" ")).toContain("--effort high --system-prompt")
+    expect(
+      invoke("anthropic/claude-sonnet-5-5", "claude-code").command
+    ).not.toContain("--effort")
+    expect(invoke("openai/gpt-6-sol", "codex", "high").command).toContain(
+      'model_reasoning_effort="high"'
+    )
+    expect(invoke("openai/gpt-6-sol", "codex").command.join(" ")).not.toContain(
+      "model_reasoning_effort"
+    )
+    const models = (model: string, reasoning?: "high") =>
+      JSON.parse(Object.values(invoke(model, "opencode", reasoning).files)[0]!)
+        .provider.terminus.models
+    // Only the role model reasons at the role's level, never its utility model.
+    expect(models("openai/gpt-6-sol", "high")).toMatchObject({
+      "openai/gpt-6-sol": { options: { reasoningEffort: "high" } },
+      "openai/gpt-6-luna": expect.not.objectContaining({
+        options: expect.anything(),
+      }),
+    })
+    expect(models("anthropic/claude-sonnet-5-5", "high")).toMatchObject({
+      "anthropic/claude-sonnet-5-5": { options: { effort: "high" } },
+    })
+    // Workers AI levels are applied by the outbound handler.
+    expect(
+      models("@cf/zai-org/glm-5.3", "high")["@cf/zai-org/glm-5.3"]
+    ).not.toHaveProperty("options")
+    expect(() =>
+      executionConfig("@cf/moonshotai/kimi-k2.7-code", "opencode", "high")
+    ).toThrow()
+  })
+
+  it("records the frozen reasoning level in agent provenance", () => {
+    const model = "@cf/zai-org/glm-5.3-flash"
+    const identity = {
+      harness: "opencode@1.18.32",
+      model,
+      provider: "workers-ai",
+      harnessVersion: "1.18.32",
+    }
+    expect(agentProvenance(executionConfig(model, "opencode", "high"))).toEqual(
+      { ...identity, reasoning: "high" }
+    )
+    // Configurations frozen without a level serialize exactly as before, so
+    // their Station and Conductor checkpoints still match.
+    expect(JSON.stringify(agentProvenance(executionConfig(model)))).toBe(
+      JSON.stringify(identity)
+    )
+  })
+
   it("refuses unsupported combinations and changed frozen versions", () => {
     expect(() =>
       executionConfig("@cf/zai-org/glm-5.3-flash", "codex")
@@ -256,5 +317,96 @@ describe("role harness adapters", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe("Codex stream recovery", () => {
+  const reconnect = {
+    type: "error",
+    message:
+      "Reconnecting... 1/5 (stream disconnected before completion: stream closed before response.completed)",
+  }
+  const finalMessage = {
+    type: "item.completed",
+    item: { type: "agent_message", text: '{"ok":true}' },
+  }
+  const completed = { type: "turn.completed" }
+  const output = (events: object[]) => ({
+    exitCode: 0,
+    stderr: "",
+    stdout: [
+      { type: "thread.started", thread_id: "session-1" },
+      { type: "turn.started" },
+      reconnect,
+      ...events,
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n"),
+  })
+
+  it("accepts a successful turn after a stream reconnect", () => {
+    expect(
+      harnessResult("codex", output([finalMessage, completed]))
+    ).toMatchObject({
+      summary: '{"ok":true}',
+      error: null,
+      sessionId: "session-1",
+    })
+  })
+
+  it("reports the terminal failure when reconnect attempts are exhausted", () => {
+    expect(
+      harnessResult(
+        "codex",
+        output([
+          {
+            type: "turn.failed",
+            error: { message: "Stream retries exhausted" },
+          },
+        ])
+      ).error
+    ).toBe("Stream retries exhausted")
+  })
+
+  it("retains the reconnect diagnostic when the turn never completes", () => {
+    expect(harnessResult("codex", output([finalMessage])).error).toBe(
+      reconnect.message
+    )
+  })
+
+  it("retains errors reported after completion", () => {
+    expect(
+      harnessResult(
+        "codex",
+        output([
+          finalMessage,
+          completed,
+          { type: "error", message: "Session could not be saved" },
+        ])
+      ).error
+    ).toBe("Session could not be saved")
+  })
+
+  it.each([
+    {
+      failure: "nonzero exit",
+      result: { ...output([finalMessage, completed]), exitCode: 1 },
+      message: "codex exited with 1",
+    },
+    {
+      failure: "truncated output",
+      result: {
+        ...output([finalMessage, completed]),
+        outputTruncated: true,
+      },
+      message: "Harness output exceeded the capture limit",
+    },
+    {
+      failure: "missing final message",
+      result: output([completed]),
+      message: "codex did not produce a successful final message",
+    },
+  ])("still rejects $failure after recovery", ({ result, message }) => {
+    expect(harnessResult("codex", result).error).toBe(message)
   })
 })

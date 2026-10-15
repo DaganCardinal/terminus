@@ -12,6 +12,8 @@ import {
   installedHarnessVersion,
   logHarnessTimeline,
   liveHarnessActivityScript,
+  liveHarnessFollowerScript,
+  liveHarnessHeartbeat,
   ProposalSubmissionsExhausted,
   PlanToolFormatStalled,
   type HarnessAgent,
@@ -283,6 +285,19 @@ export class HarnessSession {
   }
 }
 
+const liveRunner = "/workspace/harness-live.mjs"
+const liveFollower = "/workspace/harness-follow.mjs"
+/** Matches the Sandbox's own default command limit. */
+const defaultHarnessTimeoutMs = 20 * 60_000
+/** A follower outlasts its runner's own time limit, so the runner reports a timeout itself. */
+const followerGraceMs = 60_000
+/** Pauses before each attempt to follow a live harness again after its stream is lost. The
+ * first is immediate, since a dropped stream usually leaves a healthy container; together they
+ * stay well inside the runner's orphan limit. */
+const reattachPausesMs = [0, 500, 1500]
+/** Bounds reattaching a run whose stream keeps dropping. */
+const maxReattaches = 8
+
 /** Capture potentially large tool events locally; only normalized outcomes leave the Sandbox. */
 export async function runPreparedHarness(
   sandbox: Pick<StationSandbox, "write" | "run" | "runStream">,
@@ -295,6 +310,7 @@ export async function runPreparedHarness(
   onActivity?: ActivityObserver
 ): Promise<CommandResult & Pick<HarnessExit, "stopped">> {
   const events = `/workspace/harness-${identity}.jsonl`
+  const activity = `/workspace/harness-${identity}-${crypto.randomUUID()}.activity.jsonl`
   const script = "/workspace/harness-events.mjs"
   await sandbox.write(
     script,
@@ -307,34 +323,97 @@ export async function runPreparedHarness(
   let exit: Omit<HarnessExit, "exitCode"> = {}
   // The live runner reports each step as it ends, so the run's later timeline omits them.
   let liveSteps = false
+  // A live runner may outlive a failed run; it is stopped before this returns.
+  let launched = false
   try {
     run = await perfSpan(
       "harness.process",
       { identity, harness: prepared.harness },
       async () => {
         if (onActivity && sandbox.runStream) {
-          const live = "/workspace/harness-live.mjs"
-          await sandbox.write(live, liveHarnessActivityScript)
+          const limitMs = timeoutMs ?? defaultHarnessTimeoutMs
+          await sandbox.write(liveRunner, liveHarnessActivityScript)
+          await sandbox.write(liveFollower, liveHarnessFollowerScript)
+          const deadline = Date.now() + limitMs + followerGraceMs
+          launched = true
+          // The runner starts detached, so a lost stream takes down only its follower.
           const stream = await sandbox.runStream(
             [
               "node",
-              live,
+              liveFollower,
+              "start",
+              activity,
+              "node",
+              liveRunner,
               events,
               prepared.harness,
               directory,
+              JSON.stringify({
+                timeoutMs: limitMs,
+                heartbeat: liveHarnessHeartbeat(activity),
+              }),
               ...prepared.command,
             ],
             directory,
             prepared.env,
-            timeoutMs
+            limitMs + followerGraceMs
           )
           liveSteps = true
+          let reattaches = 0
           const { exitCode, ...rest } = await consumeHarnessActivity(
             stream,
             onActivity,
-            (step) => perf("harness.step", { ...timeline, ...step, live: true })
+            (step) =>
+              perf("harness.step", { ...timeline, ...step, live: true }),
+            async (lines, lost) => {
+              for (const pauseMs of reattachPausesMs) {
+                if (
+                  reattaches >= maxReattaches ||
+                  Date.now() + pauseMs >= deadline
+                )
+                  break
+                reattaches++
+                if (pauseMs) await scheduler.wait(pauseMs)
+                const attempted = Date.now()
+                const fields = {
+                  ...timeline,
+                  identity,
+                  attempt: reattaches,
+                  lines,
+                  lost: errorDetail(lost),
+                }
+                try {
+                  const resumed = await sandbox.runStream!(
+                    ["node", liveFollower, "attach", activity, String(lines)],
+                    "/workspace",
+                    {},
+                    Math.max(deadline - Date.now(), 1000),
+                    { reattach: true }
+                  )
+                  perf("harness.reattach", {
+                    ...fields,
+                    ok: true,
+                    ms: Date.now() - attempted,
+                  })
+                  return resumed
+                } catch (error) {
+                  perf("harness.reattach", {
+                    ...fields,
+                    ok: false,
+                    error: errorKind(error),
+                    detail: errorDetail(error),
+                    ms: Date.now() - attempted,
+                  })
+                }
+              }
+              return null
+            }
           )
           exit = rest
+          if (rest.timedOut)
+            throw new Error(
+              `Harness timed out after ${Math.round(limitMs / 1000)} seconds`
+            )
           return { exitCode, stdout: "", stderr: "" }
         }
         const result = commandResultSchema.parse(
@@ -359,6 +438,10 @@ export async function runPreparedHarness(
       detail: errorDetail(error),
       ms: Date.now() - started,
     })
+    if (launched)
+      await sandbox
+        .run(["node", liveFollower, "stop", activity], "/workspace")
+        .catch(() => {})
     throw error
   }
   // TEMPORARY benchmark instrumentation: why a harness stopped early or exited abnormally.
@@ -417,27 +500,37 @@ export interface HarnessExit {
   /** Set when the live runner ended the harness: its work was done, it
    * reached a rejection limit, or a format loop needs a session correction. */
   stopped?: "proposal_accepted" | "proposal_rejected" | "proposal_stalled"
+  /** The live runner stopped the harness at its time limit. */
+  timedOut?: true
   /** For diagnosis only: the signal and end of stderr after an abnormal exit. */
   signal?: string
   stderrTail?: string
 }
+
+/** Follows the harness again after a lost stream, skipping the `lines` complete lines already
+ * handled; resolves to null when it cannot, and the run fails with what lost the stream. */
+export type HarnessReattach = (
+  lines: number,
+  lost: unknown
+) => Promise<ReadableStream<Uint8Array> | null>
 
 /** The pipe contains filtered observations, never the raw harness transcript. */
 export async function consumeHarnessActivity(
   stream: ReadableStream<Uint8Array>,
   observe: ActivityObserver,
   /** TEMPORARY benchmark instrumentation: one finished model step. */
-  onStep?: (step: Record<string, unknown>) => void
+  onStep?: (step: Record<string, unknown>) => void,
+  reattach?: HarnessReattach
 ): Promise<HarnessExit> {
-  const decoder = new TextDecoder()
-  let buffer = ""
   let exit: HarnessExit | undefined
+  let lines = 0
   const line = (text: string) => {
     let event: {
       type?: string
       activity?: unknown
       exitCode?: unknown
       stopped?: unknown
+      timedOut?: unknown
       signal?: unknown
       stderrTail?: unknown
     }
@@ -469,23 +562,60 @@ export async function consumeHarnessActivity(
         event.stopped === "proposal_stalled"
       )
         exit.stopped = event.stopped
+      if (event.timedOut === true) exit.timedOut = true
       if (typeof event.signal === "string")
         exit.signal = event.signal.slice(0, 20)
       if (typeof event.stderrTail === "string")
         exit.stderrTail = stderrTail(event.stderrTail)
     }
   }
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true })
-    let end: number
-    while ((end = buffer.indexOf("\n")) !== -1) {
-      line(buffer.slice(0, end))
-      buffer = buffer.slice(end + 1)
+  /** Reads one stream to its end, returning what lost it, if anything did. */
+  const read = async (
+    current: ReadableStream<Uint8Array>
+  ): Promise<{ lost: unknown } | undefined> => {
+    const decoder = new TextDecoder()
+    const reader = current.getReader()
+    let buffer = ""
+    try {
+      for (;;) {
+        let next: ReadableStreamReadResult<Uint8Array>
+        try {
+          next = await reader.read()
+        } catch (lost) {
+          // A partial line is discarded and read again in full after reattaching.
+          return { lost }
+        }
+        if (next.done) break
+        buffer += decoder.decode(next.value, { stream: true })
+        let end: number
+        while ((end = buffer.indexOf("\n")) !== -1) {
+          line(buffer.slice(0, end))
+          lines++
+          buffer = buffer.slice(end + 1)
+        }
+        if (buffer.length > 65536) throw new Error("Invalid activity stream")
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {})
+      throw error
     }
-    if (buffer.length > 65536) throw new Error("Invalid activity stream")
+    buffer += decoder.decode()
+    if (buffer) line(buffer)
+    return undefined
   }
-  buffer += decoder.decode()
-  if (buffer) line(buffer)
+  for (let current = stream; ;) {
+    const result = await read(current)
+    if (!result) break
+    // Losing the stream need not mean losing the harness, which runs on in the Sandbox.
+    const resumed = reattach ? await reattach(lines, result.lost) : null
+    if (resumed) {
+      current = resumed
+      continue
+    }
+    // The runner's exit line is its last, so a run whose outcome arrived is over.
+    if (exit) return exit
+    throw result.lost
+  }
   if (exit === undefined)
     throw new Error("Harness activity stream ended without an outcome")
   return exit

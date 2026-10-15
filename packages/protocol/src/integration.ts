@@ -178,6 +178,7 @@ export const integrationAttemptSchema = z.object({
       harness: z.string().optional(),
       provider: z.string().optional(),
       harnessVersion: z.string().optional(),
+      reasoning: z.string().optional(),
     })
     .nullable()
     .optional(),

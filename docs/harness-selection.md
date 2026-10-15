@@ -10,6 +10,20 @@ Settings → Agents configures Dispatcher, Conductor, Station Agent and Technici
 
 The protocol catalog owns native API model IDs, provider identities, compatible harnesses and explicit cost order. New choices are Claude Haiku 4.5, Claude Sonnet 5.5, GPT-6 Luna and GPT-6 Sol; the existing Workers AI choices remain. Harness changes preserve a compatible model, otherwise choose Haiku 4.5 for Claude Code or GPT-6 Luna for Codex. The form shows the replacement before saving and switches to Custom. Backend validation independently rejects incompatible combinations. Runtime failures never switch harness, model or provider.
 
+## Reasoning levels
+
+Each harness role also has a reasoning level: Low, Medium, High, Extra high or Max. The catalog lists the levels each model accepts, and Settings offers only those; a model without a reasoning control shows an empty, disabled selector with a note, and so does the Engineer. Roles reason at Medium unless someone chooses otherwise. A model without Medium uses its nearest accepted level, the more expensive on a tie, so GLM-5.3 and GLM-5.3 Flash (which accept low, high and max on Workers AI, and map any other level to max) default to High; before levels were configurable, every Workers AI call ran at low. Kimi K2.7 Code always reasons with no control, and Claude Haiku 4.5 rejects the effort parameter, so neither has levels.
+
+| Models | Levels |
+| --- | --- |
+| GLM-5.3, GLM-5.3 Flash | Low, High, Max |
+| Claude Haiku 5.5, Claude Sonnet 5.5, GPT-6 Luna, GPT-6 Sol | Low, Medium, High, Extra high, Max |
+| Kimi K2.7 Code, Claude Haiku 4.5, Clef, Clef Flash | None |
+
+Changing a level makes the form Custom, like changing a harness. Custom settings store chosen levels in `reasoning`; backend validation rejects a level the role's model does not accept. The resolved level is frozen with the rest of the role's execution configuration, so running work keeps it.
+
+Each adapter applies the level natively: Claude Code `--effort`, Codex `model_reasoning_effort`, and OpenCode's model options (`reasoningEffort` for OpenAI, `effort` for Anthropic) on the role model only. Workers AI levels are set by the outbound Worker, which owns `reasoning_effort` on every Workers AI call: the role model gets its frozen level, while a separate utility model's housekeeping, and configurations frozen before levels existed, stay Low. Direct Conductor calls with fake repositories use the same level. OpenCode's Anthropic and OpenAI options belong to the outstanding external-provider live verification.
+
 ## Gateway and provider setup
 
 All supported providers route through the configured AI Gateway. Anthropic and OpenAI calls are paid with [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/): prepaid Cloudflare credits, with provider pricing passed through. Terminus has no provider-key input, key storage, alias selector, billing switch or gateway-management API.
@@ -29,7 +43,7 @@ Migration `0014_execution_configs.sql` adds immutable D1 snapshots keyed by work
 - A repair dispatch freezes Technician and repair-review configuration, including Junction repairs.
 - A Junction launch freezes its Conductor configuration for input and feature acceptance reviews. Its incoming Trains freeze their own configuration in the launch transaction. An outgoing Train freezes its configuration when created at release.
 
-Modern provenance records harness identity, verified pinned version, provider and model. Station and Conductor checkpoints compare the full identity before reuse. Historical model-only provenance is not rewritten. Existing Workflow step names and model fields remain compatible with cached results; a legacy step without execution metadata means OpenCode. Active legacy work must be drained before new provider selections are enabled, because its original full configuration was never persisted.
+Modern provenance records harness identity, verified pinned version, provider and model, plus the reasoning level when the configuration was frozen with one. Station and Conductor checkpoints compare the full identity before reuse, so a different reasoning level is a different identity; a model-only checkpoint matches only provenance without a level. Historical model-only provenance, and provenance recorded before reasoning levels, is not rewritten. Existing Workflow step names and model fields remain compatible with cached results; a legacy step without execution metadata means OpenCode. Active legacy work must be drained before new provider selections are enabled, because its original full configuration was never persisted.
 
 ## Runtime controls
 

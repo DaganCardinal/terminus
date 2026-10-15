@@ -1,5 +1,4 @@
 import {
-  catalogModel,
   commandResultSchema,
   PerfPhases,
   type RoleExecution,
@@ -20,7 +19,7 @@ import {
   type ArtifactsRepositoryHost,
   type RepositoryAccess,
 } from "@terminus/artifacts"
-import { gatewayConfig } from "./execution-config"
+import { gatewayConfig, modelGrant } from "./execution-config"
 import { HarnessSession, loggedWorkspace } from "./harness"
 import { runInstalledChecks } from "./project-checks"
 import type { StationSandbox } from "./station-runner"
@@ -199,10 +198,7 @@ class SandboxConductorSession implements ConductorSession {
     await this.#sandbox.configure({
       repositories: [],
       allowModel: true,
-      model,
-      ...(catalogModel(model).provider === "workers-ai"
-        ? {}
-        : { provider: catalogModel(model).provider }),
+      ...modelGrant(model, this.#input.execution),
     })
     this.#phases.enter("harness start")
     const text = await this.#harness.start(

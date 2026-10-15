@@ -2114,16 +2114,19 @@ function sameExecutionInput(
   execution: string | AgentConfig
 ): boolean {
   if (saved === executionInput(input, execution)) return true
+  // Model-only identities predate reasoning levels, so they never match one.
   if (typeof execution === "string") {
     const stored = JSON.parse(saved) as { execution?: AgentConfig }
     return (
       stored.execution?.harness === "opencode@1.18.32" &&
       stored.execution.model === execution &&
+      !stored.execution.reasoning &&
       saved === executionInput(input, stored.execution)
     )
   }
   return (
     execution.harness === "opencode@1.18.32" &&
+    !execution.reasoning &&
     saved === executionInput(input, execution.model)
   )
 }

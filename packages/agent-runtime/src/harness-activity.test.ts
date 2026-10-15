@@ -1,5 +1,11 @@
-import { spawn } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { spawn, type ChildProcess } from "node:child_process"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -7,6 +13,8 @@ import { agentActivitySchema } from "@terminus/protocol"
 import {
   filteredHarnessActivity,
   liveHarnessActivityScript,
+  liveHarnessFollowerScript,
+  liveHarnessHeartbeat,
 } from "./harness-activity"
 import {
   maxRejectedFinalizations,
@@ -180,6 +188,7 @@ describe("filtered harness activity", () => {
       events,
       "opencode",
       temp,
+      "{}",
       process.execPath,
       "-e",
       command,
@@ -226,6 +235,7 @@ describe("filtered harness activity", () => {
       events,
       "opencode",
       temp,
+      "{}",
       process.execPath,
       "-e",
       command,
@@ -457,5 +467,185 @@ describe("filtered harness activity", () => {
 
     const killed = await runLive(`process.kill(process.pid, "SIGTERM")`)
     expect(killed.exit).toMatchObject({ exitCode: 143, signal: "SIGTERM" })
+  })
+})
+
+describe("live harness follower", () => {
+  const read = (path: string) =>
+    `console.log(${JSON.stringify(JSON.stringify(tool("read", { filePath: path })))})`
+  /** A harness that reads two files, then a third later, then answers. */
+  const slowHarness = `${read("src/a.ts")}; ${read("src/b.ts")}; setTimeout(() => { ${read("src/c.ts")}; console.log(JSON.stringify({ type: "text", part: { text: "PRIVATE FINAL" } })) }, 800)`
+  const endlessHarness = "setInterval(() => {}, 1000)"
+
+  function setup() {
+    const temp = mkdtempSync(join(tmpdir(), "terminus-live-follow-"))
+    const runner = join(temp, "live.mjs"),
+      follower = join(temp, "follow.mjs"),
+      events = join(temp, "events.jsonl"),
+      activity = join(temp, "run.activity.jsonl")
+    writeFileSync(runner, liveHarnessActivityScript)
+    writeFileSync(follower, liveHarnessFollowerScript)
+    const follow = (args: string[]) => {
+      const child = spawn(process.execPath, [follower, ...args])
+      let output = ""
+      child.stdout.on("data", (chunk) => {
+        output += chunk.toString()
+      })
+      const closed = new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject)
+        child.once("close", resolve)
+      })
+      return {
+        child,
+        closed,
+        /** Complete lines so far: a partial line is read again in full after reattaching. */
+        lines: () => output.split("\n").slice(0, -1),
+      }
+    }
+    const start = (harness: string, options: Record<string, unknown> = {}) =>
+      follow([
+        "start",
+        activity,
+        process.execPath,
+        runner,
+        events,
+        "opencode",
+        temp,
+        JSON.stringify({
+          heartbeat: liveHarnessHeartbeat(activity),
+          ...options,
+        }),
+        process.execPath,
+        "-e",
+        harness,
+      ])
+    const pid = () => Number(readFileSync(`${activity}.pid`, "utf8"))
+    const running = () => {
+      try {
+        process.kill(pid(), 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    const followers: ChildProcess[] = []
+    return {
+      temp,
+      events,
+      activity,
+      start: (...args: Parameters<typeof start>) => {
+        const started = start(...args)
+        followers.push(started.child)
+        return started
+      },
+      attach: (lines: number) => {
+        const attached = follow(["attach", activity, String(lines)])
+        followers.push(attached.child)
+        return attached
+      },
+      stop: () => follow(["stop", activity]).closed,
+      running,
+      cleanup: () => {
+        for (const child of followers) child.kill("SIGKILL")
+        if (existsSync(`${activity}.pid`) && running())
+          process.kill(-pid(), "SIGKILL")
+        rmSync(temp, { recursive: true, force: true })
+      },
+    }
+  }
+  async function until(condition: () => boolean, ms = 5000) {
+    const deadline = Date.now() + ms
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error("Timed out waiting")
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
+  const parsed = (lines: string[]) =>
+    lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+
+  it("keeps the harness running when its follower is lost, and a new follower continues after the lines already handled", async () => {
+    const f = setup()
+    try {
+      const first = f.start(slowHarness, { timeoutMs: 20_000 })
+      await until(() => first.lines().length >= 2)
+      // The stream is lost: the Sandbox aborts the streamed command.
+      first.child.kill("SIGKILL")
+      await first.closed
+      const handled = first.lines()
+      expect(f.running()).toBe(true)
+      const second = f.attach(handled.length)
+      expect(await second.closed).toBe(0)
+      const lines = [...handled, ...second.lines()]
+      // Exactly the runner's lines, each once.
+      expect(lines).toEqual(
+        readFileSync(f.activity, "utf8").split("\n").slice(0, -1)
+      )
+      expect(
+        parsed(lines)
+          .filter((line) => line.type === "activity")
+          .map((line) => (line.activity as { path: string }).path)
+      ).toEqual(["src/a.ts", "src/b.ts", "src/c.ts"])
+      expect(parsed(lines).at(-1)).toEqual({
+        type: "harness_exit",
+        exitCode: 0,
+      })
+      expect(lines.join("\n")).not.toContain("PRIVATE")
+      expect(readFileSync(f.events, "utf8")).toContain("PRIVATE FINAL")
+      expect(f.running()).toBe(false)
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  it("stops a harness no follower has reported for, since orchestration is gone", async () => {
+    const f = setup()
+    try {
+      const first = f.start(endlessHarness, { orphanMs: 1500 })
+      await until(() => existsSync(`${f.activity}.pid`))
+      // An attached follower keeps it running past the orphan limit.
+      await new Promise((resolve) => setTimeout(resolve, 2500))
+      expect(f.running()).toBe(true)
+      first.child.kill("SIGKILL")
+      await until(() => !f.running(), 8000)
+      expect(
+        parsed(readFileSync(f.activity, "utf8").split("\n").slice(0, -1)).at(-1)
+      ).toMatchObject({
+        type: "harness_exit",
+        exitCode: 143,
+        signal: "SIGTERM",
+      })
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  it("stops the harness at its own time limit and says so", async () => {
+    const f = setup()
+    try {
+      const run = f.start(endlessHarness, { timeoutMs: 300 })
+      expect(await run.closed).toBe(0)
+      expect(parsed(run.lines()).at(-1)).toMatchObject({
+        type: "harness_exit",
+        exitCode: 143,
+        signal: "SIGTERM",
+        timedOut: true,
+      })
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  it("stops the runner and its harness on request, ending its follower", async () => {
+    const f = setup()
+    try {
+      const run = f.start(endlessHarness)
+      await until(() => existsSync(`${f.activity}.pid`))
+      expect(f.running()).toBe(true)
+      await f.stop()
+      expect(await run.closed).toBe(0)
+      expect(f.running()).toBe(false)
+    } finally {
+      f.cleanup()
+    }
   })
 })

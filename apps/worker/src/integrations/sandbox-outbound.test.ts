@@ -617,6 +617,41 @@ describe("Sandbox outbound capabilities", () => {
     })
     expect(forwarded.headers.has("x-session-affinity")).toBe(false)
   })
+  it("sets the role model's frozen Workers AI reasoning level, keeping housekeeping low", async () => {
+    const send = vi.fn<typeof fetch>(async () => new Response("ok"))
+    const call = (model: string, reasoning_effort?: string) =>
+      new Request(
+        "https://api.cloudflare.com/client/v4/accounts/account/ai/v1/chat/completions",
+        {
+          method: "POST",
+          body: JSON.stringify({ model, reasoning_effort }),
+        }
+      )
+    const glm = {
+      ...network,
+      model: "@cf/zai-org/glm-5.3",
+      reasoning: "high" as const,
+    }
+    // The harness cannot raise its own level.
+    await outboundRequest(call("@cf/zai-org/glm-5.3", "max"), env, glm, send)
+    await outboundRequest(call(model), env, glm, send)
+    await outboundRequest(
+      call(model),
+      env,
+      { ...network, reasoning: "max" },
+      send
+    )
+    const sent = await Promise.all(
+      send.mock.calls.map(([forwarded]) =>
+        (forwarded as Request).json<{ reasoning_effort: string }>()
+      )
+    )
+    expect(sent.map((body) => body.reasoning_effort)).toEqual([
+      "high",
+      "low",
+      "max",
+    ])
+  })
   it("pins Workers AI requests to the Sandbox's own session affinity, ignoring the caller's", async () => {
     const send = vi.fn<typeof fetch>(async () => new Response("ok"))
     const request = (url: string, model: string) =>

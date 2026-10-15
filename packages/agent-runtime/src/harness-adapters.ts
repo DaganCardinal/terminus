@@ -8,6 +8,7 @@ import {
   roleExecutionSchema,
   type CommandResult,
   type Harness,
+  type ReasoningLevel,
   type RoleExecution,
 } from "@terminus/protocol"
 import {
@@ -23,7 +24,8 @@ import {
 
 export function executionConfig(
   model: string,
-  harness: Harness = "opencode"
+  harness: Harness = "opencode",
+  reasoning?: ReasoningLevel
 ): RoleExecution {
   const entry = catalogModel(model)
   return roleExecutionSchema.parse({
@@ -31,22 +33,29 @@ export function executionConfig(
     model,
     provider: entry.provider,
     version: HARNESS_CATALOG.find((item) => item.id === harness)!.version,
+    ...(reasoning ? { reasoning } : {}),
   })
 }
 
 export function agentProvenance(config: RoleExecution) {
-  const resolved = executionConfig(config.model, config.harness)
+  const resolved = executionConfig(
+    config.model,
+    config.harness,
+    config.reasoning
+  )
   if (config.version && config.version !== resolved.version)
     throw new Error(
       "The frozen harness version is not installed in this Sandbox image"
     )
   if (config.provider && config.provider !== resolved.provider)
     throw new Error("The frozen model provider differs from the catalog")
+  // Last, so provenance frozen without a level serializes as it always has.
   return {
     harness: harnessIdentity(resolved.harness),
     model: resolved.model,
     provider: resolved.provider!,
     harnessVersion: resolved.version!,
+    ...(resolved.reasoning ? { reasoning: resolved.reasoning } : {}),
   }
 }
 
@@ -98,7 +107,8 @@ export function harnessInvocation(
           gateway.accountId,
           gateway.gatewayId,
           config.model,
-          agent
+          agent,
+          config.reasoning
         ),
       },
     }
@@ -118,6 +128,7 @@ export function harnessInvocation(
         "--verbose",
         "--model",
         entry.apiModel,
+        ...(config.reasoning ? ["--effort", config.reasoning] : []),
         "--system-prompt-file",
         `${root}/system.txt`,
         "--settings",
@@ -181,6 +192,7 @@ export function harnessInvocation(
   const settings = {
     model_provider: "terminus",
     model: entry.apiModel,
+    ...(config.reasoning ? { model_reasoning_effort: config.reasoning } : {}),
     model_instructions_file: `${root}/system.txt`,
     developer_instructions: "",
     project_doc_max_bytes: 0,
@@ -264,6 +276,7 @@ export function harnessResult(
   }
   let summary: string | null = null
   let error: string | null = null
+  let pendingCodexError: string | null = null
   let sessionId: string | null = null
   let completed = false
   for (const line of output.stdout.split("\n")) {
@@ -287,11 +300,17 @@ export function harnessResult(
       const e = parsed.data
       if (e.type === "thread.started") sessionId = e.thread_id
       if (e.type === "item.completed") summary = e.item.text
-      if (e.type === "turn.completed") completed = true
+      if (e.type === "turn.completed") {
+        completed = true
+        // Codex also emits `error` for recoverable stream disconnects.
+        // Completion clears those diagnostics, but never a terminal turn.failed.
+        pendingCodexError = null
+      }
       if (e.type === "turn.failed") error = e.error.message
-      if (e.type === "error") error = e.message
+      if (e.type === "error") pendingCodexError = e.message
     }
   }
+  error ??= pendingCodexError
   if (output.outputTruncated)
     error ??= "Harness output exceeded the capture limit"
   if (output.exitCode !== 0)

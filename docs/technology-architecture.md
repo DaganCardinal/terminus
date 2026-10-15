@@ -110,7 +110,9 @@ Settings → Agents stores General choices in D1, with optional complete per-Net
 
 The default **Extra-light** preset uses GLM-5.3 Flash for Dispatcher, Station Agent, Conductor and Technician, and Clef Flash for Engineer decisions. Light uses GLM-5.3 for the Dispatcher; Medium uses GLM-5.3 for Dispatcher, Conductor and Technician, Kimi K2.7 Code for Station work, and Clef for decisions. The catalog is authoritative; implementation/testing authorization remains governed by [AGENTS.md](../AGENTS.md).
 
-`execution_configs` freezes model, provider, harness and version atomically when Trains, plans, repairs and Junctions are created. Revisions, corrections and recovery reuse the snapshot. Settings changes affect new work. Role Worker vars set to `fake` bypass model execution; they do not select production model IDs.
+Each harness role also has a reasoning level from the levels its catalog model accepts, Medium by default; see [Reasoning levels](harness-selection.md#reasoning-levels).
+
+`execution_configs` freezes model, provider, harness, version and reasoning level atomically when Trains, plans, repairs and Junctions are created. Revisions, corrections and recovery reuse the snapshot. Settings changes affect new work. Role Worker vars set to `fake` bypass model execution; they do not select production model IDs.
 
 `ALTERNATIVE_HARNESSES_ENABLED` gates native alternatives and external models. OpenCode's external providers additionally require `OPENCODE_EXTERNAL_PROVIDERS_ENABLED`; configuration support is distinct from live verification. See [Harness selection](harness-selection.md#release-verification) for the remaining release checks.
 

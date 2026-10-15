@@ -116,6 +116,8 @@ function fixture(
         }
       if (command[0] === "bash")
         return { ...ok, exitCode: options.harnessExit ?? 0 }
+      // The live follower's stop, after a failed run.
+      if (command[1] === "/workspace/harness-follow.mjs") return ok
       if (command[0] === "node" && command[1] === "-e")
         return {
           ...ok,
@@ -226,8 +228,12 @@ describe("Sandbox Dispatcher session", () => {
       expect.arrayContaining(["/workspace/harness-live.mjs", "opencode"]),
       expect.any(String),
       expect.any(Object),
-      15 * 60_000
+      // The runner's own 15 minutes, plus its follower's grace.
+      16 * 60_000
     )
+    expect(
+      JSON.parse(vi.mocked(f.sandbox.runStream).mock.calls[0]![0][9]!)
+    ).toMatchObject({ timeoutMs: 15 * 60_000 })
   })
   it("uses the live runner without an observer, so an accepted proposal ends the session", async () => {
     const f = fixture()
@@ -251,7 +257,7 @@ describe("Sandbox Dispatcher session", () => {
       expect.arrayContaining(["/workspace/harness-live.mjs"]),
       expect.any(String),
       expect.any(Object),
-      15 * 60_000
+      16 * 60_000
     )
     expect(f.calls.some(({ command }) => command[0] === "bash")).toBe(false)
   })
@@ -419,6 +425,123 @@ describe("Sandbox Dispatcher session", () => {
     ])
     expect(f.sandbox.installDependencies).toHaveBeenCalledOnce()
     expect(f.sandbox.runStream).toHaveBeenCalledTimes(2)
+  })
+
+  it("follows the same harness again after a lost Sandbox stream, without restarting its container", async () => {
+    const plan = await seedDispatchPlan()
+    const f = fixture()
+    const drafts = new DispatchDraftStore(env.DB)
+    const lines = (...values: unknown[]) =>
+      new TextEncoder().encode(
+        values.map((value) => `${JSON.stringify(value)}\n`).join("")
+      )
+    const read = (path: string) => ({
+      type: "activity",
+      activity: { kind: "tool", tool: "read", status: "completed", path },
+    })
+    f.sandbox.runStream = vi.fn(async (command: string[]) => {
+      if (command[2] === "start") {
+        let sent = false
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) controller.error(new Error("Network connection lost."))
+            else {
+              sent = true
+              controller.enqueue(lines(read("src/a.ts")))
+            }
+          },
+        })
+      }
+      // Meanwhile the harness kept running in the Sandbox and saved the plan.
+      await drafts.save(plan.id, { stations: {} }, completeDraft)
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            lines(read("src/b.ts"), {
+              type: "harness_exit",
+              exitCode: 0,
+              stopped: "proposal_accepted",
+            })
+          )
+          controller.close()
+        },
+      })
+    })
+    const paths: string[] = []
+    const result = await new HarnessDispatcher(model, f.sessions).plan({
+      ...planningInput(plan.id, true),
+      onActivity: (activity) => {
+        if (activity.kind === "tool" && activity.path) paths.push(activity.path)
+      },
+    })
+    expect(result.proposal.lines[0]!.stations).toHaveLength(2)
+    expect(paths).toEqual(["src/a.ts", "src/b.ts"])
+    const [start, attach] = vi.mocked(f.sandbox.runStream).mock.calls
+    const activity = start![0][3]!
+    expect(activity).toMatch(
+      /^\/workspace\/harness-session-1-[\w-]+\.activity\.jsonl$/
+    )
+    // The follower resumes after the one line handled, only in a running container.
+    expect(attach).toEqual([
+      ["node", "/workspace/harness-follow.mjs", "attach", activity, "1"],
+      "/workspace",
+      {},
+      expect.any(Number),
+      { reattach: true },
+    ])
+    expect(vi.mocked(f.sandbox.runStream).mock.calls).toHaveLength(2)
+    // One container and one preparation: nothing was closed, checked out or
+    // started again, and the running harness was never stopped.
+    expect(f.sandbox.installDependencies).toHaveBeenCalledOnce()
+    expect(f.sandbox.configure).toHaveBeenCalledTimes(2)
+    expect(f.order.slice(f.order.indexOf("configure:git"), -1)).not.toContain(
+      "close"
+    )
+    expect(f.order.at(-1)).toBe("close")
+    expect(f.calls.some(({ command }) => command[2] === "stop")).toBe(false)
+  })
+
+  it("fails with the lost stream, stopping its harness, when the container is gone", async () => {
+    const plan = await seedDispatchPlan()
+    const f = fixture()
+    f.sandbox.runStream = vi.fn(async (command: string[]) => {
+      if (command[2] !== "start")
+        throw new Error("Sandbox container is not running")
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new Error("Network connection lost."))
+        },
+      })
+    })
+    await expect(
+      new HarnessDispatcher(model, f.sessions).plan(planningInput(plan.id))
+    ).rejects.toThrow("Network connection lost.")
+    const attaches = vi
+      .mocked(f.sandbox.runStream)
+      .mock.calls.filter(([command]) => command[2] === "attach")
+    expect(attaches.length).toBeGreaterThan(1)
+    expect(attaches.every(([, , , , options]) => options?.reattach)).toBe(true)
+    expect(
+      f.calls.some(
+        ({ command }) =>
+          command[1] === "/workspace/harness-follow.mjs" &&
+          command[2] === "stop"
+      )
+    ).toBe(true)
+    expect(f.order.at(-1)).toBe("close")
+  })
+
+  it("closes a Sandbox an earlier attempt may have left running before granting any access", async () => {
+    const plan = await seedDispatchPlan()
+    const f = fixture()
+    await f.open(false, undefined, plan.id).prepare()
+    expect(f.order[0]).toBe("close")
+    expect(f.order.indexOf("close")).toBeLessThan(
+      f.order.indexOf("configure:git")
+    )
+    expect(
+      vi.mocked(f.repositories.access).mock.invocationCallOrder[0]
+    ).toBeGreaterThan(vi.mocked(f.sandbox.close).mock.invocationCallOrder[0]!)
   })
 
   it("recovers a finished persisted draft without contacting repositories or the Sandbox", async () => {

@@ -1,5 +1,9 @@
 import { Prose } from "@terminus/ui/components/prose"
-import type { NetworkSnapshot } from "@terminus/protocol"
+import type {
+  Issue,
+  NetworkSnapshot,
+  TechnicianRepair,
+} from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { ArrowUpRight, CirclePause, RotateCcw } from "lucide-react"
 import { lineBadge } from "@/map/layout"
@@ -9,20 +13,120 @@ import { CheckRow } from "./detail-parts"
 import { DispatcherMessage, LineBadge } from "./dispatcher-message"
 
 type Command = (run: () => Promise<unknown>) => Promise<void>
+type EngineerNotice = NonNullable<NetworkSnapshot["engineerNotices"]>[number]
+
+export const activeRepairStatuses: TechnicianRepair["state"]["status"][] = [
+  "requested",
+  "running",
+  "reviewing",
+  "ready",
+  "approved",
+]
+
+/** Conflicts found at Terminus and the Technician repairs that answer them,
+ * one Dispatcher message per conflict. */
+export function repairThreads(snapshot: NetworkSnapshot) {
+  const repairs = snapshot.repairs ?? []
+  const latest = new Map<string, TechnicianRepair>()
+  for (const repair of repairs) latest.set(repair.conflictId, repair)
+  const ids = new Set([
+    ...snapshot.conflicts.filter((c) => c.status === "open").map((c) => c.id),
+    ...[...latest.values()]
+      .filter((repair) => activeRepairStatuses.includes(repair.state.status))
+      .map((repair) => repair.conflictId),
+  ])
+  return [...ids].map((id) => {
+    const conflict = snapshot.conflicts.find((c) => c.id === id)
+    const repair = latest.get(id)
+    return {
+      conflict,
+      repair,
+      trainIds: conflict?.trainIds ?? (repair ? [repair.source.trainId] : []),
+    }
+  })
+}
 
 /** Trains whose Engineer flagged the Dispatcher, and Trains waiting in the
- * review yard for the user. Each is something the Dispatcher tells the user. */
+ * review yard for the user. Each is something the Dispatcher tells the user.
+ * A Train blocked by a conflict at Terminus is told through that conflict's
+ * card, so it has no card of its own here. */
 export function attentionTrains(snapshot: NetworkSnapshot) {
-  const blocked = snapshot.trains.filter(
+  const stopped = snapshot.trains.filter(
     ({ train }) => train.state.status === "blocked"
   )
+  const repairing = new Set(
+    repairThreads(snapshot).flatMap((thread) => thread.trainIds)
+  )
+  const blocked = stopped.filter(({ train }) => !repairing.has(train.id))
   const awaiting = snapshot.trains.filter(
     ({ train }) =>
       train.state.status === "held" &&
       train.state.reasons.some((r) => r.kind === "awaiting_user_approval")
   )
-  return { blocked, awaiting }
+  // A notice about a blocked Train, or about a Train waiting on one of its
+  // Stations, joins that blocked Train's card so one blockage is one card.
+  const blockerOf = (notice: EngineerNotice) =>
+    stopped.find(
+      ({ train }) =>
+        train.id === notice.trainId ||
+        notice.dependencyIds.some(
+          (id) =>
+            snapshot.stations.find((station) => station.id === id)?.lineId ===
+            train.lineId
+        )
+    )?.train.id
+  const notices = snapshot.engineerNotices ?? []
+  return {
+    blocked,
+    awaiting,
+    notices: notices.filter((notice) => !blockerOf(notice)),
+    absorbed: (trainId: string) =>
+      notices.filter((notice) => blockerOf(notice) === trainId),
+  }
 }
+
+/** Engineer notices folded into a blocked Train's card, each still
+ * acknowledgeable on its own. */
+export function AbsorbedNotices({
+  snapshot,
+  trainId,
+  pending,
+  command,
+}: {
+  snapshot: NetworkSnapshot
+  trainId: string
+  pending: boolean
+  command: Command
+}) {
+  const name = namesFor(snapshot)
+  return attentionTrains(snapshot)
+    .absorbed(trainId)
+    .map((notice) => (
+      <div key={notice.id}>
+        <p>
+          <strong>{name(notice.trainId)}</strong> · {notice.summary}
+        </p>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={pending}
+          onClick={() =>
+            void command(() =>
+              api.acknowledgeEngineerNotice(snapshot.network.id, notice.id)
+            )
+          }
+        >
+          Acknowledge
+        </Button>
+      </div>
+    ))
+}
+
+/** A Station stopped after its automatic revisions, used up or cut short by
+ * the Engineer. Retrying it grants a fresh allowance. */
+export const revisionsUsedUp = (issue: Issue) =>
+  issue.kind === "station_retries_exhausted" ||
+  issue.kind === "engineer_escalated"
 
 /** Possible conflicts the Dispatcher reported. Checks it is still running
  * stay silent; only a confirmed pair needs the user. */
@@ -197,13 +301,21 @@ export function AttentionMessages({
   openTrain: (lineId: string) => void
 }) {
   const name = namesFor(snapshot)
-  const { blocked, awaiting } = attentionTrains(snapshot)
+  const { blocked, awaiting, notices } = attentionTrains(snapshot)
   const badge = (lineId: string) => {
     const badge = lineBadge(snapshot, lineId)
     return badge ? (
       <LineBadge color={badge.color} number={badge.number} />
     ) : null
   }
+  const absorbedNotices = (trainId: string) => (
+    <AbsorbedNotices
+      snapshot={snapshot}
+      trainId={trainId}
+      pending={pending}
+      command={command}
+    />
+  )
   const open = (
     lineId: string,
     label = "Open Train",
@@ -215,59 +327,55 @@ export function AttentionMessages({
   )
   return (
     <>
-      {(snapshot.engineerNotices ?? [])
-        .filter(
-          (notice) => !blocked.some((view) => view.train.id === notice.trainId)
-        )
-        .map((notice) => {
-          const train = snapshot.trains.find(
-            (view) => view.train.id === notice.trainId
-          )?.train
-          if (!train) return null
-          return (
-            <DispatcherMessage
-              card
-              key={notice.id}
-              tone="attention"
-              meta={<>{badge(train.lineId)} Engineer concern</>}
-            >
-              <p>{notice.summary}</p>
-              {notice.dependencyIds.map((id) => {
-                const station = snapshot.stations.find(
-                  (station) => station.id === id
-                )
-                return station ? (
-                  <Button
-                    key={id}
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => openTrain(station.lineId)}
-                  >
-                    Open {station.name} <ArrowUpRight size={14} />
-                  </Button>
-                ) : null
-              })}
-              <div className="dmsg-actions">
-                {open(train.lineId)}
+      {notices.map((notice) => {
+        const train = snapshot.trains.find(
+          (view) => view.train.id === notice.trainId
+        )?.train
+        if (!train) return null
+        return (
+          <DispatcherMessage
+            card
+            key={notice.id}
+            tone="attention"
+            meta={<>{badge(train.lineId)} Engineer concern</>}
+          >
+            <p>{notice.summary}</p>
+            {notice.dependencyIds.map((id) => {
+              const station = snapshot.stations.find(
+                (station) => station.id === id
+              )
+              return station ? (
                 <Button
+                  key={id}
                   size="sm"
                   variant="ghost"
-                  disabled={pending}
-                  onClick={() =>
-                    void command(() =>
-                      api.acknowledgeEngineerNotice(
-                        snapshot.network.id,
-                        notice.id
-                      )
-                    )
-                  }
+                  onClick={() => openTrain(station.lineId)}
                 >
-                  Acknowledge
+                  Open {station.name} <ArrowUpRight size={14} />
                 </Button>
-              </div>
-            </DispatcherMessage>
-          )
-        })}
+              ) : null
+            })}
+            <div className="dmsg-actions">
+              {open(train.lineId)}
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={() =>
+                  void command(() =>
+                    api.acknowledgeEngineerNotice(
+                      snapshot.network.id,
+                      notice.id
+                    )
+                  )
+                }
+              >
+                Acknowledge
+              </Button>
+            </div>
+          </DispatcherMessage>
+        )
+      })}
       {(snapshot.junctions ?? [])
         .filter(
           (j) => j.state.status === "ready" || j.state.status === "blocked"
@@ -303,11 +411,7 @@ export function AttentionMessages({
         ))}
       {blocked.map(({ train }) => {
         if (train.state.status !== "blocked") return null
-        const exhausted = train.state.issues.filter(
-          (issue) =>
-            issue.kind === "station_retries_exhausted" ||
-            issue.kind === "engineer_escalated"
-        )
+        const exhausted = train.state.issues.filter(revisionsUsedUp)
         const early = exhausted.some(
           (issue) => issue.kind === "engineer_escalated"
         )
@@ -326,30 +430,7 @@ export function AttentionMessages({
               {train.state.issues.map((issue, index) => (
                 <Prose key={index} className="dmsg-quote" text={issue.detail} />
               ))}
-              {(snapshot.engineerNotices ?? [])
-                .filter((notice) => notice.trainId === train.id)
-                .map((notice) => (
-                  <div key={notice.id}>
-                    <p>
-                      <strong>{name(train.id)}</strong> · {notice.summary}
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={pending}
-                      onClick={() =>
-                        void command(() =>
-                          api.acknowledgeEngineerNotice(
-                            snapshot.network.id,
-                            notice.id
-                          )
-                        )
-                      }
-                    >
-                      Acknowledge
-                    </Button>
-                  </div>
-                ))}
+              {absorbedNotices(train.id)}
               <div className="dmsg-actions">{open(train.lineId)}</div>
             </DispatcherMessage>
           )
@@ -400,6 +481,7 @@ export function AttentionMessages({
                 />
               </details>
             )}
+            {absorbedNotices(train.id)}
             <p className="dmsg-hint">
               A retry starts a fresh workspace with a new revision allowance.
             </p>

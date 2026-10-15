@@ -1,4 +1,4 @@
-import { catalogModel, type RoleExecution } from "@terminus/protocol"
+import type { RoleExecution } from "@terminus/protocol"
 import {
   harnessResult,
   executionConfig,
@@ -16,7 +16,7 @@ import {
 } from "@terminus/artifacts"
 import type { TechnicianRepair, RepairCandidate } from "@terminus/domain"
 import { commandResultSchema } from "@terminus/protocol"
-import { gatewayConfig } from "./execution-config"
+import { gatewayConfig, modelGrant } from "./execution-config"
 import { prepareHarness, runPreparedHarness } from "./harness"
 import type { StationSandbox } from "./station-runner"
 
@@ -71,10 +71,7 @@ export class SandboxTechnicianRunner implements TechnicianRunner {
           scope: access.scope,
         })),
         allowModel: true,
-        model: this.config.model,
-        ...(catalogModel(this.config.model).provider === "workers-ai"
-          ? {}
-          : { provider: catalogModel(this.config.model).provider }),
+        ...modelGrant(this.config.model, this.execution),
       })
       const workspace: GitWorkspace = {
         run: async (command, cwd, env) =>

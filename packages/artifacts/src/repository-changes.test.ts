@@ -3,6 +3,7 @@ import { applyPatch, formatPatch } from "diff"
 import {
   readCommittedChanges,
   readCommittedChangeFile,
+  readCommittedPatch,
 } from "./repository-changes"
 import type { CommittedObjects, CommittedTreeEntry } from "./repository-browse"
 import { repositoryChangeFileSchema } from "@terminus/protocol"
@@ -232,5 +233,50 @@ describe("on-demand committed changes", () => {
     await expect(readCommittedChanges(store, "main", head)).rejects.toThrow(
       "full"
     )
+  })
+})
+
+describe("committed patches", () => {
+  it("leaves comparisons beyond the Worker's reads to Git", async () => {
+    const huge = objects({
+      old: [],
+      new: Array.from({ length: 5001 }, (_, i) =>
+        blob(`file-${i}`, `hash-${i}`)
+      ),
+    })
+    expect(await readCommittedPatch(huge, base, head, 200_000)).toBeNull()
+    expect(huge.blob).not.toHaveBeenCalled()
+    const large = objects(
+      { old: [], new: [blob("large.txt", "large")] },
+      { large: "x\n".repeat(500_001) }
+    )
+    expect(await readCommittedPatch(large, base, head, 200_000)).toBeNull()
+  })
+
+  it("decides binary files as Git does, from a NUL within the first 8000 bytes", async () => {
+    const late = new Uint8Array(9000).fill(0x61)
+    late[8500] = 0
+    const store = objects(
+      { old: [], new: [blob("early.bin", "early"), blob("late.txt", "late")] },
+      { early: new Uint8Array([0x89, 0x50, 0, 1]), late }
+    )
+    const patch = await readCommittedPatch(store, base, head, 200_000)
+    expect(patch?.changedPaths).toEqual(["early.bin", "late.txt"])
+    expect(patch?.diff).toContain(
+      "Binary files /dev/null and b/early.bin differ\n"
+    )
+    expect(patch?.diff).not.toContain("b/late.txt differ")
+    expect(patch?.diff).toContain("+++ b/late.txt\n@@ -0,0 +1 @@\n+aaa")
+  })
+
+  it("stops reading blobs once the patch exceeds its limit", async () => {
+    const files = ["a", "b", "c", "d"]
+    const store = objects(
+      { old: [], new: files.map((name) => blob(name, name)) },
+      Object.fromEntries(files.map((name) => [name, `${name}\n`.repeat(20)]))
+    )
+    const patch = await readCommittedPatch(store, base, head, 10)
+    expect(patch!.diff.length).toBeGreaterThan(10)
+    expect(store.blob).toHaveBeenCalledTimes(2)
   })
 })

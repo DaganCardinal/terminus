@@ -1564,6 +1564,15 @@
 .settings-roles input:invalid {
   border-color: var(--danger-ink);
 }
+.settings-agents th:first-child {
+  width: 29%;
+}
+.settings-agents thead th:nth-child(2) {
+  width: 19%;
+}
+.settings-agents thead th:nth-child(4) {
+  width: 18%;
+}
 .settings-limits th:first-child {
   width: 52%;
 }

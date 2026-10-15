@@ -6,6 +6,7 @@ import {
   harnessEventSchema,
   perf,
   type CommandResult,
+  type ReasoningLevel,
 } from "@terminus/protocol"
 import type { StationRunInput } from "./roles"
 import { stationAgentPrompt } from "./station-agent-prompt"
@@ -84,7 +85,8 @@ function terminusProvider(
   accountId: string,
   gatewayId: string,
   model: string,
-  output: number
+  output: number,
+  reasoning?: ReasoningLevel
 ) {
   const entry = catalogModel(model)
   const native = entry.provider !== "workers-ai"
@@ -102,6 +104,17 @@ function terminusProvider(
         }),
     limit: { context: 131072, output },
   })
+  // Only the role model reasons at the role's level; Workers AI levels are
+  // applied by the outbound handler instead.
+  const options =
+    !reasoning || !native
+      ? {}
+      : {
+          options:
+            entry.provider === "openai"
+              ? { reasoningEffort: reasoning }
+              : { effort: reasoning },
+        }
   return {
     // Terminus owns candidate history. OpenCode's optional snapshot subprocesses
     // can hang in the Sandbox, preventing the harness from exiting.
@@ -127,7 +140,7 @@ function terminusProvider(
         },
         // When the role model is its own utility model, its role limit wins.
         models: {
-          [model]: definition(model, output),
+          [model]: { ...definition(model, output), ...options },
           ...(utility === model ? {} : { [utility]: definition(utility) }),
         },
       },
@@ -172,14 +185,16 @@ export function opencodeConfig(
   accountId: string,
   gatewayId: string,
   model: string,
-  agent: HarnessAgent
+  agent: HarnessAgent,
+  reasoning?: ReasoningLevel
 ): string {
   return JSON.stringify({
     ...terminusProvider(
       accountId,
       gatewayId,
       model,
-      agent.capability === "planning" ? dispatcherOutputTokens : outputTokens
+      agent.capability === "planning" ? dispatcherOutputTokens : outputTokens,
+      reasoning
     ),
     ...(agent.capability === "planning"
       ? {

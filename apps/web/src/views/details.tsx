@@ -1,5 +1,5 @@
 import { Prose } from "@terminus/ui/components/prose"
-import type { Line, NetworkSnapshot, Station } from "@terminus/protocol"
+import type { Line, NetworkSnapshot, Station, Train } from "@terminus/protocol"
 import type { ReactNode } from "react"
 import { useId, useState } from "react"
 import {
@@ -12,6 +12,7 @@ import {
   OctagonAlert,
   RotateCcw,
   TrainFront,
+  Wrench,
 } from "lucide-react"
 import { Button } from "@terminus/ui/components/button"
 import { StatusBadge } from "@/components/status-badge"
@@ -27,7 +28,12 @@ import {
   manifestFacts,
   shortCommit,
 } from "./detail-parts"
-import { describeLocation, namesFor, trainDisplayStatus } from "./describe"
+import {
+  describeLocation,
+  modelWithReasoning,
+  namesFor,
+  trainDisplayStatus,
+} from "./describe"
 import { JunctionDetails } from "./junctions"
 import { NamedText } from "./named-text"
 import { UnloadModeSwitch } from "./unload-mode-switch"
@@ -35,6 +41,8 @@ import { Crossings } from "./crossings"
 import { TrainPreviewButton } from "./train-preview-button"
 import { TrainCars } from "./train-cars"
 import { Changes } from "./changes"
+import { revisionsUsedUp } from "./dispatcher-alerts"
+import { repairProgress } from "./technician-repairs"
 
 type Run = (command: () => Promise<unknown>) => Promise<void>
 
@@ -156,7 +164,7 @@ export function StationDetails({
       ? [
           {
             label: "Station Agent",
-            value: `${agent.model} via ${agent.harness}`,
+            value: `${modelWithReasoning(agent)} via ${agent.harness}`,
           },
         ]
       : []),
@@ -349,6 +357,76 @@ export function StationDetails({
   )
 }
 
+/** The way out of a block depends on its cause. A conflict at Terminus needs a
+ * Technician, a Station out of revisions needs a fresh run, and anything else
+ * is cleared once it has been dealt with. */
+export function BlockedAction({
+  snapshot,
+  train,
+  pending,
+  run,
+}: {
+  snapshot: NetworkSnapshot
+  train: Train
+  pending: boolean
+  run: Run
+}) {
+  if (train.state.status !== "blocked") return null
+  const conflict = snapshot.conflicts.find(
+    (c) => c.status === "open" && c.trainIds.includes(train.id)
+  )
+  if (conflict) {
+    const repair = snapshot.repairs?.findLast(
+      (r) => r.conflictId === conflict.id
+    )
+    if (repairProgress(snapshot, repair).working)
+      return (
+        <p>
+          {repair?.state.status === "ready"
+            ? "The Technician’s repair passed review. Approve it in the Dispatcher to integrate."
+            : "A Technician is repairing the conflict. Follow it in the Dispatcher."}
+        </p>
+      )
+    return (
+      <Button
+        className="callout-action"
+        size="sm"
+        disabled={pending}
+        onClick={() =>
+          void run(() =>
+            api.dispatchTechnician(snapshot.network.id, conflict.id)
+          )
+        }
+      >
+        <Wrench size={14} />
+        {repair ? "Dispatch a fresh Technician" : "Dispatch Technician"}
+      </Button>
+    )
+  }
+  if (train.state.issues.some(revisionsUsedUp))
+    return (
+      <Button
+        className="callout-action"
+        size="sm"
+        disabled={pending}
+        onClick={() => void run(() => api.clearTrain(train.id))}
+      >
+        <RotateCcw size={14} /> Retry Station
+      </Button>
+    )
+  return (
+    <Button
+      className="callout-action"
+      size="sm"
+      variant="outline"
+      disabled={pending}
+      onClick={() => void run(() => api.clearTrain(train.id))}
+    >
+      Clear block
+    </Button>
+  )
+}
+
 export function TrainDetails({
   snapshot,
   line,
@@ -496,15 +574,12 @@ export function TrainDetails({
                 title="Blocked"
               >
                 <List items={train.state.issues.map((issue) => issue.detail)} />
-                <Button
-                  className="callout-action"
-                  size="sm"
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() => run(() => api.clearTrain(train.id))}
-                >
-                  Clear block
-                </Button>
+                <BlockedAction
+                  snapshot={snapshot}
+                  train={train}
+                  pending={pending}
+                  run={run}
+                />
               </Callout>
             )}
             {train.state.status === "held" && (

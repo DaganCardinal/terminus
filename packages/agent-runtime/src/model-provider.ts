@@ -1,4 +1,4 @@
-import { chatCompletionSchema } from "@terminus/protocol"
+import { chatCompletionSchema, type ReasoningLevel } from "@terminus/protocol"
 
 export interface ModelRequest {
   role: "conductor"
@@ -27,6 +27,7 @@ export class GatewayModelProvider implements ModelProvider {
     gatewayId: string
     token: string
     model: string
+    reasoning?: ReasoningLevel
   }
   private readonly transport: ModelTransport
   constructor(
@@ -35,6 +36,8 @@ export class GatewayModelProvider implements ModelProvider {
       gatewayId: string
       token: string
       model: string
+      /** The role's frozen level; configurations frozen without one stay low. */
+      reasoning?: ReasoningLevel
     },
     transport: ModelTransport
   ) {
@@ -59,7 +62,7 @@ export class GatewayModelProvider implements ModelProvider {
             { role: "user", content: JSON.stringify(request.input) },
           ],
           response_format: { type: "json_object" },
-          reasoning_effort: "low",
+          reasoning_effort: this.config.reasoning ?? "low",
           max_completion_tokens: 8192,
         }),
         timeoutMs: 120_000,

@@ -22,8 +22,10 @@ import { GitCapacityError, type RepositoryPromoter } from "./fast-forward"
 import {
   readCommittedChanges,
   readCommittedChangeFile,
+  readCommittedPatch,
 } from "./repository-changes"
 import { ArtifactsApiError } from "./artifacts-rest"
+import { secretFilePatches, withoutSecrets } from "./secret-diff"
 import {
   git,
   remoteHead,
@@ -244,6 +246,22 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
   }
 
   async inspectIntegration(input: IntegrationMergeInput, candidate: RepoRef) {
+    const { namespace, name } = parseRepoId(candidate.repoId)
+    const objects = this.artifacts.namespace(namespace).objects?.(name)
+    if (objects) {
+      const inspected = await readCommittedPatch(
+        objects,
+        input.terminusCommit,
+        candidate.headCommit,
+        MAX_REVIEW_DIFF
+      )
+      if (inspected) {
+        if (inspected.diff.length > MAX_REVIEW_DIFF)
+          throw new Error("Crossing diff exceeds review limit")
+        return inspected
+      }
+      perf("artifacts.inspect_workspace_fallback", { repo: name })
+    }
     return this.withWorkspace(
       [{ repoId: candidate.repoId, scope: "read" }],
       async (workspace, [access]) => {
@@ -256,17 +274,26 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
           access.remote,
           directory,
         ])
-        const diff = await git(
-          workspace,
-          [
-            "diff",
-            "--binary",
-            "--full-index",
+        const diff =
+          (await git(
+            workspace,
+            [
+              "diff",
+              "--binary",
+              "--full-index",
+              input.terminusCommit,
+              candidate.headCommit,
+              "--",
+              ...withoutSecrets,
+            ],
+            directory
+          )) +
+          (await secretFilePatches(
+            workspace,
             input.terminusCommit,
             candidate.headCommit,
-          ],
-          directory
-        )
+            directory
+          ))
         const changedPaths = (
           await git(
             workspace,
@@ -282,7 +309,7 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
         )
           .split("\0")
           .filter(Boolean)
-        if (diff.length > 200000)
+        if (diff.length > MAX_REVIEW_DIFF)
           throw new Error("Crossing diff exceeds review limit")
         return { diff, changedPaths }
       }
@@ -320,6 +347,13 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
       await repo.revokeToken(initialToken)
     }
 
+    // An import only needs its head, which the Worker can read directly.
+    if (input.sourceUrl && this.readHead) {
+      const head = await this.currentHead(id)
+      if (!head)
+        throw new Error("The imported project has no default-branch commit")
+      return { repoId: id, headCommit: head }
+    }
     return this.withWorkspace(
       [{ repoId: id, scope: input.sourceUrl ? "read" : "write" }],
       async (workspace, [access]) => {
@@ -844,6 +878,9 @@ export class ArtifactsRepositoryHost implements RepositoryHost {
     }
   }
 }
+
+/** The longest integration diff a Conductor reviews. */
+const MAX_REVIEW_DIFF = 200_000
 
 /** Retries of a transient denial before it is treated as real. */
 const transientDenialRetries = 10
