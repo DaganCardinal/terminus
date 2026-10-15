@@ -9,6 +9,10 @@ import {
   roleHarnesses,
   roleExecutions,
   modelForHarness,
+  compatibleModel,
+  compatibleModels,
+  REASONING_LEVELS,
+  reasoningLevels,
   roleExecutionSchema,
   utilityModel,
   reasoningFor,
@@ -71,6 +75,63 @@ describe("model settings", () => {
     )
   })
 
+  it("offers Opus 5.5 with every reasoning level under Claude Code only", () => {
+    expect(compatibleModels("claude-code").map((entry) => entry.id)).toEqual([
+      "anthropic/claude-haiku-5-5",
+      "anthropic/claude-haiku-4-5-20251001",
+      "anthropic/claude-sonnet-5-5",
+      "anthropic/claude-opus-5-5",
+    ])
+    expect(reasoningLevels("anthropic/claude-opus-5-5")).toEqual(
+      REASONING_LEVELS
+    )
+    expect(compatibleModel("opencode", "anthropic/claude-opus-5-5")).toBe(false)
+  })
+
+  it("replaces Sol with GPT-6.1 for Codex settings while preserving frozen work", () => {
+    expect(compatibleModels("codex").map((entry) => entry.id)).toEqual([
+      "openai/gpt-6-luna",
+      "openai/gpt-6.1-sol",
+    ])
+    expect(modelForHarness("codex", "openai/gpt-6-sol")).toBe(
+      "openai/gpt-6.1-sol"
+    )
+    expect(compatibleModels("opencode").map((entry) => entry.id)).toContain(
+      "openai/gpt-6-sol"
+    )
+    expect(compatibleModels("opencode").map((entry) => entry.id)).not.toContain(
+      "openai/gpt-6.1-sol"
+    )
+    const settings = modelSettingsSchema.parse({
+      preset: "custom",
+      models: {
+        ...custom,
+        dispatcher: "openai/gpt-6-sol",
+        conductor: "openai/gpt-6-sol",
+      },
+      harnesses: { ...DEFAULT_ROLE_HARNESSES, dispatcher: "codex" },
+      reasoning: { dispatcher: "xhigh" },
+    })
+    expect(roleModels(settings)).toMatchObject({
+      dispatcher: "openai/gpt-6.1-sol",
+      conductor: "openai/gpt-6-sol",
+    })
+    expect(roleExecutions(settings).dispatcher).toMatchObject({
+      harness: "codex",
+      model: "openai/gpt-6.1-sol",
+      reasoning: "xhigh",
+    })
+    const frozen = {
+      harness: "codex",
+      model: "openai/gpt-6-sol",
+      version: "0.156.1",
+      provider: "openai",
+      reasoning: "high",
+    }
+    expect(roleExecutionSchema.parse(frozen)).toEqual(frozen)
+    expect(utilityModel("openai/gpt-6.1-sol")).toBe("openai/gpt-6-luna")
+  })
+
   it("validates per-role harness compatibility at the settings boundary", () => {
     const settings = {
       preset: "custom",
@@ -98,13 +159,13 @@ describe("model settings", () => {
         .success
     ).toBe(false)
   })
-  it("defaults every network to Extra-light", () => {
+  it("defaults every network to Medium", () => {
     expect(roleModels(DEFAULT_MODEL_SETTINGS)).toEqual({
-      dispatcher: "@cf/zai-org/glm-5.3-flash",
-      conductor: "@cf/zai-org/glm-5.3-flash",
-      stationAgent: "@cf/zai-org/glm-5.3-flash",
-      technician: "@cf/zai-org/glm-5.3-flash",
-      engineer: "@cf/cloudflare/clef-flash",
+      dispatcher: "@cf/zai-org/glm-5.3",
+      conductor: "@cf/zai-org/glm-5.3",
+      stationAgent: "@cf/moonshotai/kimi-k2.7-code",
+      technician: "@cf/zai-org/glm-5.3",
+      engineer: "@cf/cloudflare/clef",
     })
   })
 

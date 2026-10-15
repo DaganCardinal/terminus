@@ -678,7 +678,7 @@ describe("model settings", () => {
   it("saves General settings and lets a network override or follow them", async () => {
     const network = await createNetwork()
     expect(await (await api("/settings/models")).json()).toMatchObject({
-      settings: { preset: "extra_light" },
+      settings: { preset: "medium" },
     })
 
     expect((await put("/settings/models", { preset: "light" })).status).toBe(
@@ -711,7 +711,7 @@ describe("model settings", () => {
       await put(path, { override: null })
     ).json()
     expect(cleared.override).toBeNull()
-    await put("/settings/models", { preset: "extra_light" })
+    await put("/settings/models", { preset: "medium" })
   })
 
   it("refuses an Engineer that is not Clef, unknown presets, and unknown networks", async () => {
@@ -759,9 +759,9 @@ describe("sandbox limits", () => {
     const network = await createNetwork()
     expect(await (await api("/settings/sandboxes")).json()).toEqual({
       limits: {
-        agent: 10,
-        agentless: 10,
-        sizes: { agent: "standard-2", agentless: "standard-2" },
+        agent: 25,
+        agentless: 20,
+        sizes: { agent: "standard-3", agentless: "standard-2" },
       },
       updatedAt: null,
     })
@@ -791,7 +791,7 @@ describe("sandbox limits", () => {
       override: null,
       general,
     })
-    await put("/settings/sandboxes", { agent: 10, agentless: 10 })
+    await put("/settings/sandboxes", { agent: 25, agentless: 20 })
   })
 
   it("refuses limits outside 1 to 100, partial limits, unknown sizes, and unknown networks", async () => {

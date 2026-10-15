@@ -49,6 +49,7 @@ describe("immutable execution settings", () => {
     ["opencode", "@cf/zai-org/glm-5.3-flash"],
     ["claude-code", "anthropic/claude-haiku-4-5-20251001"],
     ["codex", "openai/gpt-6-luna"],
+    ["codex", "openai/gpt-6.1-sol"],
   ] as const)(
     "keeps %s for every Station and revision and runs fully offline",
     async (harness, model) => {

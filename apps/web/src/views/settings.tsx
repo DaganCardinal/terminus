@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_SETTINGS,
   MODEL_CATALOG,
   HARNESS_CATALOG,
   roleHarnesses,
@@ -563,7 +564,7 @@ function ModelSettingsForm({
               aside={
                 preset.id === "heavy" ? (
                   <span className="settings-tag">Coming soon</span>
-                ) : preset.id === "extra_light" ? (
+                ) : preset.id === DEFAULT_MODEL_SETTINGS.preset ? (
                   <span className="settings-tag">Default</span>
                 ) : null
               }

@@ -158,12 +158,12 @@ describe("role harness adapters", () => {
     expect(
       invoke("anthropic/claude-sonnet-5-5", "claude-code").command
     ).not.toContain("--effort")
-    expect(invoke("openai/gpt-6-sol", "codex", "high").command).toContain(
+    expect(invoke("openai/gpt-6.1-sol", "codex", "high").command).toContain(
       'model_reasoning_effort="high"'
     )
-    expect(invoke("openai/gpt-6-sol", "codex").command.join(" ")).not.toContain(
-      "model_reasoning_effort"
-    )
+    expect(
+      invoke("openai/gpt-6.1-sol", "codex").command.join(" ")
+    ).not.toContain("model_reasoning_effort")
     const models = (model: string, reasoning?: "high") =>
       JSON.parse(Object.values(invoke(model, "opencode", reasoning).files)[0]!)
         .provider.terminus.models
@@ -185,6 +185,25 @@ describe("role harness adapters", () => {
       executionConfig("@cf/moonshotai/kimi-k2.7-code", "opencode", "high")
     ).toThrow()
   })
+
+  it.each(["gpt-6.1-sol", "gpt-6-sol"])(
+    "passes the exact frozen %s model to Codex and its provenance",
+    (model) => {
+      const execution = executionConfig(`openai/${model}`, "codex", "high")
+      const invocation = harnessInvocation(
+        execution,
+        roles[3]!,
+        gateway,
+        "/workspace/repo",
+        "x"
+      )
+      expect(invocation.command).toContain(`model="${model}"`)
+      expect(agentProvenance(execution)).toMatchObject({
+        model: `openai/${model}`,
+        reasoning: "high",
+      })
+    }
+  )
 
   it("records the frozen reasoning level in agent provenance", () => {
     const model = "@cf/zai-org/glm-5.3-flash"

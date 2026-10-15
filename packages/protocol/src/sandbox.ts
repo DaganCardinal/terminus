@@ -45,7 +45,7 @@ export type SandboxSize = z.infer<typeof sandboxSizeSchema>
 export type SandboxKind = "agent" | "agentless"
 
 export const DEFAULT_SANDBOX_SIZES: Record<SandboxKind, SandboxSize> = {
-  agent: "standard-2",
+  agent: "standard-3",
   agentless: "standard-2",
 }
 
@@ -64,8 +64,8 @@ export type SandboxLimits = z.infer<typeof sandboxLimitsSchema>
 
 /** What every network uses until someone chooses otherwise. */
 export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
-  agent: 10,
-  agentless: 10,
+  agent: 25,
+  agentless: 20,
   sizes: DEFAULT_SANDBOX_SIZES,
 }
 

@@ -151,6 +151,17 @@ export const MODEL_CATALOG = [
     reasoning: REASONING_LEVELS,
   },
   {
+    id: "anthropic/claude-opus-5-5",
+    apiModel: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    maker: "Anthropic",
+    kind: "text",
+    provider: "anthropic",
+    harnesses: ["claude-code"],
+    costOrder: 8,
+    reasoning: REASONING_LEVELS,
+  },
+  {
     id: "openai/gpt-6-luna",
     apiModel: "gpt-6-luna",
     name: "GPT-6 Luna",
@@ -169,6 +180,20 @@ export const MODEL_CATALOG = [
     kind: "text",
     provider: "openai",
     harnesses: ["opencode", "codex"],
+    costOrder: 7,
+    reasoning: REASONING_LEVELS,
+    // Keep the old model executable for frozen Codex work, while settings
+    // and the picker select its replacement for new work.
+    replacedBy: { codex: "openai/gpt-6.1-sol" },
+  },
+  {
+    id: "openai/gpt-6.1-sol",
+    apiModel: "gpt-6.1-sol",
+    name: "GPT-6.1 Sol",
+    maker: "OpenAI",
+    kind: "text",
+    provider: "openai",
+    harnesses: ["codex"],
     costOrder: 7,
     reasoning: REASONING_LEVELS,
   },
@@ -201,15 +226,29 @@ export function reasoningFor(
         Math.abs(rank(b) - rank(requested)) || rank(b) - rank(a)
   )[0]
 }
+/** A catalog replacement applies to settings, never to frozen execution. */
+function currentHarnessModel(harness: Harness, current: string): string {
+  const entry = MODEL_CATALOG.find((model) => model.id === current)
+  const replacements: Partial<Record<Harness, string>> =
+    entry && "replacedBy" in entry ? entry.replacedBy : {}
+  return replacements[harness] ?? current
+}
 export function compatibleModels(harness: Harness) {
   return MODEL_CATALOG.filter(
     (model) =>
       model.kind === "text" &&
-      (model.harnesses as readonly string[]).includes(harness)
+      (model.harnesses as readonly string[]).includes(harness) &&
+      currentHarnessModel(harness, model.id) === model.id
   ).sort((a, b) => a.costOrder - b.costOrder)
 }
+/** Includes superseded models so historical execution configurations remain valid. */
 export function compatibleModel(harness: Harness, model: string): boolean {
-  return compatibleModels(harness).some((entry) => entry.id === model)
+  return MODEL_CATALOG.some(
+    (entry) =>
+      entry.id === model &&
+      entry.kind === "text" &&
+      (entry.harnesses as readonly string[]).includes(harness)
+  )
 }
 /**
  * The model a harness uses for its own housekeeping, such as naming its
@@ -224,8 +263,9 @@ export function utilityModel(model: string): string {
   ).sort((a, b) => a.costOrder - b.costOrder)[0]!.id
 }
 export function modelForHarness(harness: Harness, current: string): string {
-  return compatibleModel(harness, current)
-    ? current
+  const selected = currentHarnessModel(harness, current)
+  return compatibleModel(harness, selected)
+    ? selected
     : compatibleModels(harness)[0]!.id
 }
 export function harnessIdentity(harness: Harness): string {
@@ -366,12 +406,19 @@ export const MODEL_PRESETS: Record<FixedModelPreset, RoleModels> = {
 }
 
 /** What every network uses until someone chooses otherwise. */
-export const DEFAULT_MODEL_SETTINGS: ModelSettings = { preset: "extra_light" }
+export const DEFAULT_MODEL_SETTINGS: ModelSettings = { preset: "medium" }
 
 export function roleModels(settings: ModelSettings): RoleModels {
-  return settings.preset === "custom"
-    ? settings.models
-    : MODEL_PRESETS[settings.preset]
+  if (settings.preset !== "custom") return MODEL_PRESETS[settings.preset]
+  const models = { ...settings.models }
+  for (const role of harnessRoles)
+    models[role] = textModelSchema.parse(
+      currentHarnessModel(
+        settings.harnesses?.[role] ?? "opencode",
+        models[role]
+      )
+    )
+  return models
 }
 
 /** The General settings, which every network follows unless it overrides them. */

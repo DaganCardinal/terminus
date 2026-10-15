@@ -37,6 +37,12 @@ describe("Sandbox outbound capabilities", () => {
       apiModel: "gpt-6-luna",
       endpoint: "responses",
     },
+    {
+      provider: "openai" as const,
+      model: "openai/gpt-6.1-sol",
+      apiModel: "gpt-6.1-sol",
+      endpoint: "responses",
+    },
   ])(
     "authorizes exact $provider requests, replaces auth and preserves streams",
     async ({ provider, model, apiModel, endpoint }) => {

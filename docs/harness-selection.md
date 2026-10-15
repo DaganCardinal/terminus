@@ -8,7 +8,7 @@ Settings → Agents configures Dispatcher, Conductor, Station Agent and Technici
 | Claude Code | 2.1.280 | Anthropic Messages |
 | Codex | 0.156.1 | OpenAI Responses |
 
-The protocol catalog owns native API model IDs, provider identities, compatible harnesses and explicit cost order. New choices are Claude Haiku 4.5, Claude Sonnet 5.5, GPT-6 Luna and GPT-6 Sol; the existing Workers AI choices remain. Harness changes preserve a compatible model, otherwise choose Haiku 4.5 for Claude Code or GPT-6 Luna for Codex. The form shows the replacement before saving and switches to Custom. Backend validation independently rejects incompatible combinations. Runtime failures never switch harness, model or provider.
+The protocol catalog owns native API model IDs, provider identities, compatible harnesses and explicit cost order. New choices are Claude Haiku 4.5, Claude Sonnet 5.5, GPT-6 Luna, GPT-6 Sol (OpenCode), and GPT-6.1 Sol (Codex); the existing Workers AI choices remain. Harness changes preserve a compatible model, otherwise choose Haiku 4.5 for Claude Code or GPT-6 Luna for Codex. The form shows the replacement before saving and switches to Custom. Backend validation independently rejects incompatible combinations. Runtime failures never switch harness, model or provider. For new Codex work, saved GPT-6 Sol settings resolve to GPT-6.1 Sol; already frozen execution configurations keep their exact model.
 
 ## Reasoning levels
 
@@ -17,7 +17,7 @@ Each harness role also has a reasoning level: Low, Medium, High, Extra high or M
 | Models | Levels |
 | --- | --- |
 | GLM-5.3, GLM-5.3 Flash | Low, High, Max |
-| Claude Haiku 5.5, Claude Sonnet 5.5, GPT-6 Luna, GPT-6 Sol | Low, Medium, High, Extra high, Max |
+| Claude Haiku 5.5, Claude Sonnet 5.5, GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol | Low, Medium, High, Extra high, Max |
 | Kimi K2.7 Code, Claude Haiku 4.5, Clef, Clef Flash | None |
 
 Changing a level makes the form Custom, like changing a harness. Custom settings store chosen levels in `reasoning`; backend validation rejects a level the role's model does not accept. The resolved level is frozen with the rest of the role's execution configuration, so running work keeps it.

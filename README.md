@@ -48,7 +48,7 @@ This runs the local ten-Train Workflow rehearsal and real local Git oracle, with
 
 ## Real repositories and agents
 
-Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default preset uses `@cf/zai-org/glm-5.3-flash` for every role.
+Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default Medium preset uses GLM-5.3 for planning, reviews and repairs, Kimi K2.7 Code for Station work, and Clef for Engineer decisions.
 
 See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness and provider configuration, and troubleshooting.
 
@@ -104,7 +104,7 @@ Application previews need additional wildcard DNS, TLS, routing and Access prote
 
 Run the [normal checks](#checks), finish active work before changing container images, then run `npm run deploy`. Migrations apply before deployment; deployment does not reset D1. Resetting D1 alone does not stop Workflows or remove containers and Artifacts repositories.
 
-For a smoke test, import a public npm project, run two concurrent Lines, inspect accepted Cars and both integrations, test human unloading approval, and reload during execution. If previews are configured, verify the selected accepted snapshots and logged-out protection. The default Sandbox limits are ten agent and ten agentless containers; adjust them through Settings rather than assuming a shared fixed cap. See [Harness selection](docs/harness-selection.md#release-verification) for outstanding provider checks.
+For a smoke test, import a public npm project, run two concurrent Lines, inspect accepted Cars and both integrations, test human unloading approval, and reload during execution. If previews are configured, verify the selected accepted snapshots and logged-out protection. The default Sandbox limits are 25 agent containers at standard-3 and 20 agentless containers at standard-2; adjust them through Settings rather than assuming a shared fixed cap. See [Harness selection](docs/harness-selection.md#release-verification) for outstanding provider checks.
 
 ## Guides
 

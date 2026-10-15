@@ -107,7 +107,7 @@ Dispatcher, Station Agent, Conductor and Technician use the shared `prepareHarne
 
 Settings → Agents stores General choices in D1, with optional complete per-Network overrides. Presets use OpenCode; Custom selects harnesses and compatible models per role. There are no arbitrary model IDs or runtime provider/model fallbacks.
 
-The default **Extra-light** preset uses GLM-5.3 Flash for Dispatcher, Station Agent, Conductor and Technician, and Clef Flash for Engineer decisions. Light uses GLM-5.3 for the Dispatcher; Medium uses GLM-5.3 for Dispatcher, Conductor and Technician, Kimi K2.7 Code for Station work, and Clef for decisions. The catalog is authoritative; implementation/testing authorization remains governed by [AGENTS.md](../AGENTS.md).
+The default **Medium** preset uses GLM-5.3 for Dispatcher, Conductor and Technician, Kimi K2.7 Code for Station work, and Clef for Engineer decisions. Extra-light uses GLM-5.3 Flash for every text role and Clef Flash for decisions; Light uses GLM-5.3 for the Dispatcher and otherwise follows Extra-light. The catalog is authoritative; implementation/testing authorization remains governed by [AGENTS.md](../AGENTS.md).
 
 Each harness role also has a reasoning level from the levels its catalog model accepts, Medium by default; see [Reasoning levels](harness-selection.md#reasoning-levels).
 
@@ -133,7 +133,7 @@ Decision context includes bounded operational history and independent checks, ne
 
 Agent Sandboxes use the execution image for all harness roles. Agentless Workspace Sandboxes use a separate image for Git operations, validation and previews and refuse model access. Routing Sandbox objects select container classes for standard-1, standard-2 or standard-3; a running container keeps its size until it stops.
 
-Settings → Sandboxes controls each Network's limits and instance sizes. Defaults are ten agent and ten agentless containers, both standard-2; each kind permits limits from 1 to 100. D1 leases enforce starts across all size classes. Workflow work waits for capacity, previews report unavailable capacity, and lowering limits does not terminate running work. Registered ownership supports explicit Network deletion and container cleanup.
+Settings → Sandboxes controls each Network's limits and instance sizes. Defaults are 25 agent containers at standard-3 and 20 agentless containers at standard-2; each kind permits limits from 1 to 100. D1 leases enforce starts across all size classes. Workflow work waits for capacity, previews report unavailable capacity, and lowering limits does not terminate running work. Registered ownership supports explicit Network deletion and container cleanup.
 
 All orchestration installs can restore npm download caches from R2 by lockfile hash. Trusted cache population uses a scratch checkout of only package metadata with scripts disabled; npm verifies tarballs against lockfile integrity. Cache loss causes a fresh install, never loss of accepted work. See [Live setup](live-setup.md#sandboxes-and-limits) and [Station execution](station-execution.md#constraints).
 

@@ -118,7 +118,7 @@ describe("Sandbox capacity", () => {
       expect(await sandboxLimits(env.DB, "legacy")).toEqual({
         agent: 4,
         agentless: 5,
-        sizes: { agent: "standard-2", agentless: "standard-2" },
+        sizes: { agent: "standard-3", agentless: "standard-2" },
       })
     } finally {
       await env.DB.prepare("DELETE FROM sandbox_limits").run()
@@ -132,8 +132,12 @@ describe("Sandbox capacity", () => {
     const limit = (binding: SandboxLease["binding"]) =>
       sandboxLimit(env.DB, { namespace, binding })
     expect([await limit("SANDBOX"), await limit("WORKSPACE_SANDBOX")]).toEqual([
-      10, 10,
+      25, 20,
     ])
+    expect((await sandboxLimits(env.DB, namespace)).sizes).toEqual({
+      agent: "standard-3",
+      agentless: "standard-2",
+    })
     const now = new Date().toISOString()
     await ports.store.setGeneralSandboxLimits(
       {

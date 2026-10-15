@@ -16,11 +16,11 @@ describe("NetworkStore", () => {
     const at = "2026-10-05T12:00:00.000Z"
 
     expect(await ports.store.generalModelSettings()).toEqual({
-      settings: { preset: "extra_light" },
+      settings: { preset: "medium" },
       updatedAt: null,
     })
     expect((await ports.store.roleModels(network.id)).dispatcher).toBe(
-      "@cf/zai-org/glm-5.3-flash"
+      "@cf/zai-org/glm-5.3"
     )
 
     await ports.store.setGeneralModelSettings({ preset: "light" }, at)
@@ -52,6 +52,10 @@ describe("NetworkStore", () => {
       "@cf/zai-org/glm-5.3-flash"
     )
     await ports.store.setGeneralModelSettings({ preset: "extra_light" }, at)
+    expect((await ports.store.roleModels(network.id)).dispatcher).toBe(
+      "@cf/zai-org/glm-5.3-flash"
+    )
+    await ports.store.setGeneralModelSettings({ preset: "medium" }, at)
   })
 
   it("round-trips entities and appends events in order", async () => {
