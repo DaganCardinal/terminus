@@ -8,7 +8,7 @@ Open the Train to review each accepted Car's diff, manifest, independent checks,
 
 ## Demo
 
-The fixed demo starts **Red Line** with auto-unload and **Blue Line** with human approval. For the competition demo, launch both, let Red unload while Blue waits in the review yard, refresh to demonstrate persistence, review Blue, then approve unloading. Offline mode follows the same lifecycle with simulated evidence; application preview requires live execution. Model recommendations and live Artifacts/Sandbox integration of this gate still need a maintainer live check.
+The fixed demo starts **Red Line** with auto-unload and **Blue Line** with human approval. To demo it, launch both, let Red unload while Blue waits in the review yard, refresh to demonstrate persistence, review Blue, then approve unloading. Offline mode follows the same lifecycle with simulated evidence; application preview requires live execution.
 
 ## API
 

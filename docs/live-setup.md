@@ -8,7 +8,7 @@ Docker, Cloudflare access to Artifacts and Sandboxes/Containers, and a public HT
 
 ## Configure and run
 
-1. Authenticate Wrangler and select your Cloudflare account. In `apps/worker/wrangler.jsonc`, set `account_id` if necessary, and set `ARTIFACTS_ACCOUNT_ID`, `AI_GATEWAY_ACCOUNT_ID` and `AI_GATEWAY_ID`.
+1. Authenticate Wrangler and select your Cloudflare account. Copy `apps/worker/wrangler.local.example.jsonc` to the ignored `apps/worker/wrangler.local.jsonc` and set `account_id` if necessary, `ARTIFACTS_ACCOUNT_ID`, `AI_GATEWAY_ACCOUNT_ID` and `AI_GATEWAY_ID` (or set these vars in `.dev.vars`, which overrides both files locally).
 2. Configure the `ARTIFACTS_API_TOKEN` Worker secret: a Cloudflare API token scoped to this account with **Artifacts > Read** and **Artifacts > Edit**. Each Network gets its own Artifacts namespace (`terminus-<network id>`), which the Workers binding cannot address because it is fixed to one namespace at deploy time, so Terminus uses the [Artifacts REST API](https://developers.cloudflare.com/artifacts/api/rest-api/). The API token stays in the Worker; Sandboxes only ever receive short-lived, repo-scoped Git tokens.
 3. Configure the `AI_GATEWAY_TOKEN` Worker secret. Despite its name, it is a Cloudflare API token scoped to this account with **Workers AI > Read**, required by the [Cloudflare model REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/). A token with only AI Gateway permissions is insufficient. Model credentials stay in the Worker.
 4. For local development, copy `apps/worker/.dev.vars.example` to the ignored `apps/worker/.dev.vars` and fill in those secrets. Do not commit it. Start Docker, then run `npm run dev:worker` and `npm run dev:web`.
@@ -70,6 +70,6 @@ Repository heads (fork checks and canonical-head reads) are read from the Worker
 
 ## Deployment
 
-For the single-maintainer live beta, follow [Deployment](../README.md#deployment): bind remote D1, configure both Worker secrets, apply migrations, protect the Worker with Cloudflare Access, and set `APP_ORIGIN` to the exact public HTTPS origin. An empty `APP_ORIGIN` permits local development only. Access is the live authentication boundary; the app has no user accounts.
+To deploy, follow [Deployment](../README.md#deployment): create the D1 database, configure the Worker secrets, apply migrations, protect the Worker with Cloudflare Access, and set `APP_ORIGIN` to the exact public HTTPS origin. An empty `APP_ORIGIN` permits local development only. Access is the live authentication boundary; the app has no user accounts.
 
 `npm run deploy` from the repository root builds the React app and publishes it with the API, Workflows and execution container. Cloudflare deployment/version preview URLs are explicitly disabled; Train/Terminus application previews use their own wildcard domain (see [Previews](previews.md)). Deployment is a maintainer action.

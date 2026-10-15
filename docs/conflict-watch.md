@@ -30,7 +30,3 @@ Acknowledging is idempotent and changes no Train, Station, hold or gate. A later
 ## Offline behavior
 
 With `ENGINEER_MODEL=fake`, Clef treats Lines that share a directory or contract as related. With `DISPATCHER_MODEL=fake` (or fake repositories), the investigation reads nothing and reports shared files and planned areas only. To see a report offline, lay two Lines whose first Stations expect the same file and whose Lines have more Stations, so both Trains are still running when the report arrives.
-
-## Live verification
-
-Trial merges are covered by Git tests and the Workflow by offline tests. The Clef question, the investigation Sandbox with two read grants, and the Dispatcher's verdicts on real repositories still need a maintainer live check.

@@ -153,7 +153,7 @@ One Worker hosts the React assets, API and Workflows, with separate agent and ag
 
 ### Configure account resources
 
-In `apps/worker/wrangler.jsonc`, set `account_id`, `ARTIFACTS_ACCOUNT_ID` and `AI_GATEWAY_ACCOUNT_ID` to your account, and `AI_GATEWAY_ID` to your Gateway. Replace the app/Access origins, audience, preview domain and zone route with your own values; these are specific to each deployment.
+`apps/worker/wrangler.jsonc` is shared and holds no deployment's values. Copy `apps/worker/wrangler.local.example.jsonc` to the ignored `apps/worker/wrangler.local.jsonc` and set your account, `ARTIFACTS_ACCOUNT_ID`, `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID`, the app/Access origins and audience, and the preview domain and zone route. `npm run deploy` and `npm run dev:worker` merge it over `wrangler.jsonc`; `npm run dev:fake` ignores it. Run other remote Wrangler commands from `apps/worker` with `node scripts/wrangler.mjs` in place of `npx wrangler`.
 
 From `apps/worker`, authenticate and create resources you have not already provisioned:
 
@@ -165,7 +165,7 @@ npx wrangler r2 bucket create terminus-dependency-cache
 npx wrangler r2 bucket lifecycle add terminus-dependency-cache expire-cache --expire-days 30
 ```
 
-Copy the returned D1 `database_id` into the top-level `d1_databases` entry, leaving `env.fake` local-only. The dependency bucket holds disposable npm caches; expired entries are rebuilt.
+Deploys and remote migrations find the D1 database by name, so its `database_id` is optional. The dependency bucket holds disposable npm caches; expired entries are rebuilt.
 
 ### Bootstrap and protect the Worker
 
@@ -183,7 +183,7 @@ For a first deployment, put all three in a temporary `NAME=value` secrets file o
 npm run deploy -- --secrets-file /path/outside/repo/terminus-secrets.env
 ```
 
-The deploy command applies remote D1 migrations, builds the web assets and deploys the Worker, Workflows and both container images. Delete the temporary secrets file afterward. Later deployments retain the stored secrets; change one with `npx wrangler secret put NAME` from `apps/worker`.
+The deploy command applies remote D1 migrations, builds the web assets and deploys the Worker, Workflows and both container images. Delete the temporary secrets file afterward. Later deployments retain the stored secrets; change one with `node scripts/wrangler.mjs secret put NAME` from `apps/worker`.
 
 Protect the Worker behind Cloudflare Access for all traffic, with an Allow policy limited to the intended emails. Then set:
 
@@ -199,7 +199,7 @@ Application previews need additional wildcard DNS, TLS, routing and Access prote
 
 Run the [normal checks](#checks), finish active work before changing container images, then run `npm run deploy`. Migrations apply before deployment; deployment does not reset D1. Resetting D1 alone does not stop Workflows or remove containers and Artifacts repositories.
 
-For a smoke test, import a public npm project, run two concurrent Lines, inspect accepted Cars and both integrations, test human unloading approval, and reload during execution. If previews are configured, verify the selected accepted snapshots and logged-out protection. The default Sandbox limits are 25 agent containers at standard-3 and 20 agentless containers at standard-2; adjust them through Settings rather than assuming a shared fixed cap. See [Harness selection](docs/harness-selection.md#release-verification) for outstanding provider checks.
+For a smoke test, import a public npm project, run two concurrent Lines, inspect accepted Cars and both integrations, test human unloading approval, and reload during execution. If previews are configured, verify the selected accepted snapshots and logged-out protection. The default Sandbox limits are 25 agent containers at standard-3 and 20 agentless containers at standard-2; adjust them through Settings rather than assuming a shared fixed cap. Before enabling Anthropic or OpenAI models under OpenCode, see [Harness selection](docs/harness-selection.md#release-verification).
 
 ## Checks
 
@@ -220,11 +220,6 @@ npm run stress:ten
 ```
 
 This runs the local ten-Train Workflow rehearsal and real local Git oracle, without Cloudflare credentials or Docker. For full Cloudflare verification, open **Stress test** from the app's Networks page, run the test, then **Verify and download report**. It creates its own fixture Network and uses your existing browser login. No manual project import, stress-mode switch, or terminal Access token is needed. See [the run guide](docs/pipeline-stress-test.md).
-
-## What's been verified
-
-- **Verified live on Cloudflare:** the domain, persistence, API, Train/Station/Terminus integration Workflows, React/SVG railway map, and real Artifacts and Sandbox harness adapters (OpenCode by default). Two concurrent Trains reached and integrated into Terminus in a live test.
-- **Verified offline with tests and the fake environment, live verification in progress:** Dispatcher planning (read-only exploration → persisted proposal → explicit launch), sandboxed Conductor reviews, Technician reconciliation of failed Terminus merges, commit-bound human unloading approval, and the Engineer's Clef decisions on failed Station runs and revision loops.
 
 ## Guides
 

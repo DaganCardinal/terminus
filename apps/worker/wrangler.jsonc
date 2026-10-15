@@ -1,14 +1,12 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "terminus",
-  "account_id": "1c4341e1232d9a44116c124bc518a0f6",
   "preview_urls": false,
   // Preserve the protected workers.dev app URL when adding preview routes.
   "workers_dev": true,
-  // Train/Terminus previews: preview-<snapshot>-<token>.terminusdev.com.
-  "routes": [
-    { "pattern": "*.terminusdev.com/*", "zone_name": "terminusdev.com" },
-  ],
+  // Deployment-specific values (account, preview route, origins, Access and
+  // account IDs) live in the ignored wrangler.local.jsonc, merged in by
+  // scripts/wrangler.mjs. See wrangler.local.example.jsonc.
   "main": "src/index.ts",
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat"],
@@ -28,7 +26,7 @@
       "binding": "DB",
       "database_name": "terminus",
       "migrations_dir": "migrations",
-      "database_id": "9f3f0c50-943c-4181-aea4-1f0bfb1e245f",
+      // Deploys and remote migrations find the database by name.
     },
   ],
   // npm download caches keyed by lockfile hash, shared by every Sandbox
@@ -214,17 +212,17 @@
     "BROWSER_RUN_ENABLED": "false",
     // Exact public app origin, e.g. https://terminus.YOUR_SUBDOMAIN.workers.dev.
     // An empty value permits local development only; Access protects live traffic.
-    "APP_ORIGIN": "https://terminus.dagan-1c4.workers.dev/",
+    "APP_ORIGIN": "",
     // Live requests also verify the Cloudflare Access JWT and fail closed until
     // these are set. Team domain: https://YOUR_TEAM.cloudflareaccess.com. AUD:
     // the Access application's Audience tag(s), comma-separated.
     "ACCESS_REQUIRED": "true",
-    "ACCESS_TEAM_DOMAIN": "https://bpm-web-dev.cloudflareaccess.com",
-    "ACCESS_AUD": "bce6d76282855381ea1371683d67aac327cd9f9936b93286f5272b2210c9a01b",
-    "ARTIFACTS_ACCOUNT_ID": "1c4341e1232d9a44116c124bc518a0f6",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "ARTIFACTS_ACCOUNT_ID": "",
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
-    "PREVIEW_BASE_URL": "https://terminusdev.com",
+    "PREVIEW_BASE_URL": "",
     // `fake` runs a role without a model. Any other value runs the model chosen
     // in Settings (General, or the network's override). The default preset,
     // Extra-light, uses @cf/zai-org/glm-5.3-flash for every text role.
@@ -235,8 +233,8 @@
     // The Engineer's Clef decision model, for choices its hard rules leave open.
     "ENGINEER_MODEL": "settings",
     "STATION_MAX_RETRIES": "3",
-    "AI_GATEWAY_ACCOUNT_ID": "1c4341e1232d9a44116c124bc518a0f6",
-    "AI_GATEWAY_ID": "terminus",
+    "AI_GATEWAY_ACCOUNT_ID": "",
+    "AI_GATEWAY_ID": "default",
     // How long a fake Station Agent takes, so Trains visibly travel.
     "FAKE_INTEGRATION_CONFLICT_PATHS": "",
     "FAKE_AGENT_DELAY_MS": "4000",
@@ -286,6 +284,9 @@
           "binding": "DB",
           "database_name": "terminus",
           "migrations_dir": "migrations",
+          // Local state apart from dev:worker's, which is keyed by its
+          // database_id or, without one, the binding name.
+          "preview_database_id": "terminus-fake",
         },
       ],
       "r2_buckets": [

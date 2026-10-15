@@ -11,3 +11,6 @@ coverage/
 *.local
 docs/temp
 stress-runs/
+# One deployment's Wrangler values, and the config generated from them.
+apps/worker/wrangler.local.jsonc
+apps/worker/wrangler.generated.json

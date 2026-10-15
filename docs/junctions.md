@@ -75,9 +75,9 @@ For a direct outgoing route, create a fresh Network and `POST /api/networks/NETW
 
 For a scripted input conflict, set the existing `FAKE_INTEGRATION_CONFLICT_PATHS` to `src/App.tsx` in `env.fake.vars`, restart fake development and launch a fresh Junction demo. Inspect its recorded failure, dispatch Technician, inspect independently validated candidate/evidence/review, approve its exact head, then let collection resume. Restore the empty setting afterward. The fake conflict applies to ordinary integrations too; repair any affected main/output Train through its existing Terminus repair flow. Worker tests separately exercise assembled-feature review failure and bounded repair without human release permission.
 
-## Live verification procedure
+## Manual verification
 
-No deployment is required for local verification. Use the existing [live Artifacts/Sandbox prerequisites](live-setup.md), Docker and a public committed demo baseline. `npm run dev:worker` applies additive `0012_junctions.sql`; both Wrangler environments include `JUNCTION_WORKFLOW`. Keep the configured Extra-light role preset (`@cf/zai-org/glm-5.3-flash`) as the maintainer requires.
+No deployment is required for local verification. Use the existing [live Artifacts/Sandbox prerequisites](live-setup.md), Docker and a public committed demo baseline. `npm run dev:worker` applies additive `0012_junctions.sql`; both Wrangler environments include `JUNCTION_WORKFLOW`. The Extra-light role preset (`@cf/zai-org/glm-5.3-flash`) keeps model costs low.
 
 1. Import a fresh demo Network and launch the same Junction demo. Save baseline B. Verify the Junction and both input repositories start at B, outgoing topology exists, and no outgoing repository/Train executes before release.
 2. Allow the independent Badge Line to advance Terminus. Confirm incoming accepted commits merge only into the Junction and all accepted Car commits remain reachable in Git.
@@ -87,4 +87,4 @@ No deployment is required for local verification. Use the existing [live Artifac
 6. For Technician verification, deliberately give two inputs incompatible edits to one bounded file, or make a feature criterion/check fail. Inspect the blocked failure, preserved source heads and candidate; dispatch with exact conflict files or explicit file scope. Attempt an out-of-scope edit/stale candidate approval and verify refusal. Approve a valid exact candidate, confirm its history is promoted without Station Cars, then rerun complete acceptance and require separate release approval.
 7. Exercise an active hold and duplicate command; verify no release bypass. Simulate a lost notification/restart, inspect retained receipts and reservations, and retry an uncertain push only after reconciling the actual target head. Side an unfinished member and verify the Junction blocks; abandon and confirm unfinished members side at safe gates while accepted repositories remain inspectable.
 
-Automated coverage uses pure domain/protocol tests, real local Git repair tests, Worker/D1 orchestration and actual Workflow API demonstrations. Live provider/model behavior and actual remote failure injection require the maintainer's live environment; offline evidence is explicitly simulated. Deployment remains a separate maintainer action.
+Automated coverage uses pure domain/protocol tests, real local Git repair tests, Worker/D1 orchestration and actual Workflow API demonstrations. Live model behavior and remote failure injection need a live environment; offline evidence is explicitly simulated.

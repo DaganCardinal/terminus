@@ -1,7 +1,7 @@
 # Local secrets for `npm run dev:worker` (real Artifacts and Sandboxes).
 # Copy to `.dev.vars` (ignored) and fill in. `npm run dev:fake` needs none of
 # these. See docs/live-setup.md for token permissions. Account IDs and the
-# AI Gateway ID are vars in wrangler.jsonc.
+# AI Gateway ID are vars in wrangler.local.jsonc (or add them here).
 
 # Account-scoped API token with Artifacts > Read and Artifacts > Edit.
 ARTIFACTS_API_TOKEN=YOUR_ACCOUNT_SCOPED_ARTIFACTS_TOKEN

@@ -26,6 +26,6 @@ Supply full Work Manifests in `stations` as in the existing Line API examples. D
 
 `GET /api/crossings/:crossingId` returns the frozen checkpoint, attempt history, checks, reviews, and Car provenance. `POST /api/crossings/:crossingId/retry` explicitly retries a blocked pickup. A failed handoff never reopens the source Station. Persistent incompatibility requires replanning or `POST /api/trains/:trainId/siding` with a reason; Crossing Technician repair is outside v1. Uncertain Git writes retain their reservation and prevent abandonment until recovery.
 
-## Live verification
+## Manual verification
 
-Apply the new D1 migration locally, use the existing [live Artifacts/Sandbox setup](live-setup.md) and configured extra-light models, and lay the same demo in a fresh Network. Verify that the receiver's checkpoint is the accepted Footer tests commit, that no stylesheet Car was copied, that the App Station workspace starts from the Crossing merge commit, and that both Trains unload through independently validated Terminus merges. Inspect failures and retries through the Crossing detail endpoint. This procedure does not require publishing or deploying Terminus.
+Using the [live Artifacts/Sandbox setup](live-setup.md), lay the same demo in a fresh Network. Verify that the receiver's checkpoint is the accepted Footer tests commit, that no stylesheet Car was copied, that the App Station workspace starts from the Crossing merge commit, and that both Trains unload through independently validated Terminus merges. Inspect failures and retries through the Crossing detail endpoint. This procedure does not require publishing or deploying Terminus.

@@ -30,7 +30,7 @@ Configure the control app first using the [README deployment instructions](../RE
 
 1. Add proxied wildcard DNS for `*.<preview-domain>` in its Cloudflare zone. A dedicated zone apex can use an `AAAA` record named `*` with value `100::`; the Worker route handles requests before any origin connection.
 2. Ensure TLS covers the wildcard. A deeper hostname such as `*.previews.example.com` needs a certificate covering that depth. See Cloudflare's [preview hostname setup](https://developers.cloudflare.com/sandbox/previews/serve-previews-on-their-own-hostnames/).
-3. Route `*.<preview-domain>/*` to the Terminus Worker. For example, set this in its Wrangler configuration:
+3. Route `*.<preview-domain>/*` to the Terminus Worker. For example, set this in `apps/worker/wrangler.local.jsonc`:
 
    ```jsonc
    "routes": [
@@ -38,7 +38,7 @@ Configure the control app first using the [README deployment instructions](../RE
    ]
    ```
 
-4. Set `PREVIEW_BASE_URL` to the HTTPS origin, for example `https://example-previews.com`, and deploy. Keep `workers_dev: true` if the control app uses its regular Worker URL. DNS and certificates must be provisioned separately.
+4. Set `PREVIEW_BASE_URL` there to the HTTPS origin, for example `https://example-previews.com`, and deploy. Keep `workers_dev: true` if the control app uses its regular Worker URL. DNS and certificates must be provisioned separately.
 5. Verify a generated preview URL requires Access in a logged-out browser. If using hostname-based Access, protect the entire wildcard with a separate application, restrict its allowed emails and add its AUD tag to `ACCESS_AUD`, comma-separated with the control app's audience.
 
 The preview domain's apex and malformed preview subdomains return 404. Preview requests cannot reach the control API, and cookies, Authorization and Cloudflare Access headers are removed before forwarding to the container.

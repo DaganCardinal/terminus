@@ -1,6 +1,6 @@
 # Ten-Train stress test
 
-The quickest judge-facing flow is built into Terminus. Open **Stress test** from the Networks page, select **Run ten-Train stress test**, watch the map, then select **Verify and download report** once every Train has stopped (normally all ten unloaded). The browser uses the normal app login; no Access token needs to be copied into a terminal.
+The quickest way to run it is built into Terminus. Open **Stress test** from the Networks page, select **Run ten-Train stress test**, watch the map, then select **Verify and download report** once every Train has stopped (normally all ten unloaded). The browser uses the normal app login; no Access token needs to be copied into a terminal.
 
 ## One-command local rehearsal
 
