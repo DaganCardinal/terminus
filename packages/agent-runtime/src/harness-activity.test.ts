@@ -453,6 +453,20 @@ describe("live harness follower", () => {
   const slowHarness = `${read("src/a.ts")}; ${read("src/b.ts")}; setTimeout(() => { ${read("src/c.ts")}; console.log(JSON.stringify({ type: "text", part: { text: "PRIVATE FINAL" } })) }, 800)`
   const endlessHarness = "setInterval(() => {}, 1000)"
 
+  function processRunning(pid: number) {
+    try {
+      // Container PID 1 may leave a killed descendant as a zombie.
+      if (existsSync("/proc/self/stat")) {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+        if ("ZX".includes(stat[stat.lastIndexOf(")") + 2]!)) return false
+      }
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   function setup() {
     const temp = mkdtempSync(join(tmpdir(), "terminus-live-follow-"))
     const runner = join(temp, "live.mjs"),
@@ -496,14 +510,13 @@ describe("live harness follower", () => {
         harness,
       ])
     const pid = () => Number(readFileSync(`${activity}.pid`, "utf8"))
-    const running = () => {
-      try {
-        process.kill(pid(), 0)
-        return true
-      } catch {
-        return false
+    const running = () => processRunning(pid())
+    const descendantFile = join(temp, "descendant.json")
+    const descendantPids = () =>
+      JSON.parse(readFileSync(descendantFile, "utf8")) as {
+        harness: number
+        descendant: number
       }
-    }
     const followers: ChildProcess[] = []
     return {
       temp,
@@ -521,8 +534,34 @@ describe("live harness follower", () => {
       },
       stop: () => follow(["stop", activity]).closed,
       running,
+      descendantReady: () => existsSync(descendantFile),
+      descendantRunning: () => processRunning(descendantPids().descendant),
+      // The descendant holds the harness's stdout/stderr open even if its
+      // parent exits, reproducing the timeout's missing close/outcome.
+      withDescendant: (ignoreTerm = false, parentExits = false) => {
+        const code = `${ignoreTerm ? 'process.on("SIGTERM", () => {});' : ""}
+          require("node:fs").writeFileSync(${JSON.stringify(descendantFile)}, JSON.stringify({ harness: Number(process.argv[1]), descendant: process.pid }));
+          setInterval(() => {}, 1000)`
+        return `const child = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(code)}, String(process.pid)], { stdio: "inherit" });
+          ${parentExits ? "child.unref()" : endlessHarness}`
+      },
       cleanup: () => {
         for (const child of followers) child.kill("SIGKILL")
+        // Also clean up a failed regression test whose runner never stopped
+        // its harness, including the harness's separate process group.
+        if (existsSync(descendantFile)) {
+          const { harness, descendant } = descendantPids()
+          const targets = [harness, descendant].filter(
+            (target) => Number.isInteger(target) && target > 1
+          )
+          if (targets.includes(harness)) targets.unshift(-harness)
+          for (const target of targets)
+            try {
+              process.kill(target, "SIGKILL")
+            } catch {
+              /* Already stopped. */
+            }
+        }
         if (existsSync(`${activity}.pid`) && running())
           process.kill(-pid(), "SIGKILL")
         rmSync(temp, { recursive: true, force: true })
@@ -593,7 +632,7 @@ describe("live harness follower", () => {
     } finally {
       f.cleanup()
     }
-  })
+  }, 12_000)
 
   it("stops the harness at its own time limit and says so", async () => {
     const f = setup()
@@ -611,15 +650,78 @@ describe("live harness follower", () => {
     }
   })
 
+  it.each([false, true])(
+    "times out descendants holding inherited pipes, even if the harness already exited (%s)",
+    async (parentExits) => {
+      const f = setup()
+      try {
+        const run = f.start(f.withDescendant(false, parentExits), {
+          timeoutMs: 800,
+        })
+        await until(f.descendantReady)
+        await until(() => !f.running(), 3000)
+        expect(await run.closed).toBe(0)
+        expect(parsed(run.lines()).at(-1)).toMatchObject({
+          type: "harness_exit",
+          timedOut: true,
+        })
+        await until(() => !f.descendantRunning())
+        expect(f.running()).toBe(false)
+      } finally {
+        f.cleanup()
+      }
+    }
+  )
+
+  it("force-kills descendants that ignore SIGTERM before reporting the timeout", async () => {
+    const f = setup()
+    try {
+      const run = f.start(f.withDescendant(true), { timeoutMs: 800 })
+      await until(f.descendantReady)
+      await until(() => !f.running(), 8000)
+      expect(await run.closed).toBe(0)
+      expect(parsed(run.lines()).at(-1)).toMatchObject({
+        type: "harness_exit",
+        timedOut: true,
+      })
+      await until(() => !f.descendantRunning())
+      expect(f.running()).toBe(false)
+    } finally {
+      f.cleanup()
+    }
+  }, 10_000)
+
+  it("stops descendants when the follower is gone", async () => {
+    const f = setup()
+    try {
+      const run = f.start(f.withDescendant(), { orphanMs: 500 })
+      await until(f.descendantReady)
+      run.child.kill("SIGKILL")
+      await run.closed
+      await until(() => !f.running())
+      await until(() => !f.descendantRunning())
+      expect(
+        parsed(readFileSync(f.activity, "utf8").split("\n").slice(0, -1)).at(-1)
+      ).toMatchObject({
+        type: "harness_exit",
+        exitCode: 143,
+        signal: "SIGTERM",
+      })
+    } finally {
+      f.cleanup()
+    }
+  })
+
   it("stops the runner and its harness on request, ending its follower", async () => {
     const f = setup()
     try {
-      const run = f.start(endlessHarness)
-      await until(() => existsSync(`${f.activity}.pid`))
+      const run = f.start(f.withDescendant())
+      await until(f.descendantReady)
       expect(f.running()).toBe(true)
       await f.stop()
       expect(await run.closed).toBe(0)
       expect(f.running()).toBe(false)
+      await until(() => !f.descendantRunning())
     } finally {
       f.cleanup()
     }

@@ -141,15 +141,31 @@ const filter = ${filteredHarnessActivity.toString()}
 const [events, harness, directory, options, command, ...args] = process.argv.slice(2)
 const { timeoutMs = 0, heartbeat = "", orphanMs = ${liveHarnessOrphanMs} } = JSON.parse(options)
 const raw = createWriteStream(events, { mode: 0o600 })
-const child = spawn(command, args, { cwd: directory, env: process.env, stdio: ["ignore", "pipe", "pipe"] })
+// The harness leads a separate process group so its descendants can be stopped
+// without killing this runner before it flushes and reports the outcome.
+const child = spawn(command, args, { cwd: directory, env: process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] })
 child.stdout.pipe(raw)
-let ended = null
-function endHarness(reason) {
-  if (stopped || ended || child.exitCode !== null || child.signalCode !== null) return
-  ended = reason
-  child.kill("SIGTERM")
-  setTimeout(() => child.kill("SIGKILL"), 5000).unref()
+let ended = null, closed = false, stopping = false, killTimer
+function signalHarness(signal) {
+  if (!child.pid) return
+  try { process.kill(-child.pid, signal) } catch { /* The group already exited. */ }
 }
+function stopHarness() {
+  if (stopping) return
+  stopping = true
+  signalHarness("SIGTERM")
+  // Keep escalation alive even if the group leader exits first: descendants
+  // may ignore SIGTERM and keep its inherited output pipes open.
+  killTimer = setTimeout(() => signalHarness("SIGKILL"), 5000)
+}
+function endHarness(reason) {
+  if (stopped || ended || closed) return
+  ended = reason
+  stopHarness()
+}
+// An explicit follower stop must go through the runner now that the harness
+// has its own process group.
+process.on("SIGTERM", () => endHarness("abandoned"))
 if (timeoutMs > 0) setTimeout(() => endHarness("timed_out"), timeoutMs).unref()
 if (heartbeat) setInterval(() => {
   let followed = 0
@@ -198,8 +214,7 @@ function stopAtPlanOutcome(event) {
     formatFailures = 0
   }
   if (!stopped) return
-  child.kill("SIGTERM")
-  setTimeout(() => child.kill("SIGKILL"), 5000).unref()
+  stopHarness()
 }
 function line(text) {
   if (text.length > 1048576) return
@@ -222,8 +237,14 @@ child.stdout.on("data", (chunk) => {
 })
 child.on("error", () => { process.exitCode = 1 })
 child.on("close", (code, signal) => {
+  closed = true
   buffer += decoder.end()
   if (!dropping && buffer) line(buffer)
+  if (stopping) {
+    clearTimeout(killTimer)
+    // Also remove descendants that closed their pipes but stayed alive.
+    signalHarness("SIGKILL")
+  }
   // A signal reads as a shell would report it, e.g. 143 for SIGTERM.
   const exitCode = stopped ? 0 : code ?? (signal ? 128 + (constants.signals[signal] ?? 0) : 1)
   const outcome = { type: "harness_exit", exitCode }
@@ -239,7 +260,7 @@ child.on("close", (code, signal) => {
   if (raw.writableFinished) done()
   else raw.once("finish", done)
 })
-raw.on("error", () => { child.kill(); process.exitCode = 1 })
+raw.on("error", () => { stopHarness(); process.exitCode = 1 })
 `
 
 /** Runs INSIDE the Sandbox as the streamed command, and is all a lost Worker stream takes down.
@@ -248,8 +269,9 @@ raw.on("error", () => { child.kill(); process.exitCode = 1 })
  * <lines>\` follows a runner already started, after the first \`lines\` lines orchestration
  * handled. Either copies the file's lines to stdout and ends once the runner has exited and
  * every line is out, so a forged exit line cannot end it early. Following touches the
- * heartbeat file the runner's orphan check reads. \`stop <activity>\` kills the runner's
- * process group. Nothing else is written to stdout, so its lines are exactly the file's. */
+ * heartbeat file the runner's orphan check reads. \`stop <activity>\` asks the runner to
+ * stop the harness's process group. Nothing else is written to stdout, so its lines are
+ * exactly the file's. */
 export const liveHarnessFollowerScript = `import { spawn } from "node:child_process"
 import { closeSync, existsSync, openSync, readFileSync, readlinkSync, readSync, utimesSync, writeFileSync } from "node:fs"
 const [mode, activity, ...rest] = process.argv.slice(2)
@@ -273,8 +295,8 @@ function runnerPid() {
 }
 function stopRunner() {
   const pid = runnerPid()
-  // The runner leads its own process group, which holds the harness.
-  if (running(pid)) try { process.kill(-pid, "SIGKILL") } catch {}
+  // Keep the runner alive until it has stopped the harness's separate group.
+  if (running(pid)) try { process.kill(pid, "SIGTERM") } catch {}
 }
 function beat() {
   const now = new Date()
