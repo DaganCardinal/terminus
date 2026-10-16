@@ -54,6 +54,32 @@ describe("Dispatcher draft store", () => {
     expect(await store.restore(plan.id, "different-context")).toBeNull()
   })
 
+  it("keeps a revision unfinished, with its draft, until its plan is accepted", async () => {
+    const revised = await seedDispatchPlan()
+    const plan = await seedDispatchPlan()
+    const store = new DispatchDraftStore(env.DB)
+    const draft = { outline, stations: { a: station("a"), b: station("b") } }
+    await store.save(revised.id, { stations: {} }, draft)
+    await env.DB.batch(store.copyStatements(revised.id, plan.id))
+    expect(await store.revising(plan.id)).toBe(true)
+    expect(await store.restore(plan.id, "context")).toBeNull()
+    // Preparation's checkpoint keeps the copied draft and the flag.
+    await store.begin(plan.id, "context", null)
+    expect(await store.restore(plan.id, "context")).toEqual({
+      draft,
+      baseline: null,
+    })
+    expect(await store.revising(plan.id)).toBe(true)
+    // So does a changed context, while the revision is unfinished.
+    await store.begin(plan.id, "other-context", null)
+    expect(await store.read(plan.id)).toEqual(draft)
+    await store.accept(plan.id)
+    expect(await store.revising(plan.id)).toBe(false)
+    expect(await store.revising(revised.id)).toBe(false)
+    await store.begin(plan.id, "context", null)
+    expect(await store.read(plan.id)).toEqual({ stations: {} })
+  })
+
   it("treats corrupt checkpoint data as unavailable and corrupt pieces as missing", async () => {
     const plan = await seedDispatchPlan()
     const store = new DispatchDraftStore(env.DB)

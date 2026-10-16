@@ -50,6 +50,9 @@ import {
   layLineRequestSchema,
   placeHoldRequestSchema,
   createDispatchPlanRequestSchema,
+  createConversationRequestSchema,
+  sendConversationMessageRequestSchema,
+  type ConversationsResponse,
   selectBaselineFixRequestSchema,
   removeStationRequestSchema,
   repositoryFileQuerySchema,
@@ -91,7 +94,18 @@ import {
   retryIntegration,
   removeStation,
 } from "../agents/dispatcher"
-import { dispatcherPorts, dispatchPlanningPorts } from "../agents/ports"
+import {
+  conversationPorts,
+  dispatcherPorts,
+  dispatchPlanningPorts,
+} from "../agents/ports"
+import {
+  createConversation,
+  listConversations,
+  readConversation,
+  sendMessage,
+  stopTurn,
+} from "../agents/conversations"
 import {
   proposeDispatchPlan,
   selectPlanBaselineFix,
@@ -812,6 +826,83 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     },
   ],
   [
+    "POST",
+    new URLPattern({ pathname: "/api/networks/:networkId/conversations" }),
+    async (request, env, { networkId }) => {
+      const body = await parse(request, createConversationRequestSchema)
+      return noStore(
+        await createConversation(conversationPorts(env), networkId!, body),
+        201
+      )
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/networks/:networkId/conversations" }),
+    async (_, env, { networkId }) =>
+      noStore({
+        conversations: await listConversations(
+          conversationPorts(env),
+          networkId!
+        ),
+      } satisfies ConversationsResponse),
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname:
+        "/api/networks/:networkId/conversations/:conversationId/messages",
+    }),
+    async (request, env, { networkId, conversationId }) => {
+      const body = await parse(request, sendConversationMessageRequestSchema)
+      return noStore(
+        await sendMessage(
+          conversationPorts(env),
+          networkId!,
+          conversationId!,
+          body
+        ),
+        202
+      )
+    },
+  ],
+  [
+    "GET",
+    new URLPattern({
+      pathname:
+        "/api/networks/:networkId/conversations/:conversationId/messages",
+    }),
+    async (request, env, { networkId, conversationId }) => {
+      const cursor = new URL(request.url).searchParams.get("after") ?? "0"
+      if (!/^\d+$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))
+        return error(400, "`after` must be a non-negative integer")
+      return noStore(
+        await readConversation(
+          conversationPorts(env),
+          networkId!,
+          conversationId!,
+          Number(cursor)
+        )
+      )
+    },
+  ],
+  [
+    "POST",
+    new URLPattern({
+      pathname:
+        "/api/networks/:networkId/conversations/:conversationId/turns/:turnId/stop",
+    }),
+    async (_, env, { networkId, conversationId, turnId }) =>
+      noStore(
+        await stopTurn(
+          conversationPorts(env),
+          networkId!,
+          conversationId!,
+          turnId!
+        )
+      ),
+  ],
+  [
     "PUT",
     new URLPattern({
       pathname: "/api/networks/:networkId/plans/:planId/baseline-fix",
@@ -1159,6 +1250,14 @@ async function parse<T extends z.ZodType>(
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status })
+}
+
+/** Conversations change with every turn; never serve a cached copy. */
+function noStore(body: unknown, status = 200): Response {
+  return Response.json(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  })
 }
 
 /** A commit's contents never change, so a read pinned to one may be cached. */

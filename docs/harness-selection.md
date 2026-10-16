@@ -77,6 +77,7 @@ Live verification checklist (still outstanding):
 4. For each harness run planning, implementation, every Conductor review kind (Station, Crossing, Junction input/feature, repair), and Technician repair. Exercise at least one correction in the same native session, streaming, malformed/failing outcomes and infrastructure recovery without replaying a completed checkpoint.
 5. Change settings between Stations, revisions, reviews and retries; verify the original snapshots and provenance remain in use. Verify provider credentials never appear in Sandbox files, environment, events or logs.
 6. Verify calls are charged to Unified Billing credits (no `default` provider key stored) without passing provider credentials through Terminus. Check upstream failures and exhausted credits do not cause runtime fallback.
-7. Keep fake mode offline.
+7. Send [Dispatcher conversation](dispatcher-conversations.md) messages with the Dispatcher on Claude Haiku 5.5 and GPT-6 Luna (direct calls, not a harness): a question that needs at least two tool rounds, a goal that starts planning, and a revision. Confirm thinking and encrypted reasoning replay within a turn, cache reads on the second turn (`cache_read_input_tokens`, `cached_tokens`), Unified Billing, and that a refusal or 4xx ends the turn with its kind only.
+8. Keep fake mode offline.
 
 The maintainer enabled `ALTERNATIVE_HARNESSES_ENABLED=true` in the real deployment before these live checks were performed. Local fixtures cannot prove native Linux enforcement, pinned-binary continuation, streaming transport or dashboard billing behavior inside Cloudflare.

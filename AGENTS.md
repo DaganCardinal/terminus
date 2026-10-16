@@ -4,7 +4,7 @@ Guidance for coding agents working on the Terminus codebase.
 
 Terminus is an orchestration platform that coordinates many coding agents working on one shared codebase. It uses a railway network as its coordination model, and it runs on Cloudflare with **Cloudflare Artifacts** as its Git layer.
 
-> **Project status:** the full lifecycle is implemented on real Artifacts repositories and Sandbox harnesses (OpenCode by default), alongside an offline fake environment: Dispatcher planning, Station execution with independent validation, sandboxed Conductor reviews, Crossings, Junctions, Terminus integration, Technician repairs, human unloading approval, the Engineer's Clef decisions and the Dispatcher conflict watch. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
+> **Project status:** the full lifecycle is implemented on real Artifacts repositories and Sandbox harnesses (OpenCode by default), alongside an offline fake environment: Dispatcher conversations and planning, Station execution with independent validation, sandboxed Conductor reviews, Crossings, Junctions, Terminus integration, Technician repairs, human unloading approval, the Engineer's Clef decisions and the Dispatcher conflict watch. If a decision isn't covered here or in `docs/`, ask the maintainer instead of assuming.
 
 ## Project context
 
@@ -25,6 +25,7 @@ Read these when you need more depth:
 | `docs/live-setup.md` | Live Artifacts/Sandbox setup, agents and models, provider routing, deployment |
 | `docs/station-execution.md`, `docs/terminus-integration.md` | Execution constraints, evidence, Conductor review, integration and recovery |
 | `docs/dispatcher-planning.md`, `docs/conflict-watch.md`, `docs/unloading.md`, `docs/technician.md`, `docs/crossings.md`, `docs/previews.md`, `docs/publishing.md`, `docs/api.md` | Feature behavior, setup and API examples |
+| `docs/dispatcher-conversations.md` | Dispatcher conversations: turns, network brief, read tools, planning handoff and revisions, model adapters, API, phases still to come |
 | `docs/outline-updated.md` | Concept model, roles, Train/Station states, events, topology, architecture |
 | `docs/technology-architecture.md` | Technology stack, what each technology owns, source-of-truth rules |
 | `docs/structure-and-ownership.md` | Layer ownership, dependency direction, where code belongs |
@@ -132,6 +133,7 @@ These decisions are settled. The details are in `docs/technology-architecture.md
   - **One shared Integration Workflow per integration attempt**, with explicit Terminus, Crossing or Junction purpose and exact source/target snapshots.
   - **One Junction Workflow per Junction**, owning its lifecycle and serializing convergence. Train Workflows remain their Trains' only state writers.
   - **One Dispatch Workflow per planning request.** It prepares a persisted proposal, waits for an explicit launch command, lays all planned Lines atomically, and starts their Train Workflows with stable identities.
+  - **One Dispatcher Turn Workflow per conversation message** (`turn-…`). It calls the Dispatcher's model directly from the Worker with read-only tools over D1, and writes only its own conversation's messages, fenced to the active turn. Its one action, `start_planning`, goes through `proposeConversationPlan`; launch stays an explicit user command. See `docs/dispatcher-conversations.md`.
   - **One Conflict Watch Workflow per accepted Car that needs a model check** (`watch-<carId>`). The Train Workflow screens the Car deterministically and starts it; it runs Dispatcher Clef triage and read-only trial-merge investigations and writes only the advisory `conflict_watches` record, never Train state.
 - **Station execution:**
   1. Fork the Station repo from the Train. (A Train with no Cars is still at its Terminus commit, so its first Station forks Terminus at that exact commit instead: Artifacts can refuse to fork a fork that young. See `docs/station-execution.md`.)

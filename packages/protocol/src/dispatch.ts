@@ -431,6 +431,15 @@ export const dispatchPlanSchema = z.object({
     .optional(),
   createdAt: z.string(),
   checkBaseline: z.boolean().optional(),
+  conversationId: z.string().optional(),
+  turnId: z.string().optional(),
+  request: z
+    .object({
+      userMessage: z.string(),
+      relatedStationIds: z.array(z.string()),
+    })
+    .optional(),
+  revises: z.string().optional(),
   state: z.discriminatedUnion("status", [
     z.object({ status: z.literal("planning") }),
     z.object({ status: z.literal("ready"), ...reviewed }),
@@ -450,8 +459,10 @@ export const dispatchPlanSchema = z.object({
     z.object({
       status: z.literal("failed"),
       message: z.string(),
-      reason: z.literal("cancelled").optional(),
+      reason: z.enum(["cancelled", "superseded"]).optional(),
       cleanupPending: z.boolean().optional(),
+      supersededBy: z.string().optional(),
+      proposal: storedProposal.optional(),
     }),
   ]),
 })

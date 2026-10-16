@@ -34,18 +34,19 @@ function render(planning: boolean) {
     />
   )
 }
-describe("Dispatcher composer", () => {
-  it("offers an enabled Stop after a refresh with planning in progress and an empty draft", () => {
+describe("Dispatcher panel", () => {
+  it("stops planning from the plan's card, never from the composer", () => {
     const html = render(true)
-    expect(html).toMatch(
-      /<button type="button" class="composer-send composer-stop" aria-label="Stop Dispatcher planning">Stop<\/button>/
-    )
-    expect(html).not.toContain('aria-label="Send goal to the Dispatcher"')
+    expect(html).toContain('aria-label="Stop Dispatcher planning"')
+    expect(html).toContain('aria-label="Send to the Dispatcher"')
+    expect(html).not.toContain("composer-stop")
   })
-  it("returns to Send while idle", () => {
-    const html = render(false)
-    expect(html).toContain('aria-label="Send goal to the Dispatcher"')
-    expect(html).not.toContain('aria-label="Stop Dispatcher planning"')
+  it("groups plans made before conversations under Earlier plans", () => {
+    expect(render(true)).toContain("Earlier plans · 1")
+    expect(render(false)).not.toContain("Earlier plans")
+  })
+  it("offers no Refine button: replying is how a plan changes", () => {
+    expect(render(true)).not.toContain("Refine goal")
   })
 })
 

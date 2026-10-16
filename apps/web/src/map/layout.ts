@@ -28,6 +28,7 @@ export const routeShapes = [
 ] as const
 export type RouteShape = (typeof routeShapes)[number]
 
+/** Named, in the same order, by `LINE_COLOR_NAMES` in protocol. */
 const colors = [
   "#ce3548",
   "#176ab5",

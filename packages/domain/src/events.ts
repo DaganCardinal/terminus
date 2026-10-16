@@ -225,6 +225,7 @@ export type DomainEvent =
   | { type: "dispatcher.plan_failed"; planId: string }
   | { type: "dispatcher.plan_cancelled"; planId: string }
   | { type: "dispatcher.plan_stopped"; planId: string }
+  | { type: "dispatcher.plan_superseded"; planId: string; byPlanId: string }
   | {
       type: "dispatcher.baseline_fix_selected"
       planId: string

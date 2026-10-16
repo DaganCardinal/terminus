@@ -58,6 +58,11 @@
       "class_name": "DispatchWorkflow",
     },
     {
+      "name": "terminus-dispatcher-turn",
+      "binding": "DISPATCHER_TURN_WORKFLOW",
+      "class_name": "DispatcherTurnWorkflow",
+    },
+    {
       "name": "terminus-train",
       "binding": "TRAIN_WORKFLOW",
       "class_name": "TrainWorkflow",
@@ -310,6 +315,11 @@
           "name": "terminus-dispatch-fake",
           "binding": "DISPATCH_WORKFLOW",
           "class_name": "DispatchWorkflow",
+        },
+        {
+          "name": "terminus-dispatcher-turn-fake",
+          "binding": "DISPATCHER_TURN_WORKFLOW",
+          "class_name": "DispatcherTurnWorkflow",
         },
         {
           "name": "terminus-train-fake",

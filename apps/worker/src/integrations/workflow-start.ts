@@ -9,6 +9,7 @@ type WorkTable =
   | "technician_repairs"
   | "junctions"
   | "integration_attempts"
+  | "dispatcher_conversations"
 
 /** Fence both sides of creation: an HTTP request or cached Workflow step may
  * already be in flight when permanent deletion begins. */

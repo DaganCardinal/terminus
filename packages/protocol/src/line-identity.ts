@@ -20,6 +20,18 @@ export interface LineIdentity {
 }
 
 export const LINE_COLOR_COUNT = 8
+/** What each palette colour looks like on the map, in words, so the
+ * Dispatcher can follow "the purple Line". Matches the web palette. */
+export const LINE_COLOR_NAMES = [
+  "red",
+  "blue",
+  "green",
+  "purple",
+  "orange",
+  "pink",
+  "olive",
+  "teal",
+] as const satisfies { length: typeof LINE_COLOR_COUNT }
 export const ROUTE_SHAPE_COUNT = 6
 /** Lines named after a palette colour keep it when it is free. */
 const namedColors: Record<string, number> = {
@@ -179,10 +191,94 @@ export function lineIdentities(
   return identities
 }
 
+/** The number and colour name the map shows for a Line. */
+export function lineMarking(identity: LineIdentity) {
+  return {
+    number: identity.slot + 1,
+    color: LINE_COLOR_NAMES[identity.color % LINE_COLOR_COUNT]!,
+  }
+}
+
 /** Dispatcher IDs contain random UUID entropy, which seeds each Line's
  * choice of track profile. */
 function seed(id: string) {
   let hash = 2166136261
   for (const char of id) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619)
   return hash >>> 0
+}
+
+/** How a finished Line ended: its own work reached its destination, or it
+ * was abandoned. Lines joined by a Crossing or Junction finish together, so
+ * work collected in an unreleased Junction is still live. */
+export type LineOutcome = "integrated" | "abandoned"
+
+export function finishedLineOutcome(
+  history: Pick<LineHistory, "trains" | "junctions">,
+  line: Line
+): LineOutcome {
+  const junctionId =
+    line.destination?.kind === "junction"
+      ? line.destination.junctionId
+      : line.origin?.kind === "junction"
+        ? line.origin.junctionId
+        : undefined
+  const junction = history.junctions?.find((j) => j.id === junctionId)
+  return junction?.state.status !== "abandoned" &&
+    history.trains.some(
+      ({ train }) =>
+        train.lineId === line.id && train.state.status === "unloaded"
+    )
+    ? "integrated"
+    : "abandoned"
+}
+
+/**
+ * Where a Station's work actually is. One rule, shared by the Dispatcher's
+ * network brief, its read tools and the map.
+ */
+export type StationWhere =
+  | "waiting"
+  | "in_progress"
+  | "blocked"
+  /** Accepted onto a Train or into a Junction, not yet in Terminus. */
+  | "on_train"
+  | "in_terminus"
+  | "abandoned"
+  | "cancelled"
+
+export function stationWheres(
+  history: LineHistory & {
+    stations: { id: string; lineId: string; state: { status: string } }[]
+  },
+  identities: Map<string, LineIdentity> = lineIdentities(history)
+): Map<string, StationWhere> {
+  const outcomes = new Map<string, LineOutcome | undefined>(
+    history.lines.map((line) => [
+      line.id,
+      identities.get(line.id)?.live === false
+        ? finishedLineOutcome(history, line)
+        : undefined,
+    ])
+  )
+  return new Map(
+    history.stations.map((station) => {
+      const status = station.state.status
+      const outcome = outcomes.get(station.lineId)
+      const where: StationWhere =
+        status === "cancelled"
+          ? "cancelled"
+          : outcome === "abandoned"
+            ? "abandoned"
+            : status === "complete"
+              ? outcome === "integrated"
+                ? "in_terminus"
+                : "on_train"
+              : status === "waiting"
+                ? "waiting"
+                : status === "blocked"
+                  ? "blocked"
+                  : "in_progress"
+      return [station.id, where]
+    })
+  )
 }

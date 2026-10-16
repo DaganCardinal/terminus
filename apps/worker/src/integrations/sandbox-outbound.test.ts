@@ -904,9 +904,18 @@ describe("Sandbox outbound capabilities", () => {
       ],
     }
     const text = (reply: Reply) => reply.result.content[0]!.text
+    // As a revision, the plan stays unfinished until finalize_plan accepts it.
+    const drafts = new DispatchDraftStore(testEnv.DB)
+    await testEnv.DB.prepare(
+      "INSERT INTO dispatch_draft_checkpoints (plan_id, context, baseline, revising) VALUES (?, 'context', 'null', 1)"
+    )
+      .bind(plan.id)
+      .run()
     expect(
       text(await call("set_plan_outline", { outline: JSON.stringify(outline) }))
     ).toMatch(/^Saved the outline/)
+    expect(text(await call("finalize_plan", {}))).not.toMatch(/^Accepted:/)
+    expect(await drafts.revising(plan.id)).toBe(true)
     // Calls in one message arrive together; each saves only its own piece.
     const saved = await Promise.all(
       ["a", "b", "c"].map((key) =>
@@ -923,8 +932,9 @@ describe("Sandbox outbound capabilities", () => {
     expect(text(rejected)).toMatch(/^Not saved:/)
     expect(rejected.result.isError).toBeUndefined()
     expect(text(await call("finalize_plan", {}))).toMatch(/^Accepted:/)
+    expect(await drafts.revising(plan.id)).toBe(false)
 
-    const draft = await new DispatchDraftStore(testEnv.DB).read(plan.id)
+    const draft = await drafts.read(plan.id)
     expect(draft.outline).toEqual(outline)
     expect(Object.keys(draft.stations)).toEqual(["a", "b", "c"])
     // The rejected call changed nothing.

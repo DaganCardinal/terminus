@@ -8,8 +8,16 @@ import {
   type KeyboardEvent,
   type Ref,
 } from "react"
-import { ArrowUp, Maximize2, Minimize2, Route, Sparkles, X } from "lucide-react"
-import type { DispatchPlan, NetworkSnapshot } from "@terminus/protocol"
+import {
+  ArrowUp,
+  Maximize2,
+  Minimize2,
+  Plus,
+  Route,
+  Sparkles,
+  X,
+} from "lucide-react"
+import type { NetworkSnapshot } from "@terminus/protocol"
 import { Button } from "@terminus/ui/components/button"
 import { api, ApiRequestError } from "@/state/api"
 import {
@@ -26,6 +34,8 @@ import {
   UserMessage,
 } from "./dispatcher-message"
 import { PlanExchange } from "./dispatcher-planner"
+import { ConversationThread } from "./dispatcher-conversation"
+import { useConversation, useConversations } from "@/state/use-conversation"
 import { dispatcherIndicator } from "./dispatcher-state"
 import { RepairMessages } from "./technician-repairs"
 
@@ -59,17 +69,21 @@ export function DispatcherButton({
   )
 }
 
-type Sent = {
-  goal: string
+/** A message on its way, shown until the server's copy arrives. */
+type Sending = {
+  text: string
   requestId: string
   checkBaseline: boolean
-  planId?: string
-  planning?: boolean
+  /** Set once the server accepted it. */
+  turnId?: string
 }
 
-/** The Dispatcher as a collaborator beside the map: a thread of goals, the
- * plans it proposes, and the things it needs the user for. Every message is
- * a projection of the snapshot, so a refresh rebuilds the same thread. */
+/** Choosing "New conversation" before its first message creates it. */
+const NEW = "new"
+
+/** The Dispatcher as a collaborator beside the map: one conversation at a
+ * time, the plans it starts, and the things it needs the user for. Every
+ * message comes from the server, so a refresh rebuilds the same thread. */
 export function DispatcherPanel({
   snapshot,
   open,
@@ -90,38 +104,41 @@ export function DispatcherPanel({
   const [wide, setWide] = useState(false)
   const [draft, setDraft] = useState("")
   const [checkBaseline, setCheckBaseline] = useState(false)
-  const [sent, setSent] = useState<Sent | null>(null)
-  // The goal being refined, shown above the composer until it is sent.
-  const [revising, setRevising] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [stopping, setStopping] = useState(false)
-  const [stoppedId, setStoppedId] = useState<string | null>(null)
-  const [cleanupPlanId, setCleanupPlanId] = useState<string | null>(null)
-  const submission = useRef<Promise<DispatchPlan> | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sending, setSending] = useState<Sending | null>(null)
+  // The conversation the user picked; otherwise the most recently active.
+  const [selected, setSelected] = useState<string | null>(null)
+  const newConversation = useRef<string | null>(null)
   const panel = useRef<HTMLElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLTextAreaElement>(null)
 
-  const plans = snapshot.plans
-  const latest = plans.at(-1)
-  const showSent =
-    sent &&
-    sent.planId !== stoppedId &&
-    !plans.some((plan) => plan.id === sent.planId)
-  const activePlanId =
-    cleanupPlanId ??
-    plans.findLast(
-      (plan) =>
-        (plan.state.status === "planning" ||
-          (plan.state.status === "failed" &&
-            plan.state.reason === "cancelled" &&
-            plan.state.cleanupPending)) &&
-        plan.id !== stoppedId
-    )?.id ??
-    (showSent && (pending || sent.planning)
-      ? (sent.planId ?? `dispatch-${sent.requestId.replaceAll("-", "")}`)
-      : null)
+  const { conversations, refresh: refreshList } = useConversations(
+    networkId,
+    open
+  )
+  const conversationId =
+    selected === NEW ? null : (selected ?? conversations?.[0]?.id ?? null)
+  const { view, refresh } = useConversation(networkId, conversationId, open)
+  const conversation =
+    view?.conversation ??
+    conversations?.find((c) => c.id === conversationId) ??
+    null
+  const responding = conversation?.state === "responding"
+  const messages = view?.messages ?? []
+  const showSending =
+    sending &&
+    !(
+      sending.turnId &&
+      messages.some(
+        (m) => m.turnId === sending.turnId && m.message.kind === "user"
+      )
+    )
+
+  const earlierPlans = snapshot.plans.filter((plan) => !plan.conversationId)
+  const latestEarlier = earlierPlans.at(-1)
   const { blocked, awaiting, notices } = attentionTrains(snapshot)
   const conflicts = conflictThreads(snapshot)
   const repairs = repairThreads(snapshot)
@@ -134,12 +151,13 @@ export function DispatcherPanel({
   const running = snapshot.trains.filter(
     ({ train }) => !["unloaded", "siding"].includes(train.state.status)
   ).length
-  const status =
-    indicator.tone !== "idle"
+  const status = responding
+    ? "Answering…"
+    : indicator.tone !== "idle"
       ? indicator.label
       : running > 0
         ? `${running} ${running === 1 ? "Train" : "Trains"} running`
-        : "Ready for your next goal"
+        : "Ready when you are"
 
   const command = useCallback(async (run: () => Promise<unknown>) => {
     setPending(true)
@@ -153,80 +171,75 @@ export function DispatcherPanel({
     }
   }, [])
 
-  function propose(goal: string) {
-    const trimmed = goal.trim()
-    if (!trimmed || pending || activePlanId || stopping) return
+  function send(text: string) {
+    const trimmed = text.trim()
+    if (!trimmed || pending || responding || stopping) return
     // A resend of the same text keeps its request identity, so a retried
-    // request cannot create a second plan.
-    const request =
-      sent &&
-      sent.goal === trimmed &&
-      sent.checkBaseline === checkBaseline &&
-      !sent.planId
-        ? sent
-        : { goal: trimmed, requestId: crypto.randomUUID(), checkBaseline }
-    setSent(request)
+    // request cannot send the message twice.
+    const request: Sending =
+      sending &&
+      !sending.turnId &&
+      sending.text === trimmed &&
+      sending.checkBaseline === checkBaseline
+        ? sending
+        : { text: trimmed, requestId: crypto.randomUUID(), checkBaseline }
+    setSending(request)
     setDraft("")
-    setRevising(null)
     void command(async () => {
       try {
-        const creating = api.proposePlan(networkId, {
-          goal: request.goal,
+        let id = conversationId
+        if (!id) {
+          newConversation.current ??= crypto.randomUUID()
+          id = (
+            await api.createConversation(networkId, newConversation.current)
+          ).id
+          newConversation.current = null
+          setSelected(id)
+          refreshList()
+        }
+        const sent = await api.sendConversationMessage(networkId, id, {
           requestId: request.requestId,
+          text: request.text,
           ...(request.checkBaseline ? { checkBaseline: true } : {}),
         })
-        submission.current = creating
-        const created = await creating
-        setSent({
-          ...request,
-          planId: created.id,
-          planning: created.state.status === "planning",
-        })
+        setSending({ ...request, turnId: sent.turnId })
+        refresh()
       } catch (caught) {
-        setSent(null)
-        setDraft(request.goal)
+        setSending(null)
+        setDraft(request.text)
         throw caught
       }
     })
   }
 
   async function stop() {
-    if (!activePlanId || stopping) return
-    const planId = activePlanId
+    const turnId = conversation?.turnId
+    if (!conversationId || !turnId || stopping) return
     setStopping(true)
     setError(null)
     try {
-      setCleanupPlanId(planId)
-      try {
-        await api.stopPlan(networkId, planId)
-      } catch (caught) {
-        // Stop can beat the initial insert; retry once the submission establishes its identity.
-        if (
-          !(caught instanceof ApiRequestError) ||
-          caught.status !== 404 ||
-          !submission.current
-        )
-          throw caught
-        await submission.current
-        await api.stopPlan(networkId, planId)
-      }
-      setStoppedId(planId)
-      setCleanupPlanId(null)
-      setSent((previous) =>
-        previous ? { ...previous, planId, planning: false } : null
-      )
+      await api.stopConversationTurn(networkId, conversationId, turnId)
     } catch (caught) {
-      if (caught instanceof ApiRequestError && caught.status < 500)
-        setCleanupPlanId(null)
-      setError(caught instanceof Error ? caught.message : String(caught))
+      // The turn may have finished on its own just before.
+      if (!(caught instanceof ApiRequestError) || caught.status !== 409)
+        setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
       setStopping(false)
+      refresh()
     }
+  }
+
+  function startNew() {
+    newConversation.current = null
+    setSelected(NEW)
+    setSending(null)
+    setError(null)
+    requestAnimationFrame(() => input.current?.focus())
   }
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    propose(draft)
+    send(draft)
   }
 
   function onComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -236,20 +249,9 @@ export function DispatcherPanel({
       !event.nativeEvent.isComposing
     ) {
       event.preventDefault()
-      propose(draft)
+      send(draft)
     }
   }
-
-  const refine = useCallback((goal: string, revise = true) => {
-    setDraft(goal)
-    setRevising(revise ? goal : null)
-    requestAnimationFrame(() => {
-      const field = input.current
-      if (!field) return
-      field.focus()
-      field.setSelectionRange(field.value.length, field.value.length)
-    })
-  }, [])
 
   // The composer grows with its text, up to a limit. A hidden panel has
   // nothing to measure, so it measures again when it opens.
@@ -277,27 +279,22 @@ export function DispatcherPanel({
     const element = scroller.current
     if (element) element.scrollTop = element.scrollHeight
     if (!mobile) input.current?.focus({ preventScroll: true })
-  }, [open, mobile])
+  }, [open, mobile, conversationId])
 
-  // New messages scroll into view while the reader is following along. A
-  // freshly drafted plan scrolls to its start so it reads top to bottom.
-  const signature = `${plans.map((p) => `${p.id}:${p.state.status}`).join()}|${needs}|${showSent ? 1 : 0}`
-  const previous = useRef({ signature, latest: latest?.state.status })
+  // New messages scroll into view while the reader is following along.
+  const signature = `${conversationId}|${messages.length}|${responding ? 1 : 0}|${showSending ? 1 : 0}|${needs}`
+  const previous = useRef(signature)
   useEffect(() => {
     const element = scroller.current
-    const before = previous.current
-    previous.current = { signature, latest: latest?.state.status }
-    if (!element || before.signature === signature) return
-    if (latest?.state.status === "ready" && before.latest === "planning") {
-      element
-        .querySelector(`[data-plan="${latest.id}"] .dmsg`)
-        ?.scrollIntoView({ behavior: "smooth", block: "start" })
-      return
-    }
+    if (!element || previous.current === signature) return
+    previous.current = signature
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
-  }, [signature, latest])
+  }, [signature])
 
-  const empty = plans.length === 0 && snapshot.lines.length === 0
+  const empty =
+    snapshot.plans.length === 0 &&
+    snapshot.lines.length === 0 &&
+    !messages.length
 
   return (
     <aside
@@ -315,7 +312,10 @@ export function DispatcherPanel({
     >
       <div className="drawer-grip" aria-hidden="true" />
       <header className="dpanel-head">
-        <DispatcherAvatar tone={indicator.tone} size="lg" />
+        <DispatcherAvatar
+          tone={responding ? "working" : indicator.tone}
+          size="lg"
+        />
         <div className="dpanel-title">
           <h2 id="dispatcher-title">Dispatcher</h2>
           <p role="status">{status}</p>
@@ -350,15 +350,47 @@ export function DispatcherPanel({
           <X size={17} />
         </button>
       </header>
+      <div className="dpanel-conversations">
+        <label htmlFor="dispatcher-conversation" className="sr-only">
+          Conversation
+        </label>
+        <select
+          id="dispatcher-conversation"
+          value={conversationId ?? NEW}
+          disabled={pending}
+          onChange={(event) => {
+            setSelected(event.target.value)
+            setSending(null)
+            setError(null)
+          }}
+        >
+          {!conversationId && <option value={NEW}>New conversation</option>}
+          {(conversations ?? []).map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.title || "New conversation"}
+            </option>
+          ))}
+        </select>
+        <button
+          className="dpanel-new"
+          onClick={startNew}
+          disabled={pending || !conversationId}
+        >
+          <Plus size={14} /> New
+        </button>
+      </div>
 
       <div ref={scroller} className="dpanel-thread">
         <DispatcherMessage meta="Dispatcher">
           <p>
-            I plan work for <strong>{snapshot.network.name}</strong>. Tell me
-            what you want to build and I&rsquo;ll lay it out as Lines that can
-            run side by side, with a Work Manifest for every Station.
+            I plan and follow work for <strong>{snapshot.network.name}</strong>.
+            Ask me where things stand, or tell me what you want to build and
+            I&rsquo;ll lay it out as Lines that can run side by side.
           </p>
-          <p>You review the plan. Nothing runs until you launch it.</p>
+          <p>
+            You review every plan. Nothing runs until you launch it, and
+            replying is how you change a plan.
+          </p>
           {empty && (
             <div className="starters">
               <div className="starters-demo">
@@ -399,28 +431,41 @@ export function DispatcherPanel({
           )}
         </DispatcherMessage>
 
-        {plans.map((plan) => (
-          <PlanExchange
-            key={plan.id}
-            plan={plan}
-            snapshot={snapshot}
-            latest={plan === latest}
-            pending={pending}
-            visible={open}
-            command={command}
-            refine={refine}
-            propose={propose}
-            openTrain={openTrain}
-          />
-        ))}
+        {earlierPlans.length > 0 && (
+          <details className="earlier-plans">
+            <summary>Earlier plans · {earlierPlans.length}</summary>
+            {earlierPlans.map((plan) => (
+              <PlanExchange
+                key={plan.id}
+                plan={plan}
+                snapshot={snapshot}
+                latest={plan === latestEarlier}
+                pending={pending}
+                visible={open}
+                command={command}
+                openTrain={openTrain}
+              />
+            ))}
+          </details>
+        )}
 
-        {showSent && (
+        <ConversationThread
+          messages={messages}
+          snapshot={snapshot}
+          responding={responding && !showSending}
+          pending={pending}
+          visible={open}
+          command={command}
+          openTrain={openTrain}
+        />
+
+        {showSending && (
           <div className="exchange">
-            <UserMessage text={sent.goal} sending={!sent.planId} />
+            <UserMessage text={sending.text} sending={!sending.turnId} />
             <DispatcherMessage tone="working">
               <p className="dmsg-status" role="status">
                 <Typing />
-                <span>Reading your goal…</span>
+                <span>Reading your message…</span>
               </p>
             </DispatcherMessage>
           </div>
@@ -466,26 +511,9 @@ export function DispatcherPanel({
             </button>
           </p>
         )}
-        {revising && (
-          <div className="composer-context">
-            <span>
-              Revising <q>{revising}</q>. Sending drafts a fresh plan.
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setRevising(null)
-                setDraft("")
-              }}
-              aria-label="Stop revising"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
         <div className="composer-box">
           <label htmlFor="dispatch-goal" className="sr-only">
-            Goal for the Dispatcher
+            Message the Dispatcher
           </label>
           <textarea
             ref={input}
@@ -496,20 +524,18 @@ export function DispatcherPanel({
             maxLength={4000}
             rows={1}
             placeholder={
-              revising
-                ? "Describe what to change…"
-                : plans.length
-                  ? "Describe what to build next…"
-                  : "Describe what you want to build…"
+              messages.length
+                ? "Reply to the Dispatcher…"
+                : "Ask about the network, or describe what to build…"
             }
           />
-          {activePlanId ? (
+          {responding ? (
             <button
               type="button"
               className="composer-send composer-stop"
               disabled={stopping}
               onClick={() => void stop()}
-              aria-label="Stop Dispatcher planning"
+              aria-label="Stop the Dispatcher's answer"
             >
               {stopping ? "Stopping…" : "Stop"}
             </button>
@@ -518,7 +544,7 @@ export function DispatcherPanel({
               type="submit"
               className="composer-send"
               disabled={pending || stopping || !draft.trim()}
-              aria-label="Send goal to the Dispatcher"
+              aria-label="Send to the Dispatcher"
             >
               <ArrowUp size={17} />
             </button>
@@ -527,7 +553,7 @@ export function DispatcherPanel({
         <div className="composer-footer">
           <label
             className="composer-option"
-            title="Install dependencies and run the project's checks before exploring. Slower; a failing check gets a suggested fix you can reject."
+            title="If this message starts a plan, install dependencies and run the project's checks before exploring. Slower; a failing check gets a suggested fix you can reject."
           >
             <input
               type="checkbox"

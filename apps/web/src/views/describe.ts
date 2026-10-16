@@ -178,6 +178,8 @@ export function describeEvent(
       return "Dispatcher planning cancelled at your request"
     case "dispatcher.plan_stopped":
       return "Dispatcher planning stopped"
+    case "dispatcher.plan_superseded":
+      return "Dispatcher proposal replaced by a revised plan"
     case "dispatcher.plan_failed":
       return "Dispatcher plan stopped; inspect its details"
     case "dispatcher.baseline_fix_selected":

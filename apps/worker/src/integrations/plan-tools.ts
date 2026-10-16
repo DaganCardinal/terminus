@@ -8,7 +8,7 @@ import type { PlanDraft, SandboxNetwork } from "@terminus/protocol"
 import type { DispatchDraftStore } from "./dispatch-draft-store"
 
 type PlanCheck = NonNullable<SandboxNetwork["proposalCheck"]>
-type Drafts = Pick<DispatchDraftStore, "read" | "save">
+type Drafts = Pick<DispatchDraftStore, "read" | "save" | "accept">
 
 const toolNames: readonly string[] = Object.values(planToolNames)
 
@@ -63,6 +63,8 @@ export async function planToolResponse(
       const reply = planToolReply(name, params.arguments, draft, check)
       try {
         await drafts.save(check.planId, draft, reply.draft)
+        // The planner's own acceptance is what finishes a revision.
+        if (reply.outcome === "accepted") await drafts.accept(check.planId)
       } catch {
         return toolError(id, "Terminus could not save this call.")
       }

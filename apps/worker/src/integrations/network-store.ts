@@ -81,6 +81,7 @@ import type {
   StationRunResult,
 } from "@terminus/agent-runtime"
 import { defaultValidation } from "./execution-config"
+import { DispatchDraftStore } from "./dispatch-draft-store"
 import type {
   EventEnvelope,
   NetworkSnapshot,
@@ -118,6 +119,8 @@ export type Write =
       version: number | null
     }
   | { kind: "dispatch_plan"; plan: DispatchPlan; version: number | null }
+  /** Starts a revision from the revised plan's saved draft. */
+  | { kind: "dispatch_draft_copy"; fromPlanId: string; toPlanId: string }
   | { kind: "network"; network: NetworkSummary; projectSource?: string }
   | {
       kind: "publication"
@@ -1519,7 +1522,14 @@ export class NetworkStore {
       }
     }
     const statements = [
-      ...writes.map((write) => this.#statement(networkId, write, occurredAt)),
+      ...writes.flatMap((write) =>
+        write.kind === "dispatch_draft_copy"
+          ? new DispatchDraftStore(this.#db).copyStatements(
+              write.fromPlanId,
+              write.toPlanId
+            )
+          : [this.#statement(networkId, write, occurredAt)]
+      ),
       ...configurations,
       ...events.map((event) => this.#event(networkId, event, occurredAt)),
     ]
@@ -1697,7 +1707,7 @@ export class NetworkStore {
 
   #statement(
     networkId: NetworkId,
-    write: Write,
+    write: Exclude<Write, { kind: "dispatch_draft_copy" }>,
     occurredAt: string
   ): D1PreparedStatement {
     const db = this.#db

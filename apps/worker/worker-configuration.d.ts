@@ -36,6 +36,7 @@ interface __BaseEnv_Env {
 	JUNCTION_WORKFLOW: Workflow<Parameters<import("./src/index").JunctionWorkflow['run']>[0]['payload']>;
 	TECHNICIAN_WORKFLOW: Workflow<Parameters<import("./src/index").TechnicianWorkflow['run']>[0]['payload']>;
 	DISPATCH_WORKFLOW: Workflow<Parameters<import("./src/index").DispatchWorkflow['run']>[0]['payload']>;
+	DISPATCHER_TURN_WORKFLOW: Workflow<Parameters<import("./src/index").DispatcherTurnWorkflow['run']>[0]['payload']>;
 	TRAIN_WORKFLOW: Workflow<Parameters<import("./src/index").TrainWorkflow['run']>[0]['payload']>;
 	STATION_WORKFLOW: Workflow<Parameters<import("./src/index").StationWorkflow['run']>[0]['payload']>;
 	INTEGRATION_WORKFLOW: Workflow<Parameters<import("./src/index").IntegrationWorkflow['run']>[0]['payload']>;
@@ -88,6 +89,7 @@ declare namespace Cloudflare {
 		JUNCTION_WORKFLOW: Workflow<Parameters<import("./src/index").JunctionWorkflow['run']>[0]['payload']>;
 		TECHNICIAN_WORKFLOW: Workflow<Parameters<import("./src/index").TechnicianWorkflow['run']>[0]['payload']>;
 		DISPATCH_WORKFLOW: Workflow<Parameters<import("./src/index").DispatchWorkflow['run']>[0]['payload']>;
+		DISPATCHER_TURN_WORKFLOW: Workflow<Parameters<import("./src/index").DispatcherTurnWorkflow['run']>[0]['payload']>;
 		TRAIN_WORKFLOW: Workflow<Parameters<import("./src/index").TrainWorkflow['run']>[0]['payload']>;
 		STATION_WORKFLOW: Workflow<Parameters<import("./src/index").StationWorkflow['run']>[0]['payload']>;
 		INTEGRATION_WORKFLOW: Workflow<Parameters<import("./src/index").IntegrationWorkflow['run']>[0]['payload']>;

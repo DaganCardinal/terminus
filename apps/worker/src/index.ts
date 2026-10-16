@@ -6,6 +6,7 @@ export { StationWorkflow } from "./workflows/station-workflow"
 export { TrainWorkflow } from "./workflows/train-workflow"
 export { IntegrationWorkflow } from "./workflows/integration-workflow"
 export { DispatchWorkflow } from "./workflows/dispatch-workflow"
+export { DispatcherTurnWorkflow } from "./workflows/dispatcher-turn-workflow"
 export { ConflictWatchWorkflow } from "./workflows/conflict-watch-workflow"
 export {
   ExecutionSandbox,

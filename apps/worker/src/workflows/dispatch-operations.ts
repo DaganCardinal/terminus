@@ -56,7 +56,23 @@ export async function prepareDispatchPlan(
   try {
     const current = await load(ports, planId)
     if (current.value.state.status !== "planning") return
+    const revised = plan.revises
+      ? (await ports.store.dispatchPlan(plan.revises))?.value
+      : undefined
+    const revisedProposal =
+      revised && "proposal" in revised.state
+        ? revised.state.proposal
+        : undefined
     const result = await ports.planner.plan({
+      ...(plan.request ? { request: plan.request } : {}),
+      ...(plan.revises
+        ? {
+            revision: {
+              planId: plan.revises,
+              ...(revisedProposal ? { proposal: revisedProposal } : {}),
+            },
+          }
+        : {}),
       planId,
       goal: plan.goal,
       network: planningContext(snapshot),

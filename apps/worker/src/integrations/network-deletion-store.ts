@@ -55,6 +55,12 @@ export class NetworkDeletionStore {
         ...stationRunHistory(events).map((run) => run.runId),
       ]),
     ]
+    const { results: turns } = await this.db
+      .prepare(
+        "SELECT DISTINCT m.turn_id FROM dispatcher_messages m JOIN dispatcher_conversations c ON c.id = m.conversation_id WHERE c.network_id = ?"
+      )
+      .bind(networkId)
+      .all<{ turn_id: string }>()
     const { results: sandboxes } = await this.db
       .prepare(
         "SELECT object_id, binding FROM network_sandboxes WHERE namespace = ?"
@@ -70,6 +76,7 @@ export class NetworkDeletionStore {
         INTEGRATION_WORKFLOW: rows[5]!,
         STATION_WORKFLOW: runIds,
         CONFLICT_WATCH_WORKFLOW: rows[7]!,
+        DISPATCHER_TURN_WORKFLOW: turns.map((row) => row.turn_id),
       },
       sandboxes: sandboxes.map((row) => ({
         id: row.object_id,
@@ -97,6 +104,8 @@ export class NetworkDeletionStore {
         )
         .bind(networkId),
       ...[
+        // Messages go with their conversations.
+        "dispatcher_conversations",
         "conflict_watches",
         "engineer_notices",
         "engineer_assessments",

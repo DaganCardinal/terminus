@@ -147,6 +147,10 @@ class SandboxDispatchSession implements DispatchSession {
     return saved
   }
 
+  async revising() {
+    return this.#input.persistent && this.#drafts.revising(this.#input.planId)
+  }
+
   async prepare(): Promise<BaselineReport | null> {
     const { repository, checkBaseline, model } = this.#input
     gatewayConfig(this.#env, model)

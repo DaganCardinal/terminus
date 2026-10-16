@@ -289,6 +289,7 @@ This runs the local ten-Train Workflow rehearsal and real local Git oracle, with
 | Guide | Covers |
 | --- | --- |
 | [Live setup](docs/live-setup.md) | Credentials, agents and models, provider routing, release gate, deployment |
+| [Dispatcher conversations](docs/dispatcher-conversations.md) | Talking to the Dispatcher: turns, read tools, planning from a conversation, revisions, model adapters, API |
 | [Dispatcher planning](docs/dispatcher-planning.md) | Proposing, reviewing and launching plans; removing Stations; recovery |
 | [Unloading and human approval](docs/unloading.md) | Auto-unload vs. review yard, commit-bound approval |
 | [Station execution](docs/station-execution.md) | Station runs, evidence, revision allowance, Conductor review |

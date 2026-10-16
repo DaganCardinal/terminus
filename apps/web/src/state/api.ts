@@ -22,6 +22,11 @@ import {
   trainUnloadPolicySchema,
   type UnloadMode,
   type CreateDispatchPlanRequest,
+  conversationSummarySchema,
+  conversationsResponseSchema,
+  conversationMessagesResponseSchema,
+  sendConversationMessageResponseSchema,
+  type SendConversationMessageRequest,
   type ApiError,
   type EventsResponse,
   type Hold,
@@ -263,6 +268,52 @@ export const api = {
   proposePlan: async (networkId: string, body: CreateDispatchPlanRequest) =>
     dispatchPlanSchema.parse(
       await request(`/networks/${networkId}/plans`, { method: "POST", body })
+    ),
+  conversations: async (networkId: string) =>
+    conversationsResponseSchema.parse(
+      await request(`/networks/${encodeURIComponent(networkId)}/conversations`)
+    ).conversations,
+  createConversation: async (networkId: string, requestId: string) =>
+    conversationSummarySchema.parse(
+      await request(
+        `/networks/${encodeURIComponent(networkId)}/conversations`,
+        {
+          method: "POST",
+          body: { requestId },
+        }
+      )
+    ),
+  conversationMessages: async (
+    networkId: string,
+    conversationId: string,
+    after: number
+  ) =>
+    conversationMessagesResponseSchema.parse(
+      await request(
+        `/networks/${encodeURIComponent(networkId)}/conversations/${encodeURIComponent(conversationId)}/messages?after=${after}`
+      )
+    ),
+  sendConversationMessage: async (
+    networkId: string,
+    conversationId: string,
+    body: SendConversationMessageRequest
+  ) =>
+    sendConversationMessageResponseSchema.parse(
+      await request(
+        `/networks/${encodeURIComponent(networkId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+        { method: "POST", body }
+      )
+    ),
+  stopConversationTurn: async (
+    networkId: string,
+    conversationId: string,
+    turnId: string
+  ) =>
+    conversationSummarySchema.parse(
+      await request(
+        `/networks/${encodeURIComponent(networkId)}/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/stop`,
+        { method: "POST" }
+      )
     ),
   stopPlan: async (networkId: string, planId: string) =>
     dispatchPlanSchema.parse(

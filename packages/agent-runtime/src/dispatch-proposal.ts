@@ -10,10 +10,13 @@ export class DispatchProposalError extends Error {
   readonly issues: readonly DispatchValidationIssue[]
   constructor(
     issues: readonly DispatchValidationIssue[],
-    limit: "corrections" | "tool_rejections" = "corrections"
+    limit:
+      "corrections" | "tool_rejections" | "unfinished_revision" = "corrections"
   ) {
     super(
-      `Dispatcher proposal failed validation ${limit === "tool_rejections" ? "after repeated rejected plan tool calls" : "after three attempts"}: ${issues.map((issue) => `${issue.path} (${issue.code})`).join("; ")}`
+      limit === "unfinished_revision"
+        ? "Dispatcher did not finish the revision: its plan tools never accepted the changed plan"
+        : `Dispatcher proposal failed validation ${limit === "tool_rejections" ? "after repeated rejected plan tool calls" : "after three attempts"}: ${issues.map((issue) => `${issue.path} (${issue.code})`).join("; ")}`
     )
     this.name = "DispatchProposalError"
     this.issues = issues

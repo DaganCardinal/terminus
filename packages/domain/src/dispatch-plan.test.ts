@@ -13,6 +13,8 @@ import {
   launchProposal,
   selectBaselineFix,
   selectPlannedUnloadMode,
+  revisablePlan,
+  supersedeDispatchPlan,
   type BaselineReport,
   type DispatchProposal,
 } from "./dispatch-plan"
@@ -447,5 +449,50 @@ describe("Baseline fix suggestions", () => {
     expect(selected.state.proposal.baselineFix?.line.unloadMode).toBe(
       "human_approval"
     )
+  })
+})
+
+describe("Plan revisions", () => {
+  const inConversation = <T extends { conversationId?: string }>(p: T) => ({
+    ...p,
+    conversationId: "c1",
+  })
+
+  it("supersedes a ready plan so it can never launch, keeping its proposal", () => {
+    const revised = supersedeDispatchPlan(inConversation(ready()), "plan-2")
+    expect(eventTypes(revised)).toEqual(["dispatcher.plan_superseded"])
+    const superseded = unwrap(revised)
+    expect(superseded.state).toMatchObject({
+      status: "failed",
+      reason: "superseded",
+      supersededBy: "plan-2",
+      proposal: proposal(),
+    })
+    expectRejected(
+      requestPlanLaunch(superseded, "base", context),
+      "invalid_state"
+    )
+    expectRejected(supersedeDispatchPlan(superseded, "plan-3"), "invalid_state")
+    expectRejected(supersedeDispatchPlan(plan(), "plan-3"), "invalid_state")
+  })
+
+  it("revises only this conversation's ready or failed plans", () => {
+    const readyPlan = inConversation(ready())
+    expect(revisablePlan(readyPlan, "c1").ok).toBe(true)
+    expectRejected(revisablePlan(readyPlan, "c2"), "invalid_input")
+    expectRejected(revisablePlan(ready(), "c1"), "invalid_input")
+    const failed = inConversation(unwrap(failDispatchPlan(plan(), "broken")))
+    expect(revisablePlan(failed, "c1").ok).toBe(true)
+    const stopped = inConversation(unwrap(cancelDispatchPlan(plan())))
+    expect(revisablePlan(stopped, "c1").ok).toBe(true)
+    expectRejected(revisablePlan(inConversation(plan()), "c1"), "invalid_state")
+    const launching = inConversation(
+      unwrap(requestPlanLaunch(ready(), "base", context))
+    )
+    expectRejected(revisablePlan(launching, "c1"), "invalid_state")
+    const superseded = inConversation(
+      unwrap(supersedeDispatchPlan(readyPlan, "plan-2"))
+    )
+    expectRejected(revisablePlan(superseded, "c1"), "invalid_state")
   })
 })

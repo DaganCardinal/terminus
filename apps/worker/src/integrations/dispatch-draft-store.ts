@@ -6,6 +6,9 @@ import {
 } from "@terminus/protocol"
 import type { BaselineReport } from "@terminus/domain"
 
+/** The checkpoint context of a revision's copied draft, until its first session's checkpoint. */
+const REVISION_SEED = "revision-seed"
+
 /**
  * The plan a Dispatcher session writes through its plan tools, one row per
  * piece. Parallel tool calls each write only their own piece, so they never
@@ -53,7 +56,11 @@ export class DispatchDraftStore {
     return { baseline, draft: await this.read(planId) }
   }
 
-  /** A changed or legacy context starts fresh, atomically with its trusted checkpoint. */
+  /**
+   * A changed or legacy context starts fresh, atomically with its trusted
+   * checkpoint. An unfinished revision keeps its draft, which started as the
+   * revised plan's; its `revising` flag is never changed here.
+   */
   async begin(
     planId: string,
     context: string,
@@ -62,10 +69,15 @@ export class DispatchDraftStore {
     const saved = await this.restore(planId, context)
     if (saved && JSON.stringify(saved.baseline) === JSON.stringify(baseline))
       return
+    const seeded = await this.revising(planId)
     await this.db.batch([
-      this.db
-        .prepare("DELETE FROM dispatch_drafts WHERE plan_id = ?")
-        .bind(planId),
+      ...(seeded
+        ? []
+        : [
+            this.db
+              .prepare("DELETE FROM dispatch_drafts WHERE plan_id = ?")
+              .bind(planId),
+          ]),
       this.db
         .prepare(
           "INSERT INTO dispatch_draft_checkpoints (plan_id, context, baseline) VALUES (?, ?, ?) ON CONFLICT(plan_id) DO UPDATE SET context = excluded.context, baseline = excluded.baseline"
@@ -76,6 +88,52 @@ export class DispatchDraftStore {
           JSON.stringify(baselineReportSchema.nullable().parse(baseline))
         ),
     ])
+  }
+
+  /**
+   * Starts a revision from the revised plan's draft. The preparation
+   * checkpoint is not copied: Terminus may have moved, so the baseline is
+   * prepared again and the draft is checked against the current network.
+   * The seed marker never matches a session's context, so nothing is
+   * restored from it. The revision stays `revising` until `accept`.
+   */
+  copyStatements(fromPlanId: string, toPlanId: string): D1PreparedStatement[] {
+    return [
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO dispatch_drafts (plan_id, part, key, body, updated_at) SELECT ?, part, key, body, updated_at FROM dispatch_drafts WHERE plan_id = ?"
+        )
+        .bind(toPlanId, fromPlanId),
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO dispatch_draft_checkpoints (plan_id, context, baseline, revising) VALUES (?, ?, 'null', 1)"
+        )
+        .bind(toPlanId, REVISION_SEED),
+    ]
+  }
+
+  /**
+   * A revision whose plan tools have not accepted it yet. Its draft can pass
+   * every check while it is still the revised plan's, so it is no answer.
+   */
+  async revising(planId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        "SELECT revising FROM dispatch_draft_checkpoints WHERE plan_id = ?"
+      )
+      .bind(planId)
+      .first<{ revising: number }>()
+    return row?.revising === 1
+  }
+
+  /** `finalize_plan` accepted the plan: a revision is finished. */
+  async accept(planId: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE dispatch_draft_checkpoints SET revising = 0 WHERE plan_id = ? AND revising = 1"
+      )
+      .bind(planId)
+      .run()
   }
 
   async read(planId: string): Promise<PlanDraft> {

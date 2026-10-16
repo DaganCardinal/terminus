@@ -18,3 +18,7 @@ export * from "./harness-activity"
 
 export * from "./engineer-context"
 export * from "./conflict-watch"
+export * from "./chat-model"
+export * from "./chat-adapters"
+export * from "./network-brief"
+export * from "./dispatcher-conversation"

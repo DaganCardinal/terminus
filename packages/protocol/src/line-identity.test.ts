@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import type { Line } from "@terminus/domain"
-import { lineIdentities, type LineHistory } from "./line-identity"
+import {
+  lineIdentities,
+  stationWheres,
+  type LineHistory,
+} from "./line-identity"
 
 const line = (id: string, extra: Partial<Line> = {}): Line =>
   ({
@@ -210,5 +214,70 @@ describe("lineIdentities", () => {
     )
     expect(ids.get("p1")!.slot).toBe(0)
     expect(ids.get("p2")!.slot).toBe(2)
+  })
+})
+
+describe("stationWheres", () => {
+  const station = (id: string, lineId: string, status: string) => ({
+    id,
+    lineId,
+    state: { status },
+  })
+  it("says where each Station's work is", () => {
+    const wheres = stationWheres({
+      ...history(
+        [
+          [line("live", { stationIds: ["w", "p", "b", "t", "x"] }), 1],
+          [line("done", { stationIds: ["d", "dc"] }), 1],
+          [line("gone", { stationIds: ["g", "gc"] }), 1],
+        ],
+        [
+          train("live", "in_transit"),
+          train("done", "unloaded", 5),
+          train("gone", "siding", 5),
+        ]
+      ),
+      stations: [
+        station("w", "live", "waiting"),
+        station("p", "live", "in_review"),
+        station("b", "live", "blocked"),
+        station("t", "live", "complete"),
+        station("x", "live", "cancelled"),
+        station("d", "done", "complete"),
+        station("dc", "done", "cancelled"),
+        station("g", "gone", "complete"),
+        station("gc", "gone", "cancelled"),
+      ],
+    })
+    expect(Object.fromEntries(wheres)).toEqual({
+      w: "waiting",
+      p: "in_progress",
+      b: "blocked",
+      t: "on_train",
+      x: "cancelled",
+      d: "in_terminus",
+      dc: "cancelled",
+      g: "abandoned",
+      gc: "cancelled",
+    })
+  })
+
+  it("keeps work collected in an abandoned Junction abandoned", () => {
+    const wheres = stationWheres({
+      ...history(
+        [
+          [
+            line("in", {
+              destination: { kind: "junction", junctionId: "j" },
+            }),
+            1,
+          ],
+        ],
+        [train("in", "unloaded", 5)],
+        { junctions: [{ id: "j", state: { status: "abandoned" } }] }
+      ),
+      stations: [station("in-s1", "in", "complete")],
+    })
+    expect(wheres.get("in-s1")).toBe("abandoned")
   })
 })

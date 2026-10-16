@@ -17,6 +17,11 @@ export interface DispatchPlanningInput {
   /** Trusted project configuration from D1, never supplied by a model. */
   validation: ValidationCommand[]
   onActivity?: ActivityObserver
+  /** Present when a conversation asked for the plan; `goal` is its brief. */
+  request?: import("@terminus/domain").PlanRequest
+  /** The plan this one revises, when it reached a proposal. With plan tools
+   * its saved draft is copied into this plan before planning starts. */
+  revision?: { planId: string; proposal?: DispatchProposal }
 }
 
 export interface DispatchPlanResult {

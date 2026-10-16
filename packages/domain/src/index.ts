@@ -1,6 +1,7 @@
 export * from "./crossing"
 export * from "./car"
 export * from "./conflict"
+export * from "./conversation"
 export * from "./dispatch-plan"
 export * from "./engineer"
 export * from "./events"

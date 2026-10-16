@@ -17,6 +17,11 @@ import {
   HarnessRepairConductor,
   HarnessDispatcher,
   FakeDispatchPlanner,
+  FakeDispatcherChat,
+  AnthropicChatModel,
+  OpenAiChatModel,
+  WorkersAiChatModel,
+  type ChatModel,
   FakeConflictInvestigator,
   FakeConflictTriage,
   HarnessConflictInvestigator,
@@ -34,6 +39,7 @@ import {
   type RepositoryHost,
 } from "@terminus/artifacts"
 import {
+  catalogModel,
   scriptedStressAgent,
   harnessRoles,
   type RoleExecutions,
@@ -72,7 +78,19 @@ import type {
 } from "../workflows/train-operations"
 import { stressProfile } from "../integrations/stress-profile"
 import { DispatchError, type DispatcherPorts } from "./dispatcher"
-import type { DispatchPlanningPorts } from "./dispatch-planning"
+import {
+  proposeConversationPlan,
+  type DispatchPlanningPorts,
+} from "./dispatch-planning"
+import type { ConversationPorts } from "./conversations"
+import { ConversationStore } from "../integrations/conversation-store"
+import { ConversationToolRunner } from "../integrations/conversation-tools"
+import { harnessExecutionEnabled } from "../integrations/harness-availability"
+import { NonRetryableError } from "cloudflare:workflows"
+import {
+  TurnFailure,
+  type TurnPorts,
+} from "../workflows/conversation-operations"
 
 /** A role configured as `fake` runs without a model. */
 const FAKE = "fake"
@@ -795,5 +813,135 @@ export function junctionExecutionPorts(
           await workflow.restart()
       }
     },
+  }
+}
+
+/** What a conversation's API commands need. */
+export function conversationPorts(env: Env): ConversationPorts {
+  return {
+    store: new NetworkStore(env.DB),
+    conversations: new ConversationStore(env.DB),
+    startTurn: async (params) => {
+      try {
+        await createWorkflow(
+          env,
+          env.DISPATCHER_TURN_WORKFLOW,
+          "dispatcher_conversations",
+          params.conversationId,
+          { id: params.turnId, params }
+        )
+      } catch (error) {
+        if (error instanceof NetworkUnavailableError) throw error
+        await env.DISPATCHER_TURN_WORKFLOW.get(params.turnId).catch(() => {
+          throw error
+        })
+      }
+    },
+    stopTurn: async (turnId) => {
+      try {
+        const instance = await env.DISPATCHER_TURN_WORKFLOW.get(turnId)
+        const { status } = await instance.status()
+        if (!["terminated", "complete", "errored"].includes(status))
+          await instance.terminate()
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !/(?:instance\.not_found|instance (?:does not exist|not found))/i.test(
+            error.message
+          )
+        )
+          throw error
+      }
+    },
+    newId,
+    now: () => new Date().toISOString(),
+  }
+}
+
+/** The model a turn runs with: the Dispatcher role's model and reasoning
+ * level right now. Its harness does not apply; turns call the model directly. */
+export type TurnModel =
+  { fake: true } | { fake: false; execution: RoleExecution }
+
+export async function resolveTurnModel(
+  env: Env,
+  networkId: string
+): Promise<TurnModel> {
+  if (env.DISPATCHER_MODEL === FAKE) return { fake: true }
+  const execution = (
+    await new NetworkStore(env.DB).networkExecutions(networkId)
+  ).dispatcher
+  // The same gate as Dispatcher planning with this harness and provider.
+  if (
+    !harnessExecutionEnabled(
+      env,
+      execution.harness,
+      catalogModel(execution.model).provider
+    )
+  )
+    // Retrying cannot enable a provider; the message carries only the kind.
+    throw new NonRetryableError(new TurnFailure("configuration").message)
+  return { fake: false, execution }
+}
+
+/** The Dispatcher's conversation model. Gateway configuration is checked
+ * per call, so a misconfigured deployment fails the call's own step. */
+function chatModel(env: Env, model: TurnModel): ChatModel {
+  if (model.fake) return new FakeDispatcherChat()
+  const { execution } = model
+  const entry = catalogModel(execution.model)
+  return {
+    model: execution.model,
+    provider: entry.provider,
+    ...(execution.reasoning ? { reasoning: execution.reasoning } : {}),
+    respond: (request) => {
+      const gateway = gatewayConfig(env, execution.model)
+      const deps = {
+        config: {
+          accountId: gateway.accountId,
+          gatewayId: gateway.gatewayId,
+          token: gateway.token,
+          model: execution.model,
+          apiModel: gateway.apiModel,
+          ...(execution.reasoning ? { reasoning: execution.reasoning } : {}),
+        },
+        transport: gatewayTransport,
+      }
+      const adapter =
+        entry.provider === "anthropic"
+          ? new AnthropicChatModel(deps)
+          : entry.provider === "openai"
+            ? new OpenAiChatModel(deps)
+            : new WorkersAiChatModel(deps)
+      return adapter.respond(request)
+    },
+  }
+}
+
+export function turnPorts(
+  env: Env,
+  networkId: string,
+  model: TurnModel
+): TurnPorts {
+  const store = new NetworkStore(env.DB)
+  const conversations = new ConversationStore(env.DB)
+  return {
+    store,
+    conversations,
+    chat: chatModel(env, model),
+    tools: () =>
+      new ConversationToolRunner({
+        db: env.DB,
+        store,
+        conversations,
+        networkId,
+      }),
+    startPlanning: async (input) =>
+      proposeConversationPlan(
+        dispatchPlanningPorts(env, await networkModels(env, networkId)),
+        networkId,
+        input
+      ),
+    now: () => new Date().toISOString(),
   }
 }

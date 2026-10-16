@@ -173,6 +173,7 @@ export function presentEvent(event: DomainEvent): EventPresentation {
       return success(Rocket)
     case "dispatcher.plan_stopped":
     case "dispatcher.plan_cancelled":
+    case "dispatcher.plan_superseded":
       return routine(Info)
     case "dispatcher.plan_failed":
       return danger(OctagonAlert)

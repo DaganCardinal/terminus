@@ -167,6 +167,7 @@ describe("durable Dispatcher planning and launch", () => {
       }),
       resume: vi.fn(async () => ""),
       draft: () => drafts.read(f.plan.id),
+      revising: () => drafts.revising(f.plan.id),
       close: vi.fn(async () => {}),
     }
     f.ports.planner = new HarnessDispatcher("fake", { open: () => session })

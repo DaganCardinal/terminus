@@ -81,6 +81,7 @@ function scripted(
     draft: vi.fn<DispatchSession["draft"]>(async () =>
       saved.length > 1 ? saved.shift()! : (saved[0] ?? emptyPlanDraft)
     ),
+    revising: vi.fn<DispatchSession["revising"]>(async () => false),
     close: vi.fn<DispatchSession["close"]>(async () => {}),
   }
   const sessions: DispatchSessionFactory = { open: vi.fn(() => session) }
@@ -817,5 +818,142 @@ describe("harness Dispatcher", () => {
     expect(
       dispatchProposalSchema.parse(checked.proposal).baselineFix
     ).toBeDefined()
+  })
+})
+
+describe("plans a conversation asked for", () => {
+  const request = {
+    userMessage: "Add a footer, but keep it small",
+    relatedStationIds: ["station-1"],
+  }
+
+  it("sends the brief, the user's words and the related Stations", async () => {
+    const { session, sessions } = scripted([await valid()])
+    await textDispatcher(sessions).plan({ ...input, request })
+    const message = session.start.mock.calls[0]![1]
+    expect(message).toContain("Brief, written by the Dispatcher's conversation")
+    expect(message).toContain("Add a footer")
+    expect(message).toContain("Add a footer, but keep it small")
+    expect(message).toContain("Related existing Stations: station-1")
+  })
+
+  it("starts a revision from the copied draft with plan tools", async () => {
+    const saved = draft(station("footer"), station("footer-tests"))
+    const { session, sessions } = scripted([""], null, [saved])
+    await new HarnessDispatcher("@cf/zai-org/glm-5.3", sessions).plan({
+      ...input,
+      request,
+      revision: { planId: "dispatch-old" },
+    })
+    const message = session.start.mock.calls[0]![1]
+    expect(message).toContain("This plan revises plan dispatch-old")
+    expect(message).toContain("The revised plan's draft is already saved")
+    expect(message).toContain(JSON.stringify(saved))
+    expect(message).toContain("Continue the saved plan")
+  })
+
+  describe("a revision's copied draft is no answer until it is accepted", () => {
+    // The revised plan added a footer; the user asked for a header instead.
+    const footer = complete
+    const header = draft(
+      station("footer", { goal: "Add a header" }),
+      station("footer-tests", { goal: "Test the header" })
+    )
+    const revision = {
+      ...input,
+      request,
+      revision: { planId: "dispatch-old" },
+    }
+    const dispatcher = (sessions: DispatchSessionFactory) =>
+      new HarnessDispatcher("@cf/zai-org/glm-5.3", sessions)
+    const goals = (result: { proposal: unknown }) =>
+      dispatchProposalSchema
+        .parse(result.proposal)
+        .lines[0]!.stations.map((s) => s.manifest.goal)
+
+    it("leaves a harness failure to the durable retry instead of returning the revised plan", async () => {
+      const { session, sessions } = scripted([], null, [footer])
+      session.revising.mockResolvedValue(true)
+      session.start.mockRejectedValueOnce(new Error("OpenCode did not start"))
+      await expect(dispatcher(sessions).plan(revision)).rejects.toThrow(
+        "OpenCode did not start"
+      )
+      expect(session.resume).not.toHaveBeenCalled()
+
+      // Once finalize_plan accepted the revision, a later failure loses nothing.
+      const accepted = scripted([], null, [footer, header])
+      let revising = true
+      accepted.session.revising.mockImplementation(async () => revising)
+      accepted.session.start.mockImplementationOnce(async () => {
+        revising = false
+        throw new Error("OpenCode exited with 137")
+      })
+      expect(goals(await dispatcher(accepted.sessions).plan(revision))).toEqual(
+        ["Add a header", "Test the header"]
+      )
+    })
+
+    it("continues an interrupted revision instead of restoring its valid draft", async () => {
+      const { session, sessions } = scripted([], null, [footer, header])
+      let revising = true
+      session.revising.mockImplementation(async () => revising)
+      // Preparation already replaced the seed marker with a real checkpoint.
+      session.restore.mockResolvedValue({ draft: footer, baseline: null })
+      session.start.mockImplementationOnce(async () => {
+        revising = false
+        return "Plan accepted."
+      })
+      expect(goals(await dispatcher(sessions).plan(revision))).toEqual([
+        "Add a header",
+        "Test the header",
+      ])
+      expect(session.prepare).toHaveBeenCalledOnce()
+      const message = session.start.mock.calls[0]![1]
+      expect(message).toContain(
+        `An earlier attempt at this revision stopped before ${tool("finalize")} accepted it`
+      )
+      expect(message).toContain(JSON.stringify(footer))
+      expect(message).not.toContain("keep saved pieces unless")
+    })
+
+    it("asks an unaccepted revision to finish, and fails it rather than return it unchanged", async () => {
+      const finished = scripted(["Done.", "Done."], null, [footer, header])
+      let revising = true
+      finished.session.revising.mockImplementation(async () => revising)
+      finished.session.resume.mockImplementationOnce(async () => {
+        revising = false
+        return "Plan accepted."
+      })
+      expect(goals(await dispatcher(finished.sessions).plan(revision))).toEqual(
+        ["Add a header", "Test the header"]
+      )
+      expect(finished.session.resume.mock.calls[0]![0]).toContain(
+        `This revision is not finished: ${tool("finalize")} has not accepted it`
+      )
+
+      // A stalled tool loop saves nothing, so the draft is still the revised plan's.
+      const stalled = scripted([], null, [footer])
+      stalled.session.revising.mockResolvedValue(true)
+      stalled.session.start.mockRejectedValue(new PlanToolFormatStalled())
+      stalled.session.resume.mockRejectedValue(new PlanToolFormatStalled())
+      const error = await dispatcher(stalled.sessions)
+        .plan(revision)
+        .catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(DispatchProposalError)
+      expect((error as Error).message).toContain("did not finish the revision")
+      expect(stalled.session.resume).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it("starts a revision from the old proposal without plan tools", async () => {
+    const proposal = await valid()
+    const { session, sessions } = scripted([proposal])
+    await textDispatcher(sessions).plan({
+      ...input,
+      revision: { planId: "dispatch-old", proposal },
+    })
+    const message = session.start.mock.calls[0]![1]
+    expect(message).toContain("The revised plan's proposal follows")
+    expect(message).toContain(JSON.stringify(proposal))
   })
 })

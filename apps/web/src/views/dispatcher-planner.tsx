@@ -57,6 +57,7 @@ export function PlanExchange({
   refine,
   propose,
   openTrain,
+  showGoal = true,
 }: {
   plan: DispatchPlan
   snapshot: NetworkSnapshot
@@ -64,9 +65,12 @@ export function PlanExchange({
   pending: boolean
   visible: boolean
   command: Command
-  refine: (goal: string) => void
-  propose: (goal: string) => void
+  /** Absent in a conversation, where replying is how a plan is refined. */
+  refine?: (goal: string) => void
+  propose?: (goal: string) => void
   openTrain: (lineId: string) => void
+  /** In a conversation the user's message is already in the thread. */
+  showGoal?: boolean
 }) {
   const { state } = plan
   const networkId = snapshot.network.id
@@ -79,15 +83,38 @@ export function PlanExchange({
   )
   return (
     <div className="exchange" data-plan={plan.id}>
-      <UserMessage text={plan.goal} at={plan.createdAt} />
+      {showGoal && <UserMessage text={plan.goal} at={plan.createdAt} />}
       {state.status === "planning" ? (
         <Drafting
           plan={plan}
           pending={pending}
           retry={retry}
+          stop={() => command(() => api.stopPlan(networkId, plan.id))}
           entries={feed.entries}
           unavailable={unavailable}
         />
+      ) : state.status === "failed" && state.reason === "superseded" ? (
+        <DispatcherMessage meta="Revised">
+          <p>
+            Replaced by a revised plan
+            {state.supersededBy && (
+              <>
+                {" "}
+                &middot;{" "}
+                <button
+                  className="dmsg-link"
+                  onClick={() =>
+                    document
+                      .querySelector(`[data-plan="${state.supersededBy}"]`)
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                >
+                  Show the revision
+                </button>
+              </>
+            )}
+          </p>
+        </DispatcherMessage>
       ) : state.status === "failed" ? (
         <DispatcherMessage tone="attention" meta="Plan stopped">
           <p>
@@ -116,18 +143,24 @@ export function PlanExchange({
               Retry stop
             </Button>
           )}
-          <div className="dmsg-actions">
-            <Button
-              size="sm"
-              disabled={pending || !!state.cleanupPending}
-              onClick={() => propose(plan.goal)}
-            >
-              <RefreshCw size={14} /> Try again
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => refine(plan.goal)}>
-              <PencilLine size={14} /> Edit goal
-            </Button>
-          </div>
+          {propose && refine && (
+            <div className="dmsg-actions">
+              <Button
+                size="sm"
+                disabled={pending || !!state.cleanupPending}
+                onClick={() => propose(plan.goal)}
+              >
+                <RefreshCw size={14} /> Try again
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => refine(plan.goal)}
+              >
+                <PencilLine size={14} /> Edit goal
+              </Button>
+            </div>
+          )}
         </DispatcherMessage>
       ) : (
         <Proposal
@@ -175,12 +208,14 @@ function Drafting({
   plan,
   pending,
   retry,
+  stop,
   entries,
   unavailable,
 }: {
   plan: DispatchPlan
   pending: boolean
   retry: () => Promise<void>
+  stop: () => Promise<void>
   entries: AgentActivityEntry[]
   unavailable: boolean
 }) {
@@ -212,17 +247,28 @@ function Drafting({
       <p className="dmsg-hint">
         Project baseline <code>{shortCommit(plan.terminusCommit)}</code>
       </p>
-      {/* Recovery only restarts an errored run, so offer it once the
-          planning step's own time budget has passed. */}
-      {seconds > recoverAfterSeconds && (
-        <button
-          className="dmsg-link"
+      <div className="dmsg-actions">
+        <Button
+          size="sm"
+          variant="outline"
           disabled={pending}
-          onClick={() => void retry()}
+          onClick={() => void stop()}
+          aria-label="Stop Dispatcher planning"
         >
-          Taking too long? Recover planning
-        </button>
-      )}
+          Stop planning
+        </Button>
+        {/* Recovery only restarts an errored run, so offer it once the
+            planning step's own time budget has passed. */}
+        {seconds > recoverAfterSeconds && (
+          <button
+            className="dmsg-link"
+            disabled={pending}
+            onClick={() => void retry()}
+          >
+            Taking too long? Recover planning
+          </button>
+        )}
+      </div>
     </DispatcherMessage>
   )
 }
@@ -250,8 +296,8 @@ function Proposal({
   selectMode: (lineKey: string, mode: UnloadMode) => Promise<void>
   selectFix: (selection: "include" | "reject") => Promise<void>
   retry: () => Promise<void>
-  refine: (goal: string) => void
-  propose: (goal: string) => void
+  refine?: (goal: string) => void
+  propose?: (goal: string) => void
   openTrain: (lineId: string) => void
 }) {
   const { proposal, assessment } = state
@@ -382,14 +428,16 @@ function Proposal({
                     tone="attention"
                     title="Terminus has moved since I drafted this"
                     action={
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={pending}
-                        onClick={() => propose(plan.goal)}
-                      >
-                        <RefreshCw size={14} /> Re-plan on latest
-                      </Button>
+                      propose && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={pending}
+                          onClick={() => propose(plan.goal)}
+                        >
+                          <RefreshCw size={14} /> Re-plan on latest
+                        </Button>
+                      )
                     }
                   >
                     <p>
@@ -543,7 +591,7 @@ function Proposal({
               pending={pending}
               launch={launch}
               retry={retry}
-              refine={() => refine(plan.goal)}
+              refine={refine && (() => refine(plan.goal))}
               launched={launchedLines.map((line, index) => ({
                 id: line.id,
                 name: line.name,
@@ -1043,7 +1091,7 @@ function PlanFooter({
   pending: boolean
   launch: () => Promise<void>
   retry: () => Promise<void>
-  refine: () => void
+  refine?: () => void
   launched: LineChip[]
   openTrain: (lineId: string) => void
 }) {
@@ -1060,9 +1108,11 @@ function PlanFooter({
               ? "Launching…"
               : `Launch ${lines === 1 ? "Line" : `${lines} Lines`}`}
           </Button>
-          <Button variant="ghost" onClick={refine}>
-            <PencilLine size={14} /> Refine goal
-          </Button>
+          {refine && (
+            <Button variant="ghost" onClick={refine}>
+              <PencilLine size={14} /> Refine goal
+            </Button>
+          )}
         </div>
         {issues > 0 ? (
           <p className="plan-footer-issues">

@@ -119,6 +119,14 @@ export interface DispatchPlan {
   createdAt: string
   /** Install dependencies and run project checks on the baseline before exploring. */
   checkBaseline?: boolean
+  /** The conversation whose turn asked for this plan. Absent on plans
+   * requested directly and on every plan from before conversations. */
+  conversationId?: string
+  turnId?: string
+  /** What the conversation asked for; `goal` holds the turn's brief. */
+  request?: PlanRequest
+  /** The plan this one revises. */
+  revises?: string
   state:
     | { status: "planning" }
     | ({ status: "ready" | "launching" } & ReviewedPlan)
@@ -130,9 +138,20 @@ export interface DispatchPlan {
     | {
         status: "failed"
         message: string
-        reason?: "cancelled"
+        reason?: "cancelled" | "superseded"
         cleanupPending?: boolean
+        /** The revision that replaced this plan before it launched. */
+        supersededBy?: string
+        /** A superseded plan keeps the proposal its revision started from. */
+        proposal?: DispatchProposal
       }
+}
+
+/** What a conversation turn asked the planner for, besides its brief. */
+export interface PlanRequest {
+  /** The user's latest message, word for word. */
+  userMessage: string
+  relatedStationIds: string[]
 }
 
 export function createDispatchPlan(
@@ -603,6 +622,56 @@ export function failDispatchPlan(
   return accept({ ...plan, state: { status: "failed", message } }, [
     { type: "dispatcher.plan_failed", planId: plan.id },
   ])
+}
+
+/**
+ * Whether a conversation may revise a plan: only its own plans, and only
+ * before launch. A failed plan, including a stopped one, may be revised.
+ */
+export function revisablePlan(
+  plan: DispatchPlan,
+  conversationId: string
+): Transition<DispatchPlan> {
+  if (plan.conversationId !== conversationId)
+    return reject("invalid_input", "That plan belongs to another conversation")
+  if (plan.state.status === "failed" && plan.state.reason === "superseded")
+    return reject(
+      "invalid_state",
+      `That plan was already revised by ${plan.state.supersededBy ?? "a later plan"}; revise the latest one`
+    )
+  if (plan.state.status === "ready" || plan.state.status === "failed")
+    return accept(plan, [])
+  if (plan.state.status === "planning")
+    return reject("invalid_state", "That plan is still being prepared")
+  return reject(
+    "invalid_state",
+    "That plan has launched; plan follow-up work against its Lines instead"
+  )
+}
+
+/**
+ * A revision replaces a reviewable proposal, so the old one can never launch.
+ * Commit this in the same batch that creates the revision.
+ */
+export function supersedeDispatchPlan(
+  plan: DispatchPlan,
+  byPlanId: string
+): Transition<DispatchPlan> {
+  if (plan.state.status !== "ready")
+    return reject("invalid_state", "Only a ready plan can be superseded")
+  return accept(
+    {
+      ...plan,
+      state: {
+        status: "failed",
+        reason: "superseded",
+        supersededBy: byPlanId,
+        message: "Replaced by a revised plan.",
+        proposal: plan.state.proposal,
+      },
+    },
+    [{ type: "dispatcher.plan_superseded", planId: plan.id, byPlanId }]
+  )
 }
 
 export function hasNewCollisionForecasts(
