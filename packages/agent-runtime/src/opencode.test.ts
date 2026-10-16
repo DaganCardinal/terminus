@@ -296,7 +296,9 @@ describe("Anthropic and OpenAI under OpenCode", () => {
       )
       // A placeholder the outbound handler discards; no credential is written.
       expect(terminus.options.apiKey).toBe("provided-by-worker")
-      expect(JSON.stringify(config)).not.toMatch(/sk-|AI_GATEWAY_TOKEN/)
+      expect(JSON.stringify(config)).not.toMatch(
+        /sk-|AI_GATEWAY_TOKEN|CLOUDFLARE_RUNTIME_TOKEN/
+      )
 
       // OpenCode sends the definition's `id`, which must be the native API
       // model the outbound handler compares against, not the catalog id.

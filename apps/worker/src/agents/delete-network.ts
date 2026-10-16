@@ -1,4 +1,5 @@
 import { ArtifactsRestClient } from "@terminus/artifacts"
+import { artifactsAccount } from "../integrations/cloudflare-account"
 import { NetworkDeletionStore } from "../integrations/network-deletion-store"
 import { DispatchError } from "./dispatcher"
 
@@ -66,10 +67,9 @@ export async function deleteNetwork(
     )
   if (env.REPOSITORY_MODE !== "fake") {
     try {
-      await new ArtifactsRestClient({
-        accountId: env.ARTIFACTS_ACCOUNT_ID,
-        apiToken: env.ARTIFACTS_API_TOKEN ?? "",
-      }).deleteRepositories(namespace)
+      await new ArtifactsRestClient(artifactsAccount(env)).deleteRepositories(
+        namespace
+      )
     } catch {
       throw new DispatchError(
         503,

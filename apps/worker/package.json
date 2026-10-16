@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "node scripts/wrangler.mjs d1 migrations apply terminus --local && node scripts/wrangler.mjs dev --local-upstream localhost:8787",
     "dev:fake": "wrangler d1 migrations apply terminus --local --env fake && wrangler dev --env fake",
+    "setup": "node scripts/setup.mjs",
     "deploy": "node scripts/wrangler.mjs d1 migrations apply terminus --remote --env \"\" && node scripts/wrangler.mjs deploy --env \"\"",
     "cf-typegen": "wrangler types --strict-vars=false",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build --workspace @terminus/web",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests && npm run test:setup",
+    "test:setup": "vitest run --config vitest.setup.config.mjs"
   },
   "dependencies": {
     "@cloudflare/sandbox": "^1.0.0",

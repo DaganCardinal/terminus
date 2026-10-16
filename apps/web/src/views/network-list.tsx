@@ -406,11 +406,29 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [existing, setExisting] = useState<string | null>(null)
+  const [demoUrl, setDemoUrl] = useState<string | null>(null)
   const nameInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (onCancel) nameInput.current?.focus()
   }, [onCancel])
+
+  // Live, start from the demo app unless the user has already typed a URL.
+  useEffect(() => {
+    let cancelled = false
+    api.networkDefaults().then(
+      ({ sourceUrl: suggested }) => {
+        if (cancelled || !suggested) return
+        setDemoUrl(suggested)
+        setSourceUrl((current) => current || suggested)
+      },
+      // Only a convenience: the form works the same without it.
+      () => undefined
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function create(event: FormEvent) {
     event.preventDefault()
@@ -474,8 +492,11 @@ function CreateNetwork({ onCancel }: { onCancel?: () => void }) {
         </Button>
       </div>
       <p className="create-network-hint">
-        Each project gets one network. Leave the URL blank to start from an
-        empty repository. Importing can take a minute for larger projects.
+        Each project gets one network.{" "}
+        {demoUrl && sourceUrl === demoUrl
+          ? "The Terminus demo app is filled in; clear the URL to start from an empty repository."
+          : "Leave the URL blank to start from an empty repository."}{" "}
+        Importing can take a minute for larger projects.
       </p>
       {error && (
         <p className="form-error" role="alert">

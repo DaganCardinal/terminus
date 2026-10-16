@@ -3,6 +3,7 @@ import {
   ArtifactsRestClient,
   smartHttpHeadReader,
 } from "@terminus/artifacts"
+import { artifactsAccount } from "./cloudflare-account"
 import { cacheOverviews } from "./overview-cache"
 import { SandboxWorkspaces } from "./sandbox-workspaces"
 import { workerGitPromotion } from "./worker-git"
@@ -16,10 +17,7 @@ import { workerGitPromotion } from "./worker-git"
 export function artifactsRepositories(env: Env): ArtifactsRepositoryHost {
   const readHead = smartHttpHeadReader()
   const repositories = new ArtifactsRepositoryHost(
-    new ArtifactsRestClient({
-      accountId: env.ARTIFACTS_ACCOUNT_ID,
-      apiToken: env.ARTIFACTS_API_TOKEN ?? "",
-    }),
+    new ArtifactsRestClient(artifactsAccount(env)),
     new SandboxWorkspaces(env),
     () => scheduler.wait(1000),
     readHead,

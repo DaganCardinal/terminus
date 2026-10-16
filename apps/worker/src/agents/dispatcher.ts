@@ -81,6 +81,26 @@ export function projectSource(sourceUrl: string): string {
   return `${url.protocol}//${url.host.toLowerCase()}${path}`
 }
 
+/** The public demo app a live deployment can import without finding a project. */
+export const DEMO_SOURCE_URL =
+  "https://github.com/DaganCardinal/term-demo-app.git"
+
+/**
+ * What a new network starts from: the demo app, until a network imports it.
+ * Offline, every network uses a built-in sample project, so nothing is
+ * suggested there.
+ */
+export async function networkDefaults(
+  ports: Pick<DispatcherPorts, "store">,
+  repositoryMode: string
+): Promise<{ sourceUrl?: string }> {
+  if (repositoryMode === "fake") return {}
+  const imported = await ports.store.networkForProject(
+    projectSource(DEMO_SOURCE_URL)
+  )
+  return imported ? {} : { sourceUrl: DEMO_SOURCE_URL }
+}
+
 function projectExists(network: NetworkSummary): DispatchError {
   return new DispatchError(
     409,

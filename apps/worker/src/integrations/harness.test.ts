@@ -78,9 +78,9 @@ describe("shared Sandbox harness session", () => {
         {
           ...env,
           ALTERNATIVE_HARNESSES_ENABLED: "true",
-          AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
+          CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
           AI_GATEWAY_ID: "gateway",
-          AI_GATEWAY_TOKEN: "worker-only-secret",
+          CLOUDFLARE_RUNTIME_TOKEN: "worker-only-secret",
         },
         sandbox,
         {
@@ -140,9 +140,9 @@ describe("OpenCode external-provider gate", () => {
           ...env,
           ALTERNATIVE_HARNESSES_ENABLED: "true",
           OPENCODE_EXTERNAL_PROVIDERS_ENABLED: gate,
-          AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
+          CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
           AI_GATEWAY_ID: "gateway",
-          AI_GATEWAY_TOKEN: "worker-only-secret",
+          CLOUDFLARE_RUNTIME_TOKEN: "worker-only-secret",
         },
         { write },
         { run },

@@ -431,21 +431,22 @@ async function credentials(root: string) {
     const match = /^\s*([A-Za-z_]\w*)\s*=\s*(.*?)\s*$/.exec(line)
     if (match) vars[match[1]!] = match[2]!.replace(/^(["'])(.*)\1$/, "$2")
   }
+  const devToken = vars.CLOUDFLARE_RUNTIME_TOKEN ?? vars.AI_GATEWAY_TOKEN
   const token =
-    vars.AI_GATEWAY_TOKEN ??
-    process.env.CLOUDFLARE_API_TOKEN ??
-    process.env.CF_API_TOKEN
+    devToken ?? process.env.CLOUDFLARE_API_TOKEN ?? process.env.CF_API_TOKEN
   const account =
-    vars.AI_GATEWAY_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID
+    vars.CLOUDFLARE_ACCOUNT_ID ??
+    vars.AI_GATEWAY_ACCOUNT_ID ??
+    process.env.CLOUDFLARE_ACCOUNT_ID
   if (!token || !account)
     throw new Error(
-      `No credentials: ${file} needs AI_GATEWAY_TOKEN and AI_GATEWAY_ACCOUNT_ID (or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID)`
+      `No credentials: ${file} needs CLOUDFLARE_RUNTIME_TOKEN, and CLOUDFLARE_ACCOUNT_ID here or in the environment (or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID)`
     )
   return {
     token,
     account,
     gateway: vars.AI_GATEWAY_ID ?? process.env.AI_GATEWAY_ID,
-    source: vars.AI_GATEWAY_TOKEN ? "apps/worker/.dev.vars" : "the environment",
+    source: devToken ? "apps/worker/.dev.vars" : "the environment",
   }
 }
 

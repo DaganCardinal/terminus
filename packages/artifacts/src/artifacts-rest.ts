@@ -119,7 +119,7 @@ export class ArtifactsRestClient implements ArtifactsNamespaces {
   }) {
     if (!input.accountId || !input.apiToken)
       throw new Error(
-        "Artifacts needs ARTIFACTS_ACCOUNT_ID and ARTIFACTS_API_TOKEN"
+        "Artifacts needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_RUNTIME_TOKEN"
       )
     this.base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/artifacts/namespaces`
     this.apiToken = input.apiToken

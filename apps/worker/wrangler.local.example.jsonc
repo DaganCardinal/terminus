@@ -4,12 +4,14 @@
 // are merged, other keys replace wrangler.jsonc's. `npm run dev:fake` and the
 // tests ignore it.
 {
-  // Optional when Wrangler is logged in to one account; or set
-  // CLOUDFLARE_ACCOUNT_ID instead.
+  // Your Cloudflare account, written once: Wrangler deploys to it, and the
+  // Worker uses it for Artifacts and models as CLOUDFLARE_ACCOUNT_ID. Or
+  // export CLOUDFLARE_ACCOUNT_ID instead.
   "account_id": "YOUR_32_HEX_ACCOUNT_ID",
-  // Application previews: wildcard route for PREVIEW_BASE_URL's zone. See
-  // docs/previews.md#deployment. Omit to deploy without previews.
-  "routes": [{ "pattern": "*.example.com/*", "zone_name": "example.com" }],
+  // Application previews are optional. To enable them, uncomment this
+  // wildcard route for PREVIEW_BASE_URL's zone and PREVIEW_BASE_URL below.
+  // See docs/previews.md#deployment.
+  // "routes": [{ "pattern": "*.example.com/*", "zone_name": "example.com" }],
   // Optional: deploys find the database by name. Pinning the ID also keys
   // local `dev:worker` state to it.
   // "d1_databases": [{ "binding": "DB", "database_id": "YOUR_D1_DATABASE_ID" }],
@@ -19,9 +21,8 @@
     "APP_ORIGIN": "https://terminus.YOUR_SUBDOMAIN.workers.dev/",
     "ACCESS_TEAM_DOMAIN": "https://YOUR_TEAM.cloudflareaccess.com",
     "ACCESS_AUD": "YOUR_ACCESS_APPLICATION_AUD_TAG",
-    "ARTIFACTS_ACCOUNT_ID": "YOUR_32_HEX_ACCOUNT_ID",
-    "PREVIEW_BASE_URL": "https://example.com",
-    "AI_GATEWAY_ACCOUNT_ID": "YOUR_32_HEX_ACCOUNT_ID",
-    "AI_GATEWAY_ID": "default",
+    // "PREVIEW_BASE_URL": "https://example.com",
+    // Optional: AI Gateway creates the `default` gateway on first use.
+    // "AI_GATEWAY_ID": "default",
   },
 }

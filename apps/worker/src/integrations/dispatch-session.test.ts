@@ -162,9 +162,9 @@ function fixture(
   const sessions = new SandboxDispatchSessions(
     {
       ...env,
-      AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
+      CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
       AI_GATEWAY_ID: "gateway",
-      AI_GATEWAY_TOKEN: "worker-only-secret",
+      CLOUDFLARE_RUNTIME_TOKEN: "worker-only-secret",
     },
     repositories,
     () => sandbox

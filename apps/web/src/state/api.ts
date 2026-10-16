@@ -240,6 +240,11 @@ export const api = {
         body: { override },
       })
     ),
+  /** In live mode, the demo app's URL until a network imports it. */
+  networkDefaults: async () =>
+    z
+      .object({ sourceUrl: z.string().optional() })
+      .parse(await request("/network-defaults")),
   createNetwork: (name: string, sourceUrl?: string) =>
     request<NetworkSummary>("/networks", {
       method: "POST",

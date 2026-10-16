@@ -6,9 +6,9 @@ import { DispatchDraftStore } from "./dispatch-draft-store"
 import { outboundRequest } from "./sandbox-outbound"
 
 const env = {
-  AI_GATEWAY_ACCOUNT_ID: "account",
+  CLOUDFLARE_ACCOUNT_ID: "account",
   AI_GATEWAY_ID: "gateway",
-  AI_GATEWAY_TOKEN: "worker-secret",
+  CLOUDFLARE_RUNTIME_TOKEN: "worker-secret",
   DB: testEnv.DB,
 }
 

@@ -166,17 +166,56 @@ A deployment has no per-user permissions. Everyone listed in `ACCESS_ALLOWED_EMA
 
 ## Real repositories and agents
 
-Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, two Worker secrets (`ARTIFACTS_API_TOKEN`, `AI_GATEWAY_TOKEN`), and a public HTTPS Git repository containing an npm project. Put local secrets in the ignored `apps/worker/.dev.vars`, start Docker, then run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default Medium preset uses GLM-5.3 for planning, reviews and repairs, Kimi K2.7 Code for Station work, and Clef for Engineer decisions.
+Live execution needs Docker, Cloudflare access to Artifacts and Sandboxes/Containers, one Cloudflare API token (the `CLOUDFLARE_RUNTIME_TOKEN` Worker secret), and a public HTTPS Git repository containing an npm project, such as the demo app the Create network form fills in. Run `npm run setup -- --local` to sign in with Wrangler, record your account and write the token to the ignored `apps/worker/.dev.vars`, then start Docker and run `npm run dev:worker` and `npm run dev:web`. Role harnesses and models are chosen in **Settings → Agents**; the default Medium preset uses GLM-5.3 for planning, reviews and repairs, Kimi K2.7 Code for Station work, and Clef for Engineer decisions.
 
 See [Live setup](docs/live-setup.md) for token permissions, `.dev.vars`, harness and provider configuration, and troubleshooting.
 
+### Verified live run
+
+The largest run checked end to end with real models used both goals of [test prompt 04](docs/test-prompts/04-lines-then-junction.md) on a deployed Worker, with real Artifacts repositories and Sandboxes. Ten Lines ran on one Network: the second goal was planned and launched while the first goal's Trains were still running. Several Crossings on the Junction's incoming Lines completed, the incoming Lines converged and the assembled feature passed acceptance before human release, and the outgoing Line then integrated into Terminus. At least one Train hit a real Git conflict at Terminus; its Technician repair was approved and promoted. Every Train integrated.
+
+| Role | Model |
+| --- | --- |
+| Dispatcher | Claude Sonnet 5.5 (Claude Code), high reasoning |
+| Station Agent | Claude Sonnet 5.5 (Claude Code), high reasoning |
+| Conductor | GPT-6 Luna (Codex), high reasoning |
+| Technician | GLM-5.3 |
+| Engineer | Clef |
+
+This run does not complete the [harness release checklist](docs/harness-selection.md#release-verification).
+
 ## Deployment
 
-One Worker hosts the React assets, API and Workflows, with separate agent and agentless Sandbox images. Deployment needs Node 24, Docker, a Cloudflare account with Workers Paid and Artifacts/Sandboxes available, an authenticated AI Gateway, and Zero Trust Access. Run `npm ci` from the repository root first. Deployment is a maintainer action.
+One Worker hosts the React assets, API and Workflows, with separate agent and agentless Sandbox images. Deployment needs Node 24, Docker, a Cloudflare account with Workers Paid and Artifacts/Sandboxes available, and Cloudflare Access (Zero Trust). Deployment is a maintainer action.
+
+### Set up with one command
+
+From the repository root, with Docker running:
+
+```sh
+npm ci
+npm run setup
+```
+
+Setup uses your Wrangler login, signing you in if needed, and then:
+
+1. Picks your account and writes `apps/worker/wrangler.local.jsonc`, including the app's workers.dev URL.
+2. Creates the D1 database and the R2 dependency cache, with a 30-day expiry.
+3. Opens the account API tokens page, lists the permissions the runtime token needs, and checks the supplied token's active status and read access to Artifacts and Workers AI. These read-only probes do not verify Artifacts Edit or AI Gateway Run; confirm those permissions in the dashboard. It also asks who may use the app (`ACCESS_ALLOWED_EMAILS`).
+4. Deploys.
+5. Shows you where to turn on Cloudflare Access for the Worker (**Access → Protect this Worker behind Access → All traffic**), takes the team domain and the application's Audience tag from Zero Trust, and deploys again.
+6. Reads the deployed Worker settings and checks that logged-out requests to `/` and `/api/networks` are sent to the configured team's Access sign-in. If the redirect includes an audience, it must match.
+7. Opens the app for sign-in and asks for the app's `CF_Authorization` cookie (hidden input), then makes a read-only `/api/networks` request to verify that the allowed user's session actually reaches the app. It prints success only after this check passes. The temporary user Access token stays in memory, is sent only to the configured HTTPS app origin without following redirects, and is never saved or deployed.
+
+Re-running setup reuses existing resources, applies pending migrations and deploys the current code and configuration again. This also completes a deployment interrupted after configuration was saved locally. `npm run setup -- --check` checks the deployed configuration and access without deploying or changing resources. Set `TERMINUS_ACCESS_TOKEN` to a current user Access token for its signed-in check; without one, verification stays pending and the command exits nonzero. Obtain it from the app hostname's `CF_Authorization` cookie after signing in, or with `cloudflared access token --app=<APP_ORIGIN>` if cloudflared is installed. This is a user session token, separate from the Cloudflare runtime API token; do not put it in the Worker secrets or `.dev.vars`. [Cloudflare documents application tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/) and [CLI authentication](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/).
+
+`CLOUDFLARE_RUNTIME_TOKEN` and `ACCESS_ALLOWED_EMAILS` in the environment answer their prompts. In `--check`, setup checks deployed secret names independently: environment answers are only available for a future deployment and cannot satisfy missing deployed secrets. Stored secret values cannot be read back, so setup cannot verify their permissions or equality with environment values. Previews and Anthropic/OpenAI credits stay manual (see [Previews](docs/previews.md#deployment) and [Provider routing](docs/live-setup.md#provider-routing)).
+
+The next two sections are the same steps by hand.
 
 ### Configure account resources
 
-`apps/worker/wrangler.jsonc` is shared and holds no deployment's values. Copy `apps/worker/wrangler.local.example.jsonc` to the ignored `apps/worker/wrangler.local.jsonc` and set your account, `ARTIFACTS_ACCOUNT_ID`, `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID`, the app/Access origins and audience, and the preview domain and zone route. `npm run deploy` and `npm run dev:worker` merge it over `wrangler.jsonc`; `npm run dev:fake` ignores it. Run other remote Wrangler commands from `apps/worker` with `node scripts/wrangler.mjs` in place of `npx wrangler`.
+`apps/worker/wrangler.jsonc` is shared and holds no deployment's values. Copy `apps/worker/wrangler.local.example.jsonc` to the ignored `apps/worker/wrangler.local.jsonc` and set your `account_id`, the app/Access origins and audience, and, for previews, the preview domain and zone route. The scripts also pass `account_id` to the Worker as `CLOUDFLARE_ACCOUNT_ID`, so the account ID is written once; `AI_GATEWAY_ID` defaults to the `default` gateway, which is created on first use. `npm run deploy` and `npm run dev:worker` merge it over `wrangler.jsonc`; `npm run dev:fake` ignores it. Run other remote Wrangler commands from `apps/worker` with `node scripts/wrangler.mjs` in place of `npx wrangler`.
 
 From `apps/worker`, authenticate and create resources you have not already provisioned:
 
@@ -196,11 +235,12 @@ Configure these Worker secrets; local `.dev.vars` are not deployed:
 
 | Secret | Required value |
 | --- | --- |
-| `ARTIFACTS_API_TOKEN` | Account-scoped token with Artifacts Read and Edit |
-| `AI_GATEWAY_TOKEN` | Account-scoped token with Workers AI Read, plus AI Gateway Run for native Anthropic/OpenAI routes |
+| `CLOUDFLARE_RUNTIME_TOKEN` | One account-scoped token with Artifacts Read and Edit and Workers AI Read, plus AI Gateway Run for native Anthropic/OpenAI routes |
 | `ACCESS_ALLOWED_EMAILS` | Comma-separated emails permitted to use the app, each with full control (see [Costs and access](#costs-and-access)) |
 
-For a first deployment, put all three in a temporary `NAME=value` secrets file outside the repository. Leave `APP_ORIGIN`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` empty until Access is configured; public requests fail closed. From the repository root:
+Deployments set up with the older pair, `ARTIFACTS_API_TOKEN` and `AI_GATEWAY_TOKEN`, keep working while `CLOUDFLARE_RUNTIME_TOKEN` is unset.
+
+For a first deployment, put both in a temporary `NAME=value` secrets file outside the repository. Leave `APP_ORIGIN`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` empty until Access is configured; public requests fail closed. From the repository root:
 
 ```sh
 npm run deploy -- --secrets-file /path/outside/repo/terminus-secrets.env
@@ -212,7 +252,7 @@ Protect the Worker behind Cloudflare Access for all traffic, with an Allow polic
 
 - `APP_ORIGIN`: the exact public HTTPS origin, without a path.
 - `ACCESS_TEAM_DOMAIN`: your `https://YOUR_TEAM.cloudflareaccess.com` origin.
-- `ACCESS_AUD`: the Access application's Application Audience tag; multiple configured audiences are comma-separated.
+- `ACCESS_AUD`: the Access application's Application Audience tag, in lowercase as Access shows it (the Worker compares it exactly); multiple configured audiences are comma-separated.
 
 Deploy again and sign in. Verify that logged-out requests to `/` and `/api/networks` require authentication. The Worker independently checks the Access JWT and allowed email; missing configuration returns 503 and rejected credentials return 403. Service tokens have no user email and cannot use this authentication path. Keep `ACCESS_REQUIRED` enabled in live deployments and `preview_urls: false`. Use `workers_dev: true` for the regular Worker URL, or a custom domain with `workers_dev: false`.
 

@@ -287,6 +287,7 @@ Run these from the repo root:
 | `npm run dev:web` | Starts the Vite dev server for `apps/web`, proxying `/api` to the Worker on port 8787 |
 | `npm run dev:worker` | Applies local D1 migrations, then starts real Artifacts/Sandbox execution (requires live setup in `docs/live-setup.md`) |
 | `npm run dev:fake` | Applies local D1 migrations and starts the Worker with fake repositories and roles; no credentials required |
+| `npm run setup` | Sets up and deploys a live deployment in the signed-in Cloudflare account (`-- --local` prepares `dev:worker` instead; `-- --check` only reports). Deploying is a maintainer action |
 | `npm run build` | Builds every workspace that has a `build` script (currently `apps/web`) |
 | `npm run typecheck` | Type-checks every workspace |
 | `npm test` | Runs Vitest in every workspace (`apps/worker` runs in the Workers runtime) |

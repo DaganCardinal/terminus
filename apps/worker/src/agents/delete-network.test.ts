@@ -196,8 +196,8 @@ describe("permanent Network deletion", () => {
     const testEnv = {
       ...infra.env,
       REPOSITORY_MODE: "artifacts",
-      ARTIFACTS_ACCOUNT_ID: "test-account",
-      ARTIFACTS_API_TOKEN: "test-token",
+      CLOUDFLARE_ACCOUNT_ID: "test-account",
+      CLOUDFLARE_RUNTIME_TOKEN: "test-token",
       SANDBOX,
       WORKSPACE_SANDBOX,
     } as unknown as Env
@@ -260,8 +260,8 @@ describe("permanent Network deletion", () => {
       {
         ...workflows().env,
         REPOSITORY_MODE: "artifacts",
-        ARTIFACTS_ACCOUNT_ID: "test-account",
-        ARTIFACTS_API_TOKEN: "test-token",
+        CLOUDFLARE_ACCOUNT_ID: "test-account",
+        CLOUDFLARE_RUNTIME_TOKEN: "test-token",
         SANDBOX: sandboxes,
         WORKSPACE_SANDBOX: sandboxes,
       } as unknown as Env,

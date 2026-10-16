@@ -84,6 +84,7 @@ import {
   createNetwork,
   DispatchError,
   layLine,
+  networkDefaults,
   placeHold,
   releaseHold,
   resolveConflict,
@@ -919,6 +920,12 @@ const routes: [method: string, pattern: URLPattern, handler: Handler][] = [
     "GET",
     new URLPattern({ pathname: "/api/networks" }),
     async (_, env) => json(await dispatcherPorts(env).store.networkListings()),
+  ],
+  [
+    "GET",
+    new URLPattern({ pathname: "/api/network-defaults" }),
+    async (_, env) =>
+      json(await networkDefaults(dispatcherPorts(env), env.REPOSITORY_MODE)),
   ],
   [
     // The Browser Run transport proof; see docs/browser-run.md.

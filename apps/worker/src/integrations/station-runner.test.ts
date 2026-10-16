@@ -85,9 +85,9 @@ async function fixture(
   const runner = new SandboxStationRunner(
     {
       ...env,
-      AI_GATEWAY_ACCOUNT_ID: "a".repeat(32),
+      CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
       AI_GATEWAY_ID: "test",
-      AI_GATEWAY_TOKEN: "test-worker-token",
+      CLOUDFLARE_RUNTIME_TOKEN: "test-worker-token",
     },
     model,
     repositories,

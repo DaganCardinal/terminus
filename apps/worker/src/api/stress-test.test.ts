@@ -114,8 +114,8 @@ describe("pipeline stress profile", () => {
       ENGINEER_MODEL: "live",
       DISPATCHER_MODEL: "live",
       // Constructor-only regression check; no real service is contacted.
-      ARTIFACTS_ACCOUNT_ID: "unused-test-account",
-      ARTIFACTS_API_TOKEN: "unused-test-token",
+      CLOUDFLARE_ACCOUNT_ID: "unused-test-account",
+      CLOUDFLARE_RUNTIME_TOKEN: "unused-test-token",
     }
     const frozen = await trainModels(env, initial.trains[0]!.train.id)
     const scriptedWatch = conflictWatchPorts(liveRoleEnv, frozen)

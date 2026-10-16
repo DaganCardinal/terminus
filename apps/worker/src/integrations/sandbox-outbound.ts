@@ -13,16 +13,14 @@ import {
   browserSandboxSchema,
   type BrowserSandbox,
 } from "./browser-run"
+import { modelAccount, type CloudflareAccountEnv } from "./cloudflare-account"
 import { DispatchDraftStore } from "./dispatch-draft-store"
 import { planToolResponse } from "./plan-tools"
 
 /** Each Sandbox receives only the network capabilities for its one operation. */
 export async function outboundRequest(
   request: Request,
-  env: Pick<
-    Env,
-    "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_ID" | "AI_GATEWAY_TOKEN" | "DB"
-  >,
+  env: CloudflareAccountEnv & Pick<Env, "AI_GATEWAY_ID" | "DB">,
   network: SandboxNetwork,
   send: typeof fetch = fetch,
   hedgeAfterMs: number = modelHedgeAfterMs
@@ -96,14 +94,15 @@ export async function outboundRequest(
   } catch {
     utilityApiModel = undefined
   }
+  const { accountId, token } = modelAccount(env)
   const modelHost =
     provider === "workers-ai"
       ? "api.cloudflare.com"
       : "gateway.ai.cloudflare.com"
   const modelPath =
     provider === "workers-ai"
-      ? `/client/v4/accounts/${env.AI_GATEWAY_ACCOUNT_ID}/ai/v1/chat/completions`
-      : `/v1/${env.AI_GATEWAY_ACCOUNT_ID}/${env.AI_GATEWAY_ID}/${provider}/${provider === "anthropic" ? "v1/messages" : "responses"}`
+      ? `/client/v4/accounts/${accountId}/ai/v1/chat/completions`
+      : `/v1/${accountId}/${env.AI_GATEWAY_ID}/${provider}/${provider === "anthropic" ? "v1/messages" : "responses"}`
   if (
     network.allowModel &&
     network.model &&
@@ -123,7 +122,7 @@ export async function outboundRequest(
       !payload.success ||
       (payload.data.model !== apiModel &&
         payload.data.model !== utilityApiModel) ||
-      !env.AI_GATEWAY_TOKEN
+      !token
     )
       return denied()
     // Hosted tools would run outside our Sandbox role restrictions.
@@ -162,13 +161,13 @@ export async function outboundRequest(
     if (declared.some(hosted)) return denied()
     const headers = cleanHeaders(request.headers)
     if (provider === "workers-ai") {
-      headers.set("authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
+      headers.set("authorization", `Bearer ${token}`)
       headers.set("cf-aig-gateway-id", env.AI_GATEWAY_ID)
       // Workers AI prefix caching: faster prefill, and cached input costs less.
       if (network.sessionAffinity)
         headers.set("x-session-affinity", network.sessionAffinity)
     } else {
-      headers.set("cf-aig-authorization", `Bearer ${env.AI_GATEWAY_TOKEN}`)
+      headers.set("cf-aig-authorization", `Bearer ${token}`)
     }
     const started = Date.now()
     const requestId = crypto.randomUUID()

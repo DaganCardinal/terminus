@@ -51,6 +51,8 @@ curl -X POST http://localhost:8787/api/networks \
 
 Omitting `sourceUrl` creates an initialized empty Artifacts repository in a new namespace. Push an npm baseline into that repository before starting real Station work.
 
+`GET /api/network-defaults` returns what the Create network form starts with: `{ "sourceUrl": "https://github.com/DaganCardinal/term-demo-app.git" }` in live mode until a network has imported the demo app, otherwise `{}`.
+
 ## Validation commands
 
 Validation commands are trusted project configuration stored in D1, separate from model-generated manifests. Creation optionally accepts `validation`; defaults are `typecheck` (`npm run typecheck`), `test` (`npm test`), and `build` (`npm run build`). Every configured command is required. Each manifest's `expectedEvidence` must name configured commands; missing names prevent execution. Commands execute as argument arrays, not shell strings.

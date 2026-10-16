@@ -37,10 +37,6 @@
       "binding": "DEPENDENCY_CACHE",
       "bucket_name": "terminus-dependency-cache",
     },
-    {
-      "bucket_name": "terminus-dependency-cache",
-      "binding": "terminus_dependency_cache",
-    },
   ],
   // Browser Run, used only by the deployed transport proof until it passes
   // (docs/browser-run.md). BROWSER_RUN_ENABLED below gates every use.
@@ -188,17 +184,17 @@
       "storage": "sqlite",
     },
   },
-  // ARTIFACTS_API_TOKEN is a Cloudflare API token with Artifacts edit access.
-  // Each Project gets its own Artifacts namespace, which the Workers binding
-  // (fixed to one namespace) cannot address, so Terminus uses the REST API.
+  // Secrets (`wrangler secret put`, or .dev.vars locally):
+  // CLOUDFLARE_RUNTIME_TOKEN is one account-scoped Cloudflare API token with
+  // Artifacts Read and Edit and Workers AI Read, plus AI Gateway Run for
+  // Anthropic/OpenAI models. Each Project gets its own Artifacts namespace,
+  // which the Workers binding (fixed to one namespace) cannot address, so
+  // Terminus uses the REST API. The older ARTIFACTS_API_TOKEN and
+  // AI_GATEWAY_TOKEN still work when it is unset.
   // ACCESS_ALLOWED_EMAILS is a comma-separated list of the emails allowed in.
-  "secrets": {
-    "required": [
-      "AI_GATEWAY_TOKEN",
-      "ARTIFACTS_API_TOKEN",
-      "ACCESS_ALLOWED_EMAILS",
-    ],
-  },
+  // There is no `secrets.required`: Wrangler would demand every listed name
+  // and load only listed names from .dev.vars, which rules out the older
+  // names. A missing secret fails closed when it is needed instead.
   "vars": {
     "REPOSITORY_MODE": "artifacts",
     // Claude Code, Codex and Anthropic/OpenAI models, billed through AI
@@ -219,7 +215,6 @@
     "ACCESS_REQUIRED": "true",
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
-    "ARTIFACTS_ACCOUNT_ID": "",
     // Local previews use *.localhost:8787. Deployment requires a separate
     // HTTPS preview domain with wildcard DNS/TLS and a route to this Worker.
     "PREVIEW_BASE_URL": "",
@@ -233,7 +228,12 @@
     // The Engineer's Clef decision model, for choices its hard rules leave open.
     "ENGINEER_MODEL": "settings",
     "STATION_MAX_RETRIES": "3",
-    "AI_GATEWAY_ACCOUNT_ID": "",
+    // The account for Artifacts and models. scripts/wrangler.mjs fills it from
+    // `account_id` (or CLOUDFLARE_ACCOUNT_ID), so the ID is written once. The
+    // older ARTIFACTS_ACCOUNT_ID and AI_GATEWAY_ACCOUNT_ID still work when it
+    // is empty.
+    "CLOUDFLARE_ACCOUNT_ID": "",
+    // AI Gateway creates the `default` gateway on its first authenticated request.
     "AI_GATEWAY_ID": "default",
     // How long a fake Station Agent takes, so Trains visibly travel.
     "FAKE_INTEGRATION_CONFLICT_PATHS": "",
@@ -343,7 +343,6 @@
         "ACCESS_REQUIRED": "false",
         "ACCESS_TEAM_DOMAIN": "",
         "ACCESS_AUD": "",
-        "ARTIFACTS_ACCOUNT_ID": "",
         "PREVIEW_BASE_URL": "",
         "TECHNICIAN_MODEL": "fake",
         "STATION_AGENT_MODEL": "fake",
@@ -354,7 +353,7 @@
         "FAKE_INTEGRATION_CONFLICT_PATHS": "",
         "FAKE_AGENT_DELAY_MS": "4000",
         "FAKE_CONDUCTOR_RETURNS": "1",
-        "AI_GATEWAY_ACCOUNT_ID": "",
+        "CLOUDFLARE_ACCOUNT_ID": "",
         "AI_GATEWAY_ID": "default",
       },
     },

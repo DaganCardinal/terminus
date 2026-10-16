@@ -13,7 +13,6 @@ interface __BaseEnv_Env {
 	ACCESS_REQUIRED: string;
 	ACCESS_TEAM_DOMAIN: string;
 	ACCESS_AUD: string;
-	ARTIFACTS_ACCOUNT_ID: string;
 	PREVIEW_BASE_URL: string;
 	TECHNICIAN_MODEL: string;
 	STATION_AGENT_MODEL: string;
@@ -24,7 +23,7 @@ interface __BaseEnv_Env {
 	FAKE_INTEGRATION_CONFLICT_PATHS: string;
 	FAKE_AGENT_DELAY_MS: string;
 	FAKE_CONDUCTOR_RETURNS: string;
-	AI_GATEWAY_ACCOUNT_ID: string;
+	CLOUDFLARE_ACCOUNT_ID: string;
 	AI_GATEWAY_ID: string;
 	SANDBOX: DurableObjectNamespace<import("./src/index").ExecutionSandbox>;
 	WORKSPACE_SANDBOX: DurableObjectNamespace<import("./src/index").WorkspaceSandbox>;
@@ -41,10 +40,12 @@ interface __BaseEnv_Env {
 	STATION_WORKFLOW: Workflow<Parameters<import("./src/index").StationWorkflow['run']>[0]['payload']>;
 	INTEGRATION_WORKFLOW: Workflow<Parameters<import("./src/index").IntegrationWorkflow['run']>[0]['payload']>;
 	CONFLICT_WATCH_WORKFLOW: Workflow<Parameters<import("./src/index").ConflictWatchWorkflow['run']>[0]['payload']>;
-	terminus_dependency_cache?: R2Bucket;
 	BROWSER?: BrowserRun;
+	CLOUDFLARE_RUNTIME_TOKEN?: string;
 	AI_GATEWAY_TOKEN?: string;
 	ARTIFACTS_API_TOKEN?: string;
+	ARTIFACTS_ACCOUNT_ID?: string;
+	AI_GATEWAY_ACCOUNT_ID?: string;
 	ACCESS_ALLOWED_EMAILS?: string;
 }
 declare namespace Cloudflare {
@@ -64,7 +65,6 @@ declare namespace Cloudflare {
 		ACCESS_REQUIRED: string;
 		ACCESS_TEAM_DOMAIN: string;
 		ACCESS_AUD: string;
-		ARTIFACTS_ACCOUNT_ID: string;
 		PREVIEW_BASE_URL: string;
 		TECHNICIAN_MODEL: string;
 		STATION_AGENT_MODEL: string;
@@ -75,7 +75,7 @@ declare namespace Cloudflare {
 		FAKE_INTEGRATION_CONFLICT_PATHS: string;
 		FAKE_AGENT_DELAY_MS: string;
 		FAKE_CONDUCTOR_RETURNS: string;
-		AI_GATEWAY_ACCOUNT_ID: string;
+		CLOUDFLARE_ACCOUNT_ID: string;
 		AI_GATEWAY_ID: string;
 		SANDBOX: DurableObjectNamespace<import("./src/index").ExecutionSandbox>;
 		WORKSPACE_SANDBOX: DurableObjectNamespace<import("./src/index").WorkspaceSandbox>;
@@ -100,7 +100,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "REPOSITORY_MODE" | "ALTERNATIVE_HARNESSES_ENABLED" | "OPENCODE_EXTERNAL_PROVIDERS_ENABLED" | "BROWSER_RUN_ENABLED" | "APP_ORIGIN" | "ACCESS_REQUIRED" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "ARTIFACTS_ACCOUNT_ID" | "PREVIEW_BASE_URL" | "TECHNICIAN_MODEL" | "STATION_AGENT_MODEL" | "CONDUCTOR_MODEL" | "DISPATCHER_MODEL" | "ENGINEER_MODEL" | "STATION_MAX_RETRIES" | "FAKE_INTEGRATION_CONFLICT_PATHS" | "FAKE_AGENT_DELAY_MS" | "FAKE_CONDUCTOR_RETURNS" | "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_ID" | "AI_GATEWAY_TOKEN" | "ARTIFACTS_API_TOKEN" | "ACCESS_ALLOWED_EMAILS">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "REPOSITORY_MODE" | "ALTERNATIVE_HARNESSES_ENABLED" | "OPENCODE_EXTERNAL_PROVIDERS_ENABLED" | "BROWSER_RUN_ENABLED" | "APP_ORIGIN" | "ACCESS_REQUIRED" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "PREVIEW_BASE_URL" | "TECHNICIAN_MODEL" | "STATION_AGENT_MODEL" | "CONDUCTOR_MODEL" | "DISPATCHER_MODEL" | "ENGINEER_MODEL" | "STATION_MAX_RETRIES" | "FAKE_INTEGRATION_CONFLICT_PATHS" | "FAKE_AGENT_DELAY_MS" | "FAKE_CONDUCTOR_RETURNS" | "CLOUDFLARE_ACCOUNT_ID" | "AI_GATEWAY_ID" | "CLOUDFLARE_RUNTIME_TOKEN" | "AI_GATEWAY_TOKEN" | "ARTIFACTS_API_TOKEN" | "ARTIFACTS_ACCOUNT_ID" | "AI_GATEWAY_ACCOUNT_ID" | "ACCESS_ALLOWED_EMAILS">> {}
 }
 declare module "*.txt" {
 	const value: string;

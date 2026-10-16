@@ -497,6 +497,12 @@ describe("API validation", () => {
     expect((await api("/nowhere")).status).toBe(404)
   })
 
+  it("suggests no source for a new offline network", async () => {
+    const response = await api("/network-defaults")
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({})
+  })
+
   it("refuses the Browser Run proof while BROWSER_RUN_ENABLED is off", async () => {
     const response = await post("/browser-run/proof")
     expect(response.status).toBe(404)

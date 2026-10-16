@@ -309,7 +309,7 @@ describe("Artifacts REST client", () => {
   it("requires an account and API token", () => {
     expect(
       () => new ArtifactsRestClient({ accountId: "", apiToken: "x" })
-    ).toThrow("ARTIFACTS_ACCOUNT_ID")
+    ).toThrow("CLOUDFLARE_ACCOUNT_ID")
   })
 })
 
